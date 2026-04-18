@@ -55,8 +55,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen
       - name: Run unit + integration tests with coverage
+        # `-m "not slow"` excludes the sentence-transformers integration suite
+        # whose first run pulls ~90 MB of model weights. Those tests run on
+        # developer machines and in the benchmark pipeline, not per-PR CI.
         run: |
           uv run pytest \
+            -m "not slow" \
             --cov=tessera \
             --cov-branch \
             --cov-report=xml \
@@ -80,12 +84,31 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash scripts/no_telemetry_grep.sh
 
-  # The no-outbound network test is reserved for P2, when model adapters
-  # introduce the first genuine outbound surface (Ollama HTTP, OpenAI client,
-  # etc). At P0 no source file imports a network client and no_telemetry_grep
-  # already enforces that statically, so firewalling the runner would verify
-  # nothing while adding the flakiest job in the matrix. The harness lands
-  # with the adapter framework so the gate gains real signal on arrival.
+  no-outbound:
+    # The adapter framework is the first code in src/tessera that speaks to
+    # the network (Ollama, OpenAI, Cohere). Per docs/determinism-and-
+    # observability.md §CI enforcement, the full test suite must pass with
+    # every outbound destination except loopback blocked — proving no hidden
+    # telemetry is in any transitive dependency's import path. Dependencies
+    # install before the firewall drops so uv can still reach PyPI.
+    name: No-outbound network test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen
+      - name: Block outbound except loopback
+        run: |
+          sudo iptables -A OUTPUT -o lo -j ACCEPT
+          sudo iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
+          sudo iptables -A OUTPUT -p udp --dport 53 -d 127.0.0.53 -j ACCEPT
+          sudo iptables -A OUTPUT -j REJECT --reject-with icmp-port-unreachable
+      - name: Run tests with outbound blocked
+        run: uv run pytest -m "not slow" --no-cov
 
   secret-scan:
     name: Secret scan (gitleaks)
