@@ -114,6 +114,17 @@ class CohereReranker:
         self._cached_key = raw
         return raw
 
+    def invalidate_cached_key(self) -> None:
+        """Drop the in-memory key cache so the next call re-reads the keyring.
+
+        Mirror of the OpenAI adapter's invalidation hook: rotating a
+        compromised Cohere key in the OS keyring must take effect without
+        a daemon restart. The CLI and daemon control plane call this after
+        a key rotation.
+        """
+
+        self._cached_key = None
+
     def _check_status(self, resp: httpx.Response) -> None:
         if resp.status_code == 200:
             return

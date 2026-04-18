@@ -13,7 +13,7 @@ import socket
 
 import pytest
 
-from tessera.adapters.errors import AdapterModelNotFoundError
+from tessera.adapters.errors import AdapterModelNotFoundError, AdapterNetworkError
 from tessera.adapters.ollama_embedder import DEFAULT_HOST, OllamaEmbedder
 
 _EMBED_MODEL = "nomic-embed-text"
@@ -36,12 +36,14 @@ def _ollama_has_model(model_name: str) -> bool:
             await embedder.health_check()
         except AdapterModelNotFoundError:
             return False
+        except AdapterNetworkError:
+            # Daemon is listening but not serving (partially started,
+            # reloading). Treat as "skip cleanly" rather than surfacing
+            # the exception at test-collection time.
+            return False
         return True
 
-    try:
-        return asyncio.run(_probe())
-    except Exception:
-        return False
+    return asyncio.run(_probe())
 
 
 pytestmark = [

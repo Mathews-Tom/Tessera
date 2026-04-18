@@ -5,11 +5,15 @@ model is loaded once per process and held for the daemon lifetime; cold-load
 on first use is the documented tax that the P9 daemon warms up at startup.
 
 Determinism: the retrieval seed (docs/determinism-and-observability.md
-§Retrieval pipeline determinism) is translated into ``torch.manual_seed`` per
-call. Torch's ``use_deterministic_algorithms(True)`` is set at import time so
-later bulk calls cannot silently introduce non-deterministic kernels. Running
-on CPU keeps the determinism contract portable; GPU determinism requires
-``CUBLAS_WORKSPACE_CONFIG`` and is out of scope for P2.
+§Retrieval pipeline determinism) is translated into ``torch.manual_seed``
+per call, scoped to the predict path. Global
+``torch.use_deterministic_algorithms(True)`` is deliberately not set —
+some arm64 torch builds SIGBUS on non-deterministic fallback ops in the
+graph, reproducible on macOS developer hardware. The per-call seed
+covers the RNG surface that matters for retrieval determinism on CPU;
+the broader bit-identical guarantee is verified at the retrieval
+integration layer. GPU determinism requires ``CUBLAS_WORKSPACE_CONFIG``
+and is out of scope for P2.
 """
 
 from __future__ import annotations

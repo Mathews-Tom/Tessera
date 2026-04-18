@@ -112,6 +112,17 @@ class OpenAIEmbedder:
         self._cached_key = raw
         return raw
 
+    def invalidate_cached_key(self) -> None:
+        """Drop the in-memory key cache so the next call re-reads the keyring.
+
+        A long-running daemon holds an adapter instance across operations.
+        Without invalidation, rotating the keyring entry (e.g. revoking a
+        compromised API key) would not take effect until daemon restart.
+        The CLI and daemon control plane call this after a key rotation.
+        """
+
+        self._cached_key = None
+
     def _check_status(self, resp: httpx.Response) -> None:
         if resp.status_code == 200:
             return

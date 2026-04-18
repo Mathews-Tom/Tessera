@@ -273,3 +273,35 @@ async def test_cached_key_reused() -> None:
     await embedder.embed(["b"])
     assert call_count["n"] == 2
     assert embedder._cached_key == "sk-test"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_invalidate_cached_key_forces_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keys = {(KEYRING_SERVICE, "default"): "old-key"}
+
+    def fake_load(service: str, username: str) -> str | None:
+        return keys.get((service, username))
+
+    monkeypatch.setattr(keyring_cache, "load_password", fake_load)
+
+    seen: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req.headers["Authorization"])
+        return httpx.Response(200, json={"data": [{"embedding": [0.0, 0.0, 0.0, 0.0]}]})
+
+    embedder = _embedder(handler)
+    await embedder.embed(["a"])
+    assert seen[-1] == "Bearer old-key"
+
+    keys[(KEYRING_SERVICE, "default")] = "new-key"
+    await embedder.embed(["b"])
+    # Without invalidation, the cache still holds old-key.
+    assert seen[-1] == "Bearer old-key"
+
+    embedder.invalidate_cached_key()
+    await embedder.embed(["c"])
+    assert seen[-1] == "Bearer new-key"

@@ -216,3 +216,37 @@ async def test_health_check_transport_error() -> None:
 async def test_score_non_json() -> None:
     with pytest.raises(AdapterResponseError, match="non-JSON"):
         await _reranker(lambda _r: httpx.Response(200, text="nope")).score("q", ["a"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_invalidate_cached_key_forces_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keys = {(KEYRING_SERVICE, "default"): "old-key"}
+
+    def fake_load(service: str, username: str) -> str | None:
+        return keys.get((service, username))
+
+    monkeypatch.setattr(keyring_cache, "load_password", fake_load)
+
+    seen: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req.headers["Authorization"])
+        return httpx.Response(
+            200,
+            json={"results": [{"index": 0, "relevance_score": 0.5}]},
+        )
+
+    reranker = _reranker(handler)
+    await reranker.score("q", ["a"])
+    assert seen[-1] == "Bearer old-key"
+
+    keys[(KEYRING_SERVICE, "default")] = "new-key"
+    await reranker.score("q", ["a"])
+    assert seen[-1] == "Bearer old-key"
+
+    reranker.invalidate_cached_key()
+    await reranker.score("q", ["a"])
+    assert seen[-1] == "Bearer new-key"
