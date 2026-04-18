@@ -1,8 +1,10 @@
 """Enforce per-directory coverage thresholds from a coverage.xml report.
 
-Parses the coverage.xml produced by pytest-cov and requires ≥ 90% line coverage
-on every directory listed in CRITICAL_DIRS. Treats a directory with zero
-measurable lines as passing (the module is just a package marker).
+Parses the coverage.xml produced by pytest-cov and requires >= 90% line coverage
+on every directory listed in CRITICAL_DIRS. A directory with zero measurable
+lines is reported as passing -- the scaffold phase has empty package markers
+that coverage.py treats as having nothing to cover, and a premature fail would
+gate merges before the first line of real code lands.
 
 Exit code 0 on success, 1 when any critical directory falls below threshold.
 """

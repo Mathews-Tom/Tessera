@@ -14,7 +14,7 @@ def test_package_exposes_version() -> None:
 
 
 @pytest.mark.unit
-def test_package_version_is_pep440_pre_release() -> None:
+def test_package_version_is_dev_prerelease() -> None:
     parts = tessera.__version__.split(".")
     assert parts[0] == "0"
     assert "dev" in tessera.__version__

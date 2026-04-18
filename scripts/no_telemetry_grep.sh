@@ -18,8 +18,12 @@ if [[ ! -d "${SCAN_ROOT}" ]]; then
   exit 0
 fi
 
+# grep -REn output format is `<file>:<line>:<content>`; the ^${ALLOWLIST}/
+# anchor therefore matches on file-path prefix only. The trailing slash is
+# load-bearing — without it, a hypothetical src/tessera/adapters_evil/ tree
+# would be excluded by the allowlist by mistake.
 offenders=$(grep -REn --include='*.py' "${FORBIDDEN}" "${SCAN_ROOT}" \
-  | grep -v "^${ALLOWLIST}" \
+  | grep -v "^${ALLOWLIST}/" \
   || true)
 
 if [[ -n "${offenders}" ]]; then
