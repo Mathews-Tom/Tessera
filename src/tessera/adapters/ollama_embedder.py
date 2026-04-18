@@ -45,10 +45,6 @@ class OllamaEmbedder:
     dim: int
     host: str = DEFAULT_HOST
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    # Standard httpx dependency-injection slot for tests: pass an
-    # httpx.MockTransport (or any AsyncBaseTransport) to stub out the
-    # network. Production leaves this None and httpx picks its default
-    # transport. Used by tests/unit/test_ollama_embedder.py.
     transport: httpx.AsyncBaseTransport | None = None
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
