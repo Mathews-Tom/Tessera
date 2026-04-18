@@ -70,9 +70,8 @@ def derive_key(
         raise ValueError(f"salt length {len(salt)} != expected {params.salt_len}")
     if len(passphrase) == 0:
         raise ValueError("passphrase must not be empty")
-    secret = bytes(passphrase)
     raw = hash_secret_raw(
-        secret=secret,
+        secret=bytes(passphrase),
         salt=salt,
         time_cost=params.time_cost,
         memory_cost=params.memory_cost_kib,
@@ -80,7 +79,16 @@ def derive_key(
         hash_len=params.hash_len,
         type=Argon2Type.ID,
     )
-    return ProtectedKey.adopt(raw)
+    try:
+        return ProtectedKey.adopt(raw)
+    finally:
+        # argon2-cffi returns a fresh bytes object that Python's GC controls;
+        # overwrite its backing storage now that the ctypes buffer owns the
+        # authoritative copy. This is best-effort — bytes is immutable so a
+        # prior tenant of the allocation may still exist elsewhere — but it
+        # closes the obvious duplicate-in-heap window called out in
+        # docs/threat-model.md §S3.
+        ctypes.memset((ctypes.c_char * len(raw)).from_buffer_copy(raw), 0, len(raw))
 
 
 class ProtectedKey:

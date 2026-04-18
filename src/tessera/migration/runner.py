@@ -33,7 +33,6 @@ from tessera.vault import audit
 from tessera.vault.connection import (
     BINARY_SCHEMA_VERSION,
     VaultConnection,
-    VaultNotInitializedError,
     VaultState,
 )
 from tessera.vault.encryption import CURRENT_KDF_VERSION, ProtectedKey
@@ -57,6 +56,18 @@ StepFn = Callable[[sqlcipher3.Connection], None]
 
 @dataclass(frozen=True, slots=True)
 class MigrationStep:
+    """A single forward-migration operation.
+
+    ``apply`` is invoked inside a savepoint together with the insert into
+    ``_migration_steps`` so the pair is atomic. Nonetheless, step bodies
+    **must** be idempotent: a resumed migration re-executes every step whose
+    marker is absent, which is the narrow window the savepoint closes but
+    does not remove (a corrupt ``_migration_steps`` table would have to be
+    rebuilt from the schema). Prefer ``CREATE ... IF NOT EXISTS`` and
+    ``ALTER TABLE ... ADD COLUMN`` guarded by ``pragma table_info`` checks
+    over unguarded DDL.
+    """
+
     name: str
     target_version: int
     apply: StepFn
@@ -159,25 +170,16 @@ def resume_interrupted(path: Path, key: ProtectedKey) -> VaultState:
         target = _read_schema_target(conn)
         if target is None:
             raise MigrationError(f"vault at {path} is not in-transit; nothing to resume")
-        _run_step_sequence(conn, target=target, already_entered=True)
+        _apply_target(conn, target=target, enter=False)
         state = vc.reload_state()
     return state
 
 
-def _apply_target(conn: sqlcipher3.Connection, target: int) -> None:
+def _apply_target(conn: sqlcipher3.Connection, *, target: int, enter: bool = True) -> None:
     steps = _STEPS_BY_TARGET.get(target)
     if steps is None:
         raise UnknownTargetError(f"no migration registered for target version {target}")
-    _enter_migration(conn, target=target)
-    _run_steps(conn, steps=steps, target=target)
-    _exit_migration(conn, target=target)
-
-
-def _run_step_sequence(conn: sqlcipher3.Connection, *, target: int, already_entered: bool) -> None:
-    steps = _STEPS_BY_TARGET.get(target)
-    if steps is None:
-        raise UnknownTargetError(f"no migration registered for target version {target}")
-    if not already_entered:
+    if enter:
         _enter_migration(conn, target=target)
     _run_steps(conn, steps=steps, target=target)
     _exit_migration(conn, target=target)
@@ -187,8 +189,20 @@ def _run_steps(conn: sqlcipher3.Connection, *, steps: Sequence[MigrationStep], t
     for step in steps:
         if _step_applied(conn, step):
             continue
-        step.apply(conn)
-        _mark_step_applied(conn, step, target)
+        # Each step applies and marks inside a savepoint so a crash between
+        # the two leaves an all-or-nothing trail. Step bodies must remain
+        # idempotent as a belt-and-braces guarantee (resume re-runs until
+        # the marker lands), but the savepoint removes the narrow crash
+        # window that would otherwise require idempotency to be perfect.
+        conn.execute("SAVEPOINT run_step")
+        try:
+            step.apply(conn)
+            _mark_step_applied(conn, step, target)
+        except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT run_step")
+            conn.execute("RELEASE SAVEPOINT run_step")
+            raise
+        conn.execute("RELEASE SAVEPOINT run_step")
 
 
 def _enter_migration(conn: sqlcipher3.Connection, *, target: int) -> None:
@@ -226,13 +240,10 @@ def _exit_migration(conn: sqlcipher3.Connection, *, target: int) -> None:
 
 
 def _already_initialized(conn: sqlcipher3.Connection) -> bool:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='_meta'"
-    ).fetchone()
-    if row is None:
+    if not _meta_table_exists(conn):
         return False
     count = conn.execute("SELECT COUNT(*) FROM _meta WHERE key='schema_version'").fetchone()
-    return bool(count and count[0] > 0)
+    return int(count[0]) > 0
 
 
 def _step_applied(conn: sqlcipher3.Connection, step: MigrationStep) -> bool:
@@ -256,23 +267,25 @@ def _mark_step_applied(conn: sqlcipher3.Connection, step: MigrationStep, target:
 
 
 def _read_schema_version(conn: sqlcipher3.Connection) -> int | None:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='_meta'"
-    ).fetchone()
-    if row is None:
-        return None
-    val = conn.execute("SELECT value FROM _meta WHERE key='schema_version'").fetchone()
-    return int(val[0]) if val else None
+    return _read_meta_int(conn, "schema_version")
 
 
 def _read_schema_target(conn: sqlcipher3.Connection) -> int | None:
+    return _read_meta_int(conn, "schema_target")
+
+
+def _read_meta_int(conn: sqlcipher3.Connection, key: str) -> int | None:
+    if not _meta_table_exists(conn):
+        return None
+    val = conn.execute("SELECT value FROM _meta WHERE key=?", (key,)).fetchone()
+    return int(val[0]) if val else None
+
+
+def _meta_table_exists(conn: sqlcipher3.Connection) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='_meta'"
     ).fetchone()
-    if row is None:
-        return None
-    val = conn.execute("SELECT value FROM _meta WHERE key='schema_target'").fetchone()
-    return int(val[0]) if val else None
+    return row is not None
 
 
 def _now_epoch() -> int:
@@ -288,8 +301,3 @@ __all__ = [
     "resume_interrupted",
     "upgrade",
 ]
-
-
-# Re-export VaultNotInitializedError so callers can disambiguate "file missing
-# schema" from "path missing entirely" without reaching into vault.connection.
-_ = VaultNotInitializedError

@@ -35,6 +35,8 @@ def vault_key(passphrase: bytearray) -> Iterator[ProtectedKey]:
 @pytest.fixture
 def open_vault(vault_path: Path, vault_key: ProtectedKey) -> Iterator[VaultConnection]:
     bootstrap(vault_path, vault_key)
-    # derive a fresh key for the open because bootstrap kept key alive.
+    # bootstrap() does not wipe the key on return, so the same ProtectedKey
+    # is still live here. If bootstrap ever starts wiping on exit, this
+    # fixture becomes the first failing test and points at the change.
     with VaultConnection.open(vault_path, vault_key) as vc:
         yield vc

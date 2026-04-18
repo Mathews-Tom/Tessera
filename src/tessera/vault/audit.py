@@ -100,8 +100,9 @@ def write(
             payload_json,
         ),
     )
-    rowid: int = cur.lastrowid or 0
-    return rowid
+    if cur.lastrowid is None:
+        raise AuditError("audit INSERT produced no rowid")
+    return int(cur.lastrowid)
 
 
 def _now_epoch() -> int:

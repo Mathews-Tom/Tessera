@@ -146,3 +146,39 @@ def test_read_schema_version_returns_none_without_meta_table() -> None:
     conn = sqlite3.connect(":memory:")
     assert runner._read_schema_version(conn) is None
     assert runner._read_schema_target(conn) is None
+
+
+@pytest.mark.unit
+def test_step_savepoint_rolls_back_on_failure(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A step that raises must leave neither its DDL nor its marker behind."""
+
+    def _fails(conn: Any) -> None:
+        conn.execute("CREATE INDEX synthetic_fail_idx ON facets(content_hash)")
+        raise RuntimeError("planned failure to exercise savepoint rollback")
+
+    synthetic = (MigrationStep("fails", 2, _fails),)
+    monkeypatch.setitem(runner._STEPS_BY_TARGET, 2, synthetic)
+    monkeypatch.setattr(runner, "BINARY_SCHEMA_VERSION", 2)
+    monkeypatch.setattr("tessera.vault.connection.BINARY_SCHEMA_VERSION", 2)
+
+    k = derive_key(bytearray(_PASS), _SALT)
+    try:
+        with pytest.raises(RuntimeError, match="planned failure"):
+            runner.upgrade(vault, k)
+    finally:
+        k.wipe()
+
+    # Neither the index nor the marker survived: savepoint rollback worked.
+    from tessera.vault.connection import VaultConnection
+
+    k2 = derive_key(bytearray(_PASS), _SALT)
+    with VaultConnection.open_raw(vault, k2) as vc:
+        idx = vc.connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'synthetic_fail_idx'"
+        ).fetchone()
+        marker = vc.connection.execute(
+            "SELECT 1 FROM _migration_steps WHERE step_name = 'fails'"
+        ).fetchone()
+    k2.wipe()
+    assert idx is None
+    assert marker is None

@@ -18,6 +18,7 @@ the measurement discipline and the first baseline number.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import sqlite3
 import statistics
@@ -47,10 +48,8 @@ def main() -> int:
     bench_dir = Path(__file__).parent
     enc_fd, encrypted_path = tempfile.mkstemp(suffix=".encrypted.db")
     plain_fd, plain_path = tempfile.mkstemp(suffix=".plain.db")
-    import os as _os  # local alias to avoid unused top-level import
-
-    _os.close(enc_fd)
-    _os.close(plain_fd)
+    os.close(enc_fd)
+    os.close(plain_fd)
     encrypted_vault = Path(encrypted_path)
     plain_vault = Path(plain_path)
     # Remove the empty files so sqlcipher/sqlite3 can create fresh ones; the
@@ -199,18 +198,15 @@ def _timed_crud(
 
 
 def _overhead(encrypted: dict[str, Any], plain: dict[str, Any]) -> dict[str, float]:
-    def ratio(enc_key: str, plain_key: str) -> float:
-        return (
-            float(encrypted[enc_key]) / float(plain[plain_key])
-            if plain[plain_key]
-            else float("inf")
-        )
+    def ratio(key: str) -> float:
+        base = float(plain[key])
+        return float(encrypted[key]) / base if base else float("inf")
 
     return {
-        "write_p50_ratio": ratio("write_p50_ms", "write_p50_ms"),
-        "write_p95_ratio": ratio("write_p95_ms", "write_p95_ms"),
-        "read_p50_ratio": ratio("read_p50_ms", "read_p50_ms"),
-        "read_p95_ratio": ratio("read_p95_ms", "read_p95_ms"),
+        "write_p50_ratio": ratio("write_p50_ms"),
+        "write_p95_ratio": ratio("write_p95_ms"),
+        "read_p50_ratio": ratio("read_p50_ms"),
+        "read_p95_ratio": ratio("read_p95_ms"),
     }
 
 

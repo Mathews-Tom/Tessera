@@ -77,12 +77,17 @@ def test_resume_replays_registered_steps_idempotently(
     synthetic_steps = (MigrationStep("add_index", 2, _add_index),)
     monkeypatch.setitem(runner._STEPS_BY_TARGET, 2, synthetic_steps)
 
-    # Enter the migration: set schema_target=2 by hand, record step as unapplied.
+    # Enter the migration through the real code path so both `schema_target`
+    # and `migration_started_at` are committed the way a live run would leave
+    # them — then drop the connection to simulate a crash.
     k = derive_key(bytearray(_PASSPHRASE), _FIXED_SALT)
     with VaultConnection.open_raw(bootstrapped, k) as vc:
-        vc.connection.execute(
-            "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_target', '2')"
-        )
+        runner._enter_migration(vc.connection, target=2)
+        started = vc.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'migration_started_at'"
+        ).fetchone()
+        assert started is not None
+        assert started[0]
     k.wipe()
 
     k2 = derive_key(bytearray(_PASSPHRASE), _FIXED_SALT)

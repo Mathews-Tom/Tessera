@@ -78,12 +78,25 @@ def insert(
             f"facet_type {facet_type!r} not supported at v0.1; expected one of {sorted(V0_1_FACET_TYPES)}"
         )
     digest = content_hash(content)
+    # Dedup sees live AND soft-deleted rows because the UNIQUE(agent_id,
+    # content_hash) constraint covers both. A live hit returns the existing
+    # id with is_new=False; a soft-deleted hit restores the row (clears
+    # is_deleted / deleted_at) so re-capturing content the user previously
+    # removed is treated as an intentional un-delete rather than a silent
+    # collision with tombstone metadata.
     existing = conn.execute(
-        "SELECT external_id FROM facets WHERE agent_id = ? AND content_hash = ?",
+        "SELECT external_id, is_deleted FROM facets WHERE agent_id = ? AND content_hash = ?",
         (agent_id, digest),
     ).fetchone()
     if existing is not None:
-        return str(existing[0]), False
+        existing_id = str(existing[0])
+        was_deleted = bool(existing[1])
+        if was_deleted:
+            conn.execute(
+                "UPDATE facets SET is_deleted = 0, deleted_at = NULL WHERE external_id = ?",
+                (existing_id,),
+            )
+        return existing_id, False
 
     external_id = str(ULID())
     captured = captured_at if captured_at is not None else _now_epoch()

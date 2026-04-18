@@ -176,3 +176,43 @@ def test_hard_delete_cascades_to_fts(conn: sqlite3.Connection) -> None:
 @pytest.mark.unit
 def test_hard_delete_nonexistent_returns_false(conn: sqlite3.Connection) -> None:
     assert facets.hard_delete(conn, "01MISSING") is False
+
+
+@pytest.mark.unit
+def test_insert_after_soft_delete_restores_the_row(conn: sqlite3.Connection) -> None:
+    aid = _agent_id(conn)
+    eid, _ = facets.insert(
+        conn, agent_id=aid, facet_type="style", content="my voice sample", source_client="cli"
+    )
+    assert facets.soft_delete(conn, eid) is True
+
+    eid2, is_new = facets.insert(
+        conn, agent_id=aid, facet_type="style", content="my voice sample", source_client="cli"
+    )
+    assert eid2 == eid
+    assert is_new is False
+    restored = facets.get(conn, eid)
+    assert restored is not None
+    assert restored.is_deleted is False
+    # The restored row is visible to read helpers again.
+    listed = facets.list_by_type(conn, agent_id=aid, facet_type="style")
+    assert [f.external_id for f in listed] == [eid]
+
+
+@pytest.mark.unit
+def test_v0_1_facet_types_are_subset_of_schema_check() -> None:
+    """The application guard must never accept a type the schema rejects."""
+
+    conn = sqlite3.connect(":memory:")
+    for stmt in schema.all_statements():
+        conn.execute(stmt)
+    conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('01A', 'a', 1)")
+    for ft in facets.V0_1_FACET_TYPES:
+        conn.execute(
+            """
+            INSERT INTO facets(external_id, agent_id, facet_type, content,
+                               content_hash, source_client, captured_at)
+            VALUES (?, 1, ?, 'x', ?, 'cli', 1)
+            """,
+            (f"01{ft.upper()}", ft, ft),
+        )

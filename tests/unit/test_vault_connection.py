@@ -152,3 +152,37 @@ def test_vault_missing_vault_id_rejected(fresh_vault: Path) -> None:
 def test_as_int_rejects_non_integer_meta_value() -> None:
     with pytest.raises(VaultError, match="not an integer"):
         _as_int("schema_version", "banana")
+
+
+@pytest.mark.unit
+def test_failed_open_does_not_leak_sqlite_handles(
+    fresh_vault: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Every error raised by ``open()`` must close the underlying connection.
+
+    Ships as a regression guard: a prior version closed the handle only when
+    ``_read_state`` raised, leaking it on Case-A / Case-C / Case-D. This test
+    drives Case-C and asserts the daemon can still delete the vault file on
+    Windows-style exclusive-lock semantics (simulated by re-opening).
+    """
+
+    monkeypatch.setattr("tessera.vault.connection.BINARY_SCHEMA_VERSION", 0)
+    k = derive_key(bytearray(_PASS), _SALT)
+    try:
+        with pytest.raises(SchemaTooNewError):
+            VaultConnection.open(fresh_vault, k)
+    finally:
+        k.wipe()
+
+    # If the earlier open leaked its connection, SQLite's WAL journal would
+    # still be held; subsequent open must succeed against the clean vault.
+    monkeypatch.setattr(
+        "tessera.vault.connection.BINARY_SCHEMA_VERSION",
+        1,
+    )
+    k2 = derive_key(bytearray(_PASS), _SALT)
+    try:
+        with VaultConnection.open(fresh_vault, k2) as vc:
+            assert vc.state.schema_version == 1
+    finally:
+        k2.wipe()

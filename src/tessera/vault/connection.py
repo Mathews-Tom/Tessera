@@ -81,10 +81,10 @@ class VaultConnection:
         conn = cls._unlock(path, key)
         try:
             state = _read_state(conn)
+            _check_state(state)
         except VaultError:
             conn.close()
             raise
-        _check_state(state)
         return cls(conn, state)
 
     @classmethod
