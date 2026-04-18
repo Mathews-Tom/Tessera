@@ -1,0 +1,38 @@
+{
+  "benchmark_id": "B-RERANK-1",
+  "env": {
+    "arch": "arm64",
+    "device": "cpu",
+    "os": "macOS-26.3.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "d7fca14e3709ac648d8c3cd846c739cb60c1d2d7",
+    "torch": "2.11.0"
+  },
+  "inputs": {
+    "candidate_sizes": [
+      10,
+      50
+    ],
+    "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "trials_per_size": 100
+  },
+  "metrics": {
+    "top_10": {
+      "max_ms": 26.50245896074921,
+      "mean_ms": 22.138590855756775,
+      "min_ms": 21.13379107322544,
+      "p50_ms": 21.98781247716397,
+      "p95_ms": 23.689458030276,
+      "p99_ms": 24.230791023001075
+    },
+    "top_50": {
+      "max_ms": 93.16766611300409,
+      "mean_ms": 81.32395629654638,
+      "min_ms": 77.64283299911767,
+      "p50_ms": 80.10133355855942,
+      "p95_ms": 89.14162497967482,
+      "p99_ms": 92.11070905439556
+    }
+  },
+  "timestamp": "2026-04-18T23:30:06Z"
+}
