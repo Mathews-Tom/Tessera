@@ -19,6 +19,7 @@ jobs:
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -32,6 +33,7 @@ jobs:
   typecheck:
     name: Typecheck (mypy --strict)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -44,6 +46,7 @@ jobs:
   test:
     name: Test + coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -72,13 +75,19 @@ jobs:
   no-telemetry:
     name: No-telemetry grep
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/no_telemetry_grep.sh
 
+  # Runs after `test` so both jobs share a warm setup-uv cache.
+  # Parallel writers to the same cache key raced on the first CI run and
+  # produced a 45-minute zero-output hang in `uv sync --frozen`.
   no-outbound:
     name: No-outbound network test
+    needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -98,6 +107,7 @@ jobs:
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
