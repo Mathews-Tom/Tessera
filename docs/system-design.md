@@ -374,7 +374,9 @@ RRF is scale-invariant, so mixing spaces in rank-space rather than score-space i
 
 ## Model adapter framework (summary)
 
-Three slots: embedder, extractor, reranker. Each pluggable via decorator-based registry. Reference implementations: Ollama, OpenAI, sentence-transformers. All-local mode (Ollama only) works end-to-end with zero cloud dependency. Full details in the companion `docs/model-adapters.md` document.
+Three slots: embedder, extractor, reranker. Each pluggable via decorator-based registry. Reference implementations: Ollama, OpenAI, sentence-transformers, Cohere. All-local mode (Ollama + sentence-transformers) works end-to-end with zero cloud dependency.
+
+Scope decisions — which reference adapters ship in v0.1, when the extractor slot is introduced, why adapter modules are not auto-imported, and the closed exception taxonomy for retry classification — are recorded in [ADR 0008](adr/0008-adapter-framework-scope.md). Full algorithm-level details land in the companion `docs/model-adapters.md` document when the first non-reference adapter is contributed.
 
 ## Trust & capability tokens
 
