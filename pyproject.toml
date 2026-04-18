@@ -25,18 +25,21 @@ classifiers = [
 dependencies = [
     "argon2-cffi>=23.1.0",
     "httpx>=0.27.0",
+    "keyring>=25.0.0",
     "mcp>=1.2.0",
     "ollama>=0.4.0",
+    "python-ulid>=3.0.0",
     "sentence-transformers>=3.3.0",
+    "sqlcipher3>=0.5.4 ; sys_platform != 'linux'",
+    "sqlcipher3-binary>=0.5.4 ; sys_platform == 'linux'",
     "sqlite-vec>=0.1.6",
     "tiktoken>=0.8.0",
 ]
 
-# NOTE: The SQLCipher wrapper (pysqlcipher3 / sqlcipher3-binary) is added in the
-# vault-encryption work, not here. sqlcipher3-binary publishes Linux wheels only;
-# macOS/Windows require a platform-specific source build (pysqlcipher3 against a
-# brewed/vcpkg libsqlcipher). Deferring the pin until the import site exists keeps
-# P0 resolvable on all three target platforms.
+# The SQLCipher pin is split by sys_platform: sqlcipher3-binary ships manylinux
+# wheels for Ubuntu CI; sqlcipher3 builds from source on macOS / Windows against
+# a system libsqlcipher (brew / vcpkg). The two packages expose the same import
+# name, so source code treats them identically.
 
 [project.urls]
 Homepage = "https://github.com/Mathews-Tom/Tessera"
