@@ -29,11 +29,31 @@ from datetime import UTC, datetime
 from typing import Any, Final
 
 import sqlcipher3
-import sqlite_vec
 
 from tessera.adapters.registry import list_embedders
+from tessera.vault.connection import ensure_vec_loaded
 
 VEC_TABLE_PREFIX: Final[str] = "vec_"
+
+# Historical name for the shared helper relocated into ``vault.connection``.
+# Retained so existing callers and tests that know the adapter path keep
+# working while the dependency direction (vault → adapters) stays clean.
+__all__ = [
+    "VEC_TABLE_PREFIX",
+    "DuplicateModelError",
+    "EmbeddingModel",
+    "ModelRegistryError",
+    "NoActiveModelError",
+    "UnknownModelError",
+    "activate",
+    "active_model",
+    "ensure_vec_loaded",
+    "get_by_id",
+    "get_by_name",
+    "list_models",
+    "register_embedding_model",
+    "vec_table_name",
+]
 
 
 class ModelRegistryError(Exception):
@@ -59,27 +79,6 @@ class EmbeddingModel:
     dim: int
     added_at: int
     is_active: bool
-
-
-def ensure_vec_loaded(conn: sqlcipher3.Connection) -> None:
-    """Load the ``sqlite-vec`` extension into ``conn`` if not already loaded.
-
-    Calling this on a connection that already has vec loaded is a no-op — the
-    extension's ``vec_version()`` scalar function becomes available, which is
-    how we detect the already-loaded case without keeping a per-connection
-    flag outside the sqlite state.
-    """
-
-    try:
-        conn.execute("SELECT vec_version()").fetchone()
-        return
-    except (sqlcipher3.OperationalError, sqlcipher3.DatabaseError):
-        pass
-    conn.enable_load_extension(True)
-    try:
-        sqlite_vec.load(conn)
-    finally:
-        conn.enable_load_extension(False)
 
 
 def register_embedding_model(

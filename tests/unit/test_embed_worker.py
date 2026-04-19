@@ -244,6 +244,47 @@ async def test_batch_size_caps_processed_count(open_vault: VaultConnection) -> N
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_race_with_hard_delete_during_embed_skips_vec_insert(
+    open_vault: VaultConnection,
+) -> None:
+    """Threat-model §S7 regression: no orphan vec row if facet vanishes mid-embed."""
+
+    agent_id = _make_agent(open_vault)
+    model_id = _register_model(open_vault, dim=4)
+    external_ids = _capture_n(open_vault, agent_id, 1)
+    facet_external_id = external_ids[0]
+
+    @dataclass
+    class DeletingEmbedder:
+        name: ClassVar[str] = "deleting"
+        model_name: str = "deleting-model"
+        dim: int = 4
+
+        async def embed(self, _texts: Sequence[str]) -> list[list[float]]:
+            # Simulate a concurrent hard_delete that arrives while the
+            # embedder is out of process.
+            from tessera.vault import facets as _facets
+
+            _facets.hard_delete(open_vault.connection, facet_external_id)
+            return [[1.0, 2.0, 3.0, 4.0]]
+
+        async def health_check(self) -> None:
+            return None
+
+    deleting_embedder = DeletingEmbedder()
+
+    stats = await embed_worker.run_pass(
+        open_vault.connection, deleting_embedder, active_model_id=model_id, now_epoch=100
+    )
+
+    assert stats.embedded == 0
+    assert stats.skipped_deleted == 1
+    vec_rows = open_vault.connection.execute(f"SELECT COUNT(*) FROM vec_{model_id}").fetchone()
+    assert int(vec_rows[0]) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_invalid_batch_size_rejected(open_vault: VaultConnection) -> None:
     embedder = FakeEmbedder(sequence=[])
     with pytest.raises(ValueError, match="batch_size"):

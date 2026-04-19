@@ -13,7 +13,7 @@ from pathlib import Path
 import sqlcipher3
 
 from tessera.vault.connection import VaultConnection
-from tessera.vault.encryption import derive_key, new_salt
+from tessera.vault.encryption import derive_key, load_salt
 from tessera.vault.facets import V0_1_FACET_TYPES
 
 
@@ -46,7 +46,16 @@ def _make_parser() -> argparse.ArgumentParser:
 
 def _cmd_repair_embeds(args: argparse.Namespace) -> int:
     passphrase = args.passphrase.encode("utf-8")
-    salt = new_salt()
+    try:
+        salt = load_salt(args.vault)
+    except FileNotFoundError:
+        import sys
+
+        print(
+            f"no KDF salt sidecar for {args.vault}; initialise the vault first",
+            file=sys.stderr,
+        )
+        return 1
     with derive_key(passphrase, salt) as key, VaultConnection.open(args.vault, key) as vc:
         updated = repair_embeds(vc.connection, facet_type=args.facet_type)
     print(f"reset {updated} facet(s) from 'failed' to 'pending'")

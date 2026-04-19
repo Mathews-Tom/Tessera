@@ -61,6 +61,61 @@ def new_salt(params: KDFParams = KDF_V1) -> bytes:
     return secrets.token_bytes(params.salt_len)
 
 
+SALT_SIDECAR_SUFFIX: Final[str] = ".salt"
+
+
+def _salt_sidecar_path(vault_path: object) -> object:
+    # Kept lazy so callers on either ``pathlib.Path`` or a plain string can
+    # use this without importing Path here. Narrow ``typing`` at the
+    # boundary functions below.
+    from pathlib import Path
+
+    p = Path(str(vault_path))
+    return p.with_suffix(p.suffix + SALT_SIDECAR_SUFFIX)
+
+
+def save_salt(vault_path: object, salt: bytes) -> None:
+    """Persist a KDF salt alongside ``vault_path`` so re-opens can re-derive.
+
+    The salt is non-secret but must be stable across daemon restarts — the
+    same passphrase must produce the same key every time or the vault
+    becomes unopenable. A sidecar file named ``<vault>.salt`` keeps the
+    salt out of the encrypted DB (where it would be unreadable before the
+    key is known) while still living next to the vault for backups and
+    portability.
+    """
+
+    if len(salt) != KDF_V1.salt_len:
+        raise ValueError(f"salt length {len(salt)} != expected {KDF_V1.salt_len}")
+    from pathlib import Path
+
+    sidecar = Path(str(_salt_sidecar_path(vault_path)))
+    # Mode 0o600 on POSIX — Path.write_bytes does not take a mode arg, so
+    # set it after. Windows ignores the chmod.
+    sidecar.write_bytes(salt)
+    try:
+        sidecar.chmod(0o600)
+    except OSError:  # pragma: no cover — Windows filesystems that reject chmod
+        return
+
+
+def load_salt(vault_path: object) -> bytes:
+    """Read the KDF salt sidecar that :func:`save_salt` wrote.
+
+    Raises :class:`FileNotFoundError` when the sidecar is absent so the
+    caller can surface a specific "vault not initialised" message rather
+    than a generic unlock failure.
+    """
+
+    from pathlib import Path
+
+    sidecar = Path(str(_salt_sidecar_path(vault_path)))
+    data = sidecar.read_bytes()
+    if len(data) != KDF_V1.salt_len:
+        raise ValueError(f"salt sidecar {sidecar} has unexpected length {len(data)}")
+    return data
+
+
 def derive_key(
     passphrase: bytes | bytearray,
     salt: bytes,

@@ -21,7 +21,7 @@ from typing import Any, Final
 import sqlcipher3
 from ulid import ULID
 
-from tessera.vault.connection import savepoint
+from tessera.vault.connection import ensure_vec_loaded, savepoint
 
 V0_1_FACET_TYPES: Final[frozenset[str]] = frozenset({"episodic", "semantic", "style"})
 
@@ -206,33 +206,14 @@ def hard_delete(conn: sqlcipher3.Connection, external_id: str) -> bool:
         return False
     facet_id = int(row[0])
     model_rows = conn.execute("SELECT id FROM embedding_models").fetchall()
-    # Loading sqlite-vec once is enough: the extension stays attached to the
-    # connection for the remainder of its lifetime. Importing models_registry
-    # would flip the dependency direction; the ensure-loaded probe lives
-    # inline here to keep vault/ free of adapter-layer imports.
     if model_rows:
-        _ensure_vec_loaded(conn)
+        ensure_vec_loaded(conn)
     with savepoint(conn, "hard_delete"):
         for model_row in model_rows:
             model_id = int(model_row[0])
             conn.execute(f"DELETE FROM vec_{model_id} WHERE facet_id = ?", (facet_id,))
         cur = conn.execute("DELETE FROM facets WHERE id = ?", (facet_id,))
     return int(cur.rowcount) == 1
-
-
-def _ensure_vec_loaded(conn: sqlcipher3.Connection) -> None:
-    try:
-        conn.execute("SELECT vec_version()").fetchone()
-        return
-    except (sqlcipher3.OperationalError, sqlcipher3.DatabaseError):
-        pass
-    import sqlite_vec
-
-    conn.enable_load_extension(True)
-    try:
-        sqlite_vec.load(conn)
-    finally:
-        conn.enable_load_extension(False)
 
 
 def _row_to_facet(row: tuple[Any, ...]) -> Facet:

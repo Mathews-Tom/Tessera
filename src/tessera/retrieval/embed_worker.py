@@ -49,6 +49,10 @@ class PassStats:
     retrying: int
     failed: int
     skipped_backoff: int
+    # Facets that were hard- or soft-deleted during the embedder await and
+    # therefore had no vector row written. Counted separately so diagnostic
+    # passes can distinguish "nothing to do" from "something disappeared".
+    skipped_deleted: int = 0
 
 
 async def run_pass(
@@ -70,6 +74,7 @@ async def run_pass(
     retrying = 0
     failed = 0
     skipped_backoff = 0
+    skipped_deleted = 0
     processed = 0
     for facet_id, content, attempts, last_attempt_at in candidates:
         if processed >= batch_size:
@@ -94,7 +99,7 @@ async def run_pass(
             else:
                 failed += 1
             continue
-        _record_success(
+        wrote = _record_success(
             conn,
             facet_id=facet_id,
             vector=vectors[0],
@@ -102,12 +107,16 @@ async def run_pass(
             model_id=active_model_id,
             now=now,
         )
-        embedded += 1
+        if wrote:
+            embedded += 1
+        else:
+            skipped_deleted += 1
     return PassStats(
         embedded=embedded,
         retrying=retrying,
         failed=failed,
         skipped_backoff=skipped_backoff,
+        skipped_deleted=skipped_deleted,
     )
 
 
@@ -144,14 +153,22 @@ def _record_success(
     vec_table: str,
     model_id: int,
     now: int,
-) -> None:
+) -> bool:
+    """Persist a successful embed; return ``False`` if the facet vanished.
+
+    The worker awaits the embedder between ``_fetch_candidates`` and the
+    write here. If a concurrent ``hard_delete`` (or ``soft_delete``) runs
+    inside that window, writing the vector row would leave a permanent
+    orphan referencing a missing facet — there is no FK on vec tables
+    because sqlite-vec virtual tables do not support foreign keys. Guard
+    against it by updating the facet row first with the live-row predicate
+    and branching on rowcount: the vector row is only written when the
+    UPDATE confirmed the facet still exists.
+    """
+
     serialized = _serialize_vector(vector)
     with savepoint(conn, "embed_write"):
-        conn.execute(
-            f"INSERT OR REPLACE INTO {vec_table}(facet_id, embedding) VALUES (?, ?)",
-            (facet_id, serialized),
-        )
-        conn.execute(
+        cur = conn.execute(
             """
             UPDATE facets
             SET embed_status = 'embedded',
@@ -159,10 +176,17 @@ def _record_success(
                 embed_attempts = embed_attempts + 1,
                 embed_last_attempt_at = ?,
                 embed_last_error = NULL
-            WHERE id = ?
+            WHERE id = ? AND is_deleted = 0
             """,
             (model_id, now, facet_id),
         )
+        if int(cur.rowcount) != 1:
+            return False
+        conn.execute(
+            f"INSERT OR REPLACE INTO {vec_table}(facet_id, embedding) VALUES (?, ?)",
+            (facet_id, serialized),
+        )
+        return True
 
 
 def _record_failure(
@@ -179,18 +203,21 @@ def _record_failure(
     should_retry = decision.should_retry and new_attempts < MAX_ATTEMPTS
     status = "pending" if should_retry else "failed"
     error_message = f"{type(error).__name__}: {error}"[:500]
-    conn.execute(
-        """
-        UPDATE facets
-        SET embed_status = ?,
-            embed_model_id = ?,
-            embed_attempts = ?,
-            embed_last_attempt_at = ?,
-            embed_last_error = ?
-        WHERE id = ?
-        """,
-        (status, model_id, new_attempts, now, error_message, facet_id),
-    )
+    # Savepoint-wrapped so the write shape matches ``_record_success``; any
+    # later multi-statement failure path inherits the scoping for free.
+    with savepoint(conn, "embed_fail"):
+        conn.execute(
+            """
+            UPDATE facets
+            SET embed_status = ?,
+                embed_model_id = ?,
+                embed_attempts = ?,
+                embed_last_attempt_at = ?,
+                embed_last_error = ?
+            WHERE id = ?
+            """,
+            (status, model_id, new_attempts, now, error_message, facet_id),
+        )
     return "retrying" if should_retry else "failed"
 
 

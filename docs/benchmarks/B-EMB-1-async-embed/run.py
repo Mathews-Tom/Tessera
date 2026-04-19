@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import platform
-import statistics
 import subprocess
 import sys
 import time
@@ -155,6 +154,3 @@ async def _run() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(_run()))
-
-
-_ = statistics  # reserved for later percentile tracking once we run at scale

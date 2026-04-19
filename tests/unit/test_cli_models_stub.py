@@ -14,7 +14,7 @@ import pytest
 from tessera.adapters import models_registry
 from tessera.cli import models as cli_models
 from tessera.vault.connection import VaultConnection
-from tessera.vault.encryption import ProtectedKey
+from tessera.vault.encryption import ProtectedKey, save_salt
 
 
 @pytest.mark.unit
@@ -42,8 +42,11 @@ def test_set_registers_model(
     def fake_derive(*_a: object, **_k: object) -> ProtectedKey:
         return ProtectedKey.adopt(key_bytes)
 
+    # Write a sidecar so the CLI's salt-load path is exercised for real.
+    # derive_key is still stubbed because fixture-generated keys bypass the
+    # real argon2id cost.
+    save_salt(vault_path, b"\x00" * 16)
     monkeypatch.setattr(cli_models, "derive_key", fake_derive)
-    monkeypatch.setattr(cli_models, "new_salt", lambda: bytes(16))
     open_vault.close()
 
     rc = cli_models.run(

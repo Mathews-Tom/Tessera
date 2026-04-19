@@ -21,7 +21,7 @@ from tessera.adapters import models_registry
 from tessera.adapters.ollama_embedder import OllamaEmbedder
 from tessera.adapters.registry import list_embedders, list_rerankers
 from tessera.vault.connection import VaultConnection
-from tessera.vault.encryption import derive_key, new_salt
+from tessera.vault.encryption import derive_key, load_salt
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -68,7 +68,14 @@ def _cmd_list() -> int:
 
 def _cmd_set(args: argparse.Namespace) -> int:
     passphrase = args.passphrase.encode("utf-8")
-    salt = new_salt()
+    try:
+        salt = load_salt(args.vault)
+    except FileNotFoundError:
+        print(
+            f"no KDF salt sidecar for {args.vault}; initialise the vault first",
+            file=sys.stderr,
+        )
+        return 1
     with derive_key(passphrase, salt) as key, VaultConnection.open(args.vault, key) as vc:
         conn: sqlcipher3.Connection = vc.connection
         model = models_registry.register_embedding_model(

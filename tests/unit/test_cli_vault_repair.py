@@ -9,7 +9,7 @@ import pytest
 from tessera.cli import vault as cli_vault
 from tessera.vault import capture
 from tessera.vault.connection import VaultConnection
-from tessera.vault.encryption import ProtectedKey
+from tessera.vault.encryption import ProtectedKey, save_salt
 
 
 def _make_agent(vc: VaultConnection) -> int:
@@ -93,10 +93,23 @@ def test_cli_entrypoint_runs_end_to_end(
     def fake_derive(*_a: object, **_k: object) -> ProtectedKey:
         return ProtectedKey.adopt(key_bytes)
 
+    save_salt(vault_path, b"\x00" * 16)
     monkeypatch.setattr(cli_vault, "derive_key", fake_derive)
-    monkeypatch.setattr(cli_vault, "new_salt", lambda: bytes(16))
 
     rc = cli_vault.run(["repair-embeds", "--vault", str(vault_path), "--passphrase", "pw"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "reset 1" in out
+
+
+@pytest.mark.unit
+def test_cli_missing_salt_sidecar_returns_nonzero(
+    vault_path: Path,
+    open_vault: VaultConnection,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    open_vault.close()
+    # No save_salt call — the CLI must fail with a clear diagnostic.
+    rc = cli_vault.run(["repair-embeds", "--vault", str(vault_path), "--passphrase", "pw"])
+    assert rc == 1
+    assert "no KDF salt sidecar" in capsys.readouterr().err
