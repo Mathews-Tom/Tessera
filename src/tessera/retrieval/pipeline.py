@@ -1,27 +1,39 @@
 """Retrieval pipeline orchestrator.
 
-Wires the per-stage modules — BM25, dense, RRF, SWCR (pass-through in
-P4), cross-encoder rerank, MMR, token budget — into one async call that
-``recall`` and ``assume_identity`` will sit on top of. Per-stage timing
-is collected so the P8 MCP surface and P11 observability can surface
-slow-query events per ``docs/determinism-and-observability.md``.
+Wires the per-stage modules — BM25, dense, RRF, cross-encoder rerank,
+SWCR reweighting, MMR, token budget — into one async call that
+``recall`` and ``assume_identity`` will sit on top of.
 
-The SWCR reweighting stage is a no-op pass-through in P4. P5 replaces
-``_swcr_passthrough`` with the real algorithm from ``docs/swcr-spec.md``.
-Keeping the stage present but identity-valued here means the P5 landing
-touches one function, not the pipeline's shape.
+Stage ordering per ``docs/swcr-spec.md §Pipeline placement``:
+
+    candidates → RRF → rerank → SWCR → MMR → budget
+
+``ctx.config.retrieval_mode`` dispatches between three arms:
+
+    rrf_only     : skip rerank, skip SWCR. MMR ingests RRF-fused scores.
+    rerank_only  : rerank after RRF; skip SWCR. MMR ingests rerank scores.
+    swcr         : rerank after RRF; SWCR reweights the rerank scores;
+                   MMR ingests SWCR-ordered scores.
+
+The mode is a property of the ``RetrievalConfig`` hash so switching arms
+invalidates the determinism seed — two different modes are not the same
+retrieval and never produce the same result set even for the same query.
+
+Per-stage timing is collected so the P8 MCP surface and P11 observability
+can surface slow-query events per ``docs/determinism-and-observability.md``.
 """
 
 from __future__ import annotations
 
+import json
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 import sqlcipher3
 
 from tessera.adapters.protocol import Embedder, Reranker
-from tessera.retrieval import bm25, budget, dense, mmr, rerank, rrf, seed
+from tessera.retrieval import bm25, budget, dense, mmr, rerank, rrf, seed, swcr
 from tessera.vault import audit
 
 
@@ -67,15 +79,14 @@ class PipelineContext:
     k: int
     facet_types: tuple[str, ...]
     candidates_per_list: int = 50
+    swcr_params: swcr.SWCRParams = swcr.DEFAULT_PARAMS
 
 
 async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
     """Run the full retrieval pipeline for a single query.
 
     Audit correctness contract: every call writes exactly one
-    ``retrieval_executed`` row, even on mid-pipeline exception. The
-    row lands inside a ``try/finally`` so a crash in MMR or budget
-    does not leave a gap in the forensic trail.
+    ``retrieval_executed`` row, even on mid-pipeline exception.
     """
 
     stage_ms: dict[str, float] = {}
@@ -87,7 +98,8 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
     )
     bm25_lists: dict[str, list[bm25.BM25Candidate]] = {}
     dense_lists: dict[str, list[dense.DenseCandidate]] = {}
-    reweighted: list[rrf.RRFResult] = []
+    fused: list[rrf.RRFResult] = []
+    ordered: list[_ScoredCandidate] = []
     rerank_outcome = rerank.RerankOutcome(results=[], degraded=False, error_message=None)
     matches: tuple[RecallMatch, ...] = ()
     truncated = False
@@ -99,54 +111,92 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
         bm25_lists, dense_lists = await _gather_candidates(ctx, query_text)
         stage_ms["candidates"] = _elapsed_ms(t0)
 
-        # Stage 2 — RRF fusion. Per-type ranks preserved deliberately so
-        # a doc at rank 0 in two lists accumulates a larger fused score
-        # than a doc that only appears once.
+        # Stage 2 — RRF fusion. Per-type ranks preserved deliberately.
         t0 = time.perf_counter()
         flat_bm25 = _flatten_bm25(bm25_lists)
         flat_dense = _flatten_dense(dense_lists)
         fused = rrf.fuse(flat_bm25, flat_dense)
         stage_ms["rrf"] = _elapsed_ms(t0)
 
-        # Stage 3 — SWCR reweight (pass-through at P4).
-        t0 = time.perf_counter()
-        reweighted = _swcr_passthrough(fused)
-        stage_ms["swcr"] = _elapsed_ms(t0)
-
-        # Stage 4 — cross-encoder rerank.
         content_lookup = _content_lookup(bm25_lists, dense_lists)
-        rerank_input = [
-            (item.facet_id, content_lookup.get(item.facet_id, ""))
-            for item in reweighted
-            if item.facet_id in content_lookup
-        ]
-        t0 = time.perf_counter()
-        rerank_outcome = await rerank.rerank(
-            ctx.reranker,
-            query_text=query_text,
-            candidates=rerank_input,
-            seed=call_seed,
-        )
-        stage_ms["rerank"] = _elapsed_ms(t0)
-        if rerank_outcome.degraded:
-            audit.write(
-                ctx.conn,
-                op="retrieval_rerank_degraded",
-                actor="retrieval",
-                agent_id=ctx.agent_id,
-                payload={
-                    "seed": seed.seed_hex(call_seed),
-                    "reranker_name": type(ctx.reranker).__name__,
-                    "reason": rerank_outcome.error_message or "unknown",
-                },
+        type_lookup = _type_lookup(bm25_lists, dense_lists)
+
+        # Stage 3 — cross-encoder rerank (skipped in rrf_only).
+        mode = ctx.config.retrieval_mode
+        if mode == "rrf_only":
+            stage_ms["rerank"] = 0.0
+            ordered = [
+                _ScoredCandidate(facet_id=r.facet_id, score=_rrf_to_score(r.rank))
+                for r in fused
+                if r.facet_id in content_lookup
+            ]
+        else:
+            rerank_input = [
+                (item.facet_id, content_lookup.get(item.facet_id, ""))
+                for item in fused
+                if item.facet_id in content_lookup
+            ]
+            t0 = time.perf_counter()
+            rerank_outcome = await rerank.rerank(
+                ctx.reranker,
+                query_text=query_text,
+                candidates=rerank_input,
+                seed=call_seed,
             )
+            stage_ms["rerank"] = _elapsed_ms(t0)
+            if rerank_outcome.degraded:
+                audit.write(
+                    ctx.conn,
+                    op="retrieval_rerank_degraded",
+                    actor="retrieval",
+                    agent_id=ctx.agent_id,
+                    payload={
+                        "seed": seed.seed_hex(call_seed),
+                        "reranker_name": type(ctx.reranker).__name__,
+                        "reason": rerank_outcome.error_message or "unknown",
+                    },
+                )
+            ordered = [
+                _ScoredCandidate(facet_id=r.facet_id, score=r.score) for r in rerank_outcome.results
+            ]
+
+        # Embed the ordered working set once; SWCR and MMR both consume it.
+        working_ids = [c.facet_id for c in ordered]
+        embeddings = await _embed_working_set(ctx, working_ids, content_lookup)
+
+        # Stage 4 — SWCR reweight (skipped unless mode == "swcr").
+        t0 = time.perf_counter()
+        if mode == "swcr":
+            entities_lookup = _fetch_entities(ctx.conn, working_ids)
+            swcr_input = [
+                swcr.SWCRCandidate(
+                    facet_id=cand.facet_id,
+                    rerank_score=cand.score,
+                    embedding=embeddings[cand.facet_id],
+                    facet_type=type_lookup.get(cand.facet_id, ""),
+                    entities=entities_lookup.get(cand.facet_id, frozenset()),
+                )
+                for cand in ordered
+                if cand.facet_id in embeddings
+            ]
+            swcr_results = swcr.apply(swcr_input, params=ctx.swcr_params)
+            ordered = [_ScoredCandidate(facet_id=r.facet_id, score=r.score) for r in swcr_results]
+        stage_ms["swcr"] = _elapsed_ms(t0)
 
         # Stage 5 — MMR diversification.
         t0 = time.perf_counter()
-        mmr_input = await _build_mmr_input(ctx, rerank_outcome.results, content_lookup)
+        mmr_input = [
+            mmr.MMRItem(
+                facet_id=cand.facet_id,
+                relevance=cand.score,
+                embedding=list(embeddings[cand.facet_id]),
+            )
+            for cand in ordered
+            if cand.facet_id in embeddings
+        ]
         diversified = mmr.diversify(
             mmr_input,
-            k=min(ctx.k * 3, len(mmr_input)),  # over-select; budget trims below
+            k=min(ctx.k * 3, len(mmr_input)),
             mmr_lambda=ctx.config.mmr_lambda,
         )
         stage_ms["mmr"] = _elapsed_ms(t0)
@@ -178,7 +228,7 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
                 "candidate_counts": {
                     "bm25": sum(len(lst) for lst in bm25_lists.values()),
                     "dense": sum(len(lst) for lst in dense_lists.values()),
-                    "fused": len(reweighted),
+                    "fused": len(fused),
                 },
                 "result_count": len(matches),
                 "result_facet_ids": [m.external_id for m in matches],
@@ -188,7 +238,7 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
             },
         )
 
-    total_found = len({r.facet_id for r in reweighted})
+    total_found = len({r.facet_id for r in fused})
     warnings = _warnings(rerank_outcome.degraded, truncated)
     return RecallResult(
         matches=matches,
@@ -201,14 +251,18 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ScoredCandidate:
+    facet_id: int
+    score: float
+
+
 async def _gather_candidates(
     ctx: PipelineContext, query_text: str
 ) -> tuple[dict[str, list[bm25.BM25Candidate]], dict[str, list[dense.DenseCandidate]]]:
     # sqlcipher3 connections are not thread-safe, so BM25 runs on the event
-    # loop thread. Dense search awaits on the embedder (HTTP) and then runs
-    # the vec query on the same connection — kept sequential per facet
-    # type, parallelised only at the embedder-http layer via asyncio.gather
-    # over the dense tasks (each dense call serialises its own DB access).
+    # loop thread. Dense search awaits on the embedder before the vec query
+    # runs on the same connection.
     bm25_by_type: dict[str, list[bm25.BM25Candidate]] = {}
     for ftype in ctx.facet_types:
         bm25_by_type[ftype] = bm25.search(
@@ -250,20 +304,13 @@ def _flatten_dense(
     return flat
 
 
-def _swcr_passthrough(fused: list[rrf.RRFResult]) -> list[rrf.RRFResult]:
-    """P4 pass-through. P5 replaces this with the real SWCR algorithm."""
-
-    return fused
-
-
 def _iter_all_candidates(
     bm25_by_type: dict[str, list[bm25.BM25Candidate]],
     dense_by_type: dict[str, list[dense.DenseCandidate]],
 ) -> Iterator[bm25.BM25Candidate | dense.DenseCandidate]:
     # Both Candidate types share facet_id / external_id / facet_type /
-    # content, so downstream indexers can treat them uniformly. Order is
-    # BM25 first, then dense, so setdefault-style indexers preserve the
-    # BM25-wins-on-tie behaviour expected by _content_lookup / _to_matches.
+    # content. Order is BM25 first, then dense, so setdefault-style
+    # indexers preserve the BM25-wins-on-tie behaviour.
     for bm25_rows in bm25_by_type.values():
         yield from bm25_rows
     for dense_rows in dense_by_type.values():
@@ -280,23 +327,71 @@ def _content_lookup(
     return out
 
 
-async def _build_mmr_input(
+def _type_lookup(
+    bm25_by_type: dict[str, list[bm25.BM25Candidate]],
+    dense_by_type: dict[str, list[dense.DenseCandidate]],
+) -> dict[int, str]:
+    out: dict[int, str] = {}
+    for row in _iter_all_candidates(bm25_by_type, dense_by_type):
+        out.setdefault(row.facet_id, row.facet_type)
+    return out
+
+
+def _rrf_to_score(rank: int) -> float:
+    # RRF-only mode feeds a derived relevance into MMR. Using 1/(1+rank)
+    # rather than RRF's raw score keeps the score monotone in rank with
+    # values in (0, 1] — convenient for the MMR's relevance term which
+    # mixes with cosine in [-1, 1].
+    return 1.0 / (1.0 + rank)
+
+
+async def _embed_working_set(
     ctx: PipelineContext,
-    reranked: list[rerank.RerankedCandidate],
+    facet_ids: list[int],
     content_lookup: dict[int, str],
-) -> list[mmr.MMRItem]:
-    contents = [content_lookup.get(c.facet_id, "") for c in reranked]
-    if not contents:
-        return []
-    embeddings = await ctx.embedder.embed(contents)
-    return [
-        mmr.MMRItem(
-            facet_id=candidate.facet_id,
-            relevance=candidate.score,
-            embedding=embedding,
-        )
-        for candidate, embedding in zip(reranked, embeddings, strict=True)
-    ]
+) -> dict[int, list[float]]:
+    if not facet_ids:
+        return {}
+    contents = [content_lookup.get(fid, "") for fid in facet_ids]
+    vectors = await ctx.embedder.embed(contents)
+    return {fid: list(vec) for fid, vec in zip(facet_ids, vectors, strict=True)}
+
+
+def _fetch_entities(
+    conn: sqlcipher3.Connection, facet_ids: Iterable[int]
+) -> dict[int, frozenset[str]]:
+    """Return ``{facet_id: frozenset(entities)}`` for the candidate set.
+
+    Entities come from the ``metadata`` JSON column's top-level
+    ``"entities"`` key (list of strings). v0.3 replaces this with the
+    structured ``entity_mentions`` table per docs/system-design.md;
+    until then, capture writers stash entities in metadata and the
+    retrieval pipeline reads them back here.
+    """
+
+    ids = list(facet_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT id, metadata FROM facets WHERE id IN ({placeholders})",
+        tuple(ids),
+    ).fetchall()
+    out: dict[int, frozenset[str]] = {}
+    for row in rows:
+        facet_id = int(row[0])
+        raw = str(row[1]) if row[1] is not None else "{}"
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            out[facet_id] = frozenset()
+            continue
+        entities = parsed.get("entities") if isinstance(parsed, dict) else None
+        if isinstance(entities, list):
+            out[facet_id] = frozenset(str(e) for e in entities if isinstance(e, str) and e)
+        else:
+            out[facet_id] = frozenset()
+    return out
 
 
 def _apply_budget(
@@ -324,13 +419,11 @@ def _to_matches(
     bm25_by_type: dict[str, list[bm25.BM25Candidate]],
     dense_by_type: dict[str, list[dense.DenseCandidate]],
 ) -> list[RecallMatch]:
-    # Build a per-facet metadata index over the candidate pool so we can
-    # emit the user-facing fields without a second DB round-trip.
-    # captured_at is not on the Candidate dataclasses yet; the P4 pipeline
-    # returns facet_type + external_id for the MCP surface and leaves
-    # captured_at 0. P8 will enrich as needed.
     meta: dict[int, tuple[str, str, int]] = {}
     for row in _iter_all_candidates(bm25_by_type, dense_by_type):
+        # captured_at is not on the Candidate dataclasses yet; P8 will
+        # enrich as needed for the MCP surface. 0 is a stable placeholder
+        # that flags "unknown" without propagating null.
         meta.setdefault(row.facet_id, (row.external_id, row.facet_type, 0))
     matches: list[RecallMatch] = []
     for rank_idx, item in enumerate(items):

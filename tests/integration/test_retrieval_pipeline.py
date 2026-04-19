@@ -111,7 +111,9 @@ async def _bootstrap_vault(open_vault: VaultConnection) -> tuple[int, PipelineCo
             rerank_model="length-score",
             mmr_lambda=0.7,
             max_candidates=50,
-            retrieval_mode="rrf_only",
+            # rerank_only exercises the cross-encoder path without SWCR;
+            # the degraded-rerank test below overrides the reranker.
+            retrieval_mode="rerank_only",
         ),
         tool_budget_tokens=200,
         k=5,
