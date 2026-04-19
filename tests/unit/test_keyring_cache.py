@@ -85,3 +85,60 @@ def test_passphrase_with_non_ascii_bytes_round_trips() -> None:
     raw = bytes(range(256))
     keyring_cache.cache_passphrase("01V", raw)
     assert bytes(keyring_cache.load_passphrase("01V") or b"") == raw
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("mem_keyring")
+def test_password_round_trip() -> None:
+    keyring_cache.store_password("svc", "user", "sk-test-123")
+    assert keyring_cache.load_password("svc", "user") == "sk-test-123"
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("mem_keyring")
+def test_password_load_missing_returns_none() -> None:
+    assert keyring_cache.load_password("svc", "nobody") is None
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("mem_keyring")
+def test_password_clear_existing_returns_true() -> None:
+    keyring_cache.store_password("svc", "user", "v")
+    assert keyring_cache.clear_password("svc", "user") is True
+    assert keyring_cache.load_password("svc", "user") is None
+
+
+@pytest.mark.unit
+@pytest.mark.usefixtures("mem_keyring")
+def test_password_clear_missing_returns_false() -> None:
+    assert keyring_cache.clear_password("svc", "absent") is False
+
+
+@pytest.mark.unit
+def test_password_empty_service_or_username_rejected() -> None:
+    with pytest.raises(ValueError, match="service"):
+        keyring_cache.store_password("", "user", "v")
+    with pytest.raises(ValueError, match="username"):
+        keyring_cache.load_password("svc", "")
+    with pytest.raises(ValueError, match="service"):
+        keyring_cache.clear_password("", "user")
+
+
+@pytest.mark.unit
+def test_keyring_unavailable_surfaces_for_passwords(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from keyring.errors import NoKeyringError
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise NoKeyringError("no backend")
+
+    monkeypatch.setattr(keyring, "set_password", boom)
+    monkeypatch.setattr(keyring, "get_password", boom)
+    monkeypatch.setattr(keyring, "delete_password", boom)
+    with pytest.raises(keyring_cache.KeyringUnavailableError):
+        keyring_cache.store_password("svc", "user", "v")
+    with pytest.raises(keyring_cache.KeyringUnavailableError):
+        keyring_cache.load_password("svc", "user")
+    with pytest.raises(keyring_cache.KeyringUnavailableError):
+        keyring_cache.clear_password("svc", "user")

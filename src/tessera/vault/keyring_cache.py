@@ -68,6 +68,47 @@ def clear_passphrase(vault_id: str) -> bool:
     return True
 
 
+def store_password(service: str, username: str, value: str) -> None:
+    """Generic keyring write for adapter API keys.
+
+    The vault passphrase helpers above base64-encode bytes so the keyring
+    backend never has to carry non-ASCII data. Cloud adapter API keys are
+    already printable ASCII and are stored verbatim.
+    """
+
+    _require(service=service, username=username)
+    try:
+        keyring.set_password(service, username, value)
+    except (NoKeyringError, KeyringError) as exc:
+        raise KeyringUnavailableError(f"keyring write failed: {exc}") from exc
+
+
+def load_password(service: str, username: str) -> str | None:
+    _require(service=service, username=username)
+    try:
+        return keyring.get_password(service, username)
+    except (NoKeyringError, KeyringError) as exc:
+        raise KeyringUnavailableError(f"keyring read failed: {exc}") from exc
+
+
+def clear_password(service: str, username: str) -> bool:
+    _require(service=service, username=username)
+    try:
+        keyring.delete_password(service, username)
+    except PasswordDeleteError:
+        return False
+    except (NoKeyringError, KeyringError) as exc:
+        raise KeyringUnavailableError(f"keyring delete failed: {exc}") from exc
+    return True
+
+
 def _require_vault_id(vault_id: str) -> None:
     if not vault_id:
         raise ValueError("vault_id must be a non-empty string")
+
+
+def _require(*, service: str, username: str) -> None:
+    if not service:
+        raise ValueError("service must be a non-empty string")
+    if not username:
+        raise ValueError("username must be a non-empty string")

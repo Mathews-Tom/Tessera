@@ -32,7 +32,7 @@ The retrieval pipeline (system-design.md §Retrieval pipeline) has five stages. 
 | BM25 (FTS5)               | Yes                     | None required; FTS5 is deterministic                          |
 | Dense search (sqlite-vec) | Yes                     | None required; cosine is deterministic                        |
 | RRF fusion                | Yes                     | Tie-break on `facets.id` ascending                            |
-| Cross-encoder rerank      | Yes given model weights | Torch deterministic mode + `torch.manual_seed(seed)` per call |
+| Cross-encoder rerank      | Yes given model weights | `torch.manual_seed(seed)` per call (scoped RNG; global `torch.use_deterministic_algorithms(True)` is not set because some arm64 torch builds SIGBUS on non-deterministic fallback ops — see `src/tessera/adapters/st_reranker.py`). The seeded RNG covers every sampling point inside `CrossEncoder.predict` on the CPU path. GPU determinism requires `CUBLAS_WORKSPACE_CONFIG` and is deferred until a user reports a GPU deployment. |
 | SWCR reweighting          | Yes                     | Closed-form; no sampling                                      |
 | MMR diversification       | Yes                     | Greedy with deterministic tie-break on `facets.id`            |
 | Token budget enforcement  | Yes                     | Integer token counts                                          |
