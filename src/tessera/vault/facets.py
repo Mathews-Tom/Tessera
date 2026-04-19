@@ -1,11 +1,11 @@
 """CRUD over the ``facets`` table.
 
 This module owns content-hash deduplication, soft/hard delete semantics, and
-the read helpers the MCP surface will call in later phases. Embedding-vector
-cleanup is scoped out — the per-model ``vec_*`` virtual tables do not exist
-until P2, so ``hard_delete`` calls a no-op vec cascade and documents the
-follow-up in docs/migration-contract.md terms. FTS rows are maintained by
-the ``facets_ad`` / ``facets_au`` triggers installed with the schema.
+the read helpers the MCP surface will call in later phases. ``hard_delete``
+cascades across every registered ``vec_<id>`` virtual table in one
+transaction so erasure actually erases (``docs/threat-model.md §S7``). FTS
+rows are maintained by the ``facets_ad`` / ``facets_au`` triggers installed
+with the schema.
 """
 
 from __future__ import annotations
@@ -189,17 +189,61 @@ def soft_delete(conn: sqlcipher3.Connection, external_id: str) -> bool:
 
 
 def hard_delete(conn: sqlcipher3.Connection, external_id: str) -> bool:
-    """Remove the facet row.
+    """Remove the facet row and every associated vector and FTS entry.
 
-    FTS cascade happens automatically via the ``facets_ad`` trigger. The
-    per-model ``vec_*`` cleanup is a no-op at P1 because no vec table has
-    been created yet; that cascade lands with the capture-and-embed work
-    in P3.
+    FTS cascade happens automatically via the ``facets_ad`` trigger. Vec
+    tables are sqlite-vec virtual tables and do not support triggers, so
+    the cascade across every registered ``vec_<id>`` runs as an explicit
+    set of DELETEs before the facet row is removed. All writes run inside
+    one transaction so a crash cannot leave orphan vector rows referencing
+    a deleted facet (`docs/threat-model.md §S7` — erasure must actually
+    erase).
     """
 
-    cur = conn.execute("DELETE FROM facets WHERE external_id = ?", (external_id,))
+    row = conn.execute("SELECT id FROM facets WHERE external_id = ?", (external_id,)).fetchone()
+    if row is None:
+        return False
+    facet_id = int(row[0])
+    model_rows = conn.execute("SELECT id FROM embedding_models").fetchall()
+    # Loading sqlite-vec once is enough: the extension stays attached to the
+    # connection for the remainder of its lifetime. Importing models_registry
+    # would flip the dependency direction; the ensure-loaded probe lives
+    # inline here to keep vault/ free of adapter-layer imports.
+    if model_rows:
+        _ensure_vec_loaded(conn)
+    # Savepoint (not BEGIN) so the caller can already be inside a
+    # transaction — for example the sqlite3 test connection that runs in
+    # pysqlite's legacy auto-begin mode. Production VaultConnection is
+    # autocommit, so the savepoint becomes the only transaction scope for
+    # the cascade.
+    conn.execute("SAVEPOINT hard_delete")
+    try:
+        for model_row in model_rows:
+            model_id = int(model_row[0])
+            conn.execute(f"DELETE FROM vec_{model_id} WHERE facet_id = ?", (facet_id,))
+        cur = conn.execute("DELETE FROM facets WHERE id = ?", (facet_id,))
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT hard_delete")
+        conn.execute("RELEASE SAVEPOINT hard_delete")
+        raise
+    conn.execute("RELEASE SAVEPOINT hard_delete")
     rowcount: int = cur.rowcount
     return rowcount == 1
+
+
+def _ensure_vec_loaded(conn: sqlcipher3.Connection) -> None:
+    try:
+        conn.execute("SELECT vec_version()").fetchone()
+        return
+    except (sqlcipher3.OperationalError, sqlcipher3.DatabaseError):
+        pass
+    import sqlite_vec
+
+    conn.enable_load_extension(True)
+    try:
+        sqlite_vec.load(conn)
+    finally:
+        conn.enable_load_extension(False)
 
 
 def _row_to_facet(row: tuple[Any, ...]) -> Facet:
