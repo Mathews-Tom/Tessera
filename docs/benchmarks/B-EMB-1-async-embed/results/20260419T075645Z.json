@@ -1,0 +1,24 @@
+{
+  "benchmark_id": "B-EMB-1",
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.3.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "6e0b052db898d552030a7231240b649d130fbd95"
+  },
+  "inputs": {
+    "dim": 8,
+    "embedder": "fake-zero-latency",
+    "facets": 500
+  },
+  "metrics": {
+    "capture_elapsed_seconds": 0.1743424170417711,
+    "capture_throughput_per_sec": 2867.919399558421,
+    "dim": 8,
+    "embed_elapsed_seconds": 0.0936504170531407,
+    "embed_throughput_per_sec": 5339.004520570171,
+    "embedded_total": 500,
+    "facets": 500
+  },
+  "timestamp": "2026-04-19T07:56:45Z"
+}

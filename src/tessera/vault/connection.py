@@ -17,6 +17,8 @@ migration runner explicitly per the contract's "no auto-migrate" rule.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -195,3 +197,48 @@ def _as_int(key: str, raw: str) -> int:
         return int(raw)
     except ValueError as exc:
         raise VaultError(f"_meta.{key} is not an integer: {raw!r}") from exc
+
+
+@contextmanager
+def savepoint(conn: sqlcipher3.Connection, name: str) -> Iterator[None]:
+    """Scope a block of DML inside a SQLite SAVEPOINT.
+
+    SAVEPOINT (not BEGIN) works whether the caller is already inside a
+    transaction — pysqlite's legacy auto-begin mode used by unit tests — or
+    running against the autocommit ``VaultConnection`` used in production.
+    Rolls back to and releases the savepoint on exception; releases on clean
+    exit.
+    """
+
+    conn.execute(f"SAVEPOINT {name}")
+    try:
+        yield
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {name}")
+        conn.execute(f"RELEASE SAVEPOINT {name}")
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {name}")
+
+
+def ensure_vec_loaded(conn: sqlcipher3.Connection) -> None:
+    """Load the ``sqlite-vec`` extension into ``conn`` if not already loaded.
+
+    Living in ``vault/connection`` (not the adapter layer) because sqlite-vec
+    is a SQLite concern that both ``vault/facets`` and
+    ``adapters/models_registry`` need. Calling this on an already-loaded
+    connection is a no-op — the extension's ``vec_version()`` scalar
+    function is the probe.
+    """
+
+    try:
+        conn.execute("SELECT vec_version()").fetchone()
+        return
+    except (sqlcipher3.OperationalError, sqlcipher3.DatabaseError):
+        pass
+    import sqlite_vec
+
+    conn.enable_load_extension(True)
+    try:
+        sqlite_vec.load(conn)
+    finally:
+        conn.enable_load_extension(False)

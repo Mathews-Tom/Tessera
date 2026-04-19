@@ -1,0 +1,24 @@
+{
+  "benchmark_id": "B-WRITE-1",
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.3.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "6e0b052db898d552030a7231240b649d130fbd95"
+  },
+  "inputs": {
+    "facet_type": "episodic",
+    "trials": 500,
+    "writer_count": 1
+  },
+  "metrics": {
+    "max_ms": 1.3296249089762568,
+    "mean_ms": 0.3575913314707577,
+    "min_ms": 0.2732089487835765,
+    "p50_ms": 0.3288124571554363,
+    "p95_ms": 0.5094170337542892,
+    "p99_ms": 0.7107079727575183,
+    "writes_per_sec_mean": 2796.4883709206347
+  },
+  "timestamp": "2026-04-19T07:55:57Z"
+}
