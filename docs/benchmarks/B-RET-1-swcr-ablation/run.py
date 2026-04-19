@@ -58,7 +58,7 @@ from tessera.adapters.st_reranker import SentenceTransformersReranker
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
 from tessera.retrieval.pipeline import PipelineContext, recall
-from tessera.retrieval.seed import RetrievalConfig
+from tessera.retrieval.seed import RetrievalConfig, RetrievalMode
 from tessera.vault import capture
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt
@@ -124,7 +124,7 @@ class _KeywordReranker:
 @dataclass(frozen=True, slots=True)
 class Arm:
     id: str
-    retrieval_mode: str
+    retrieval_mode: RetrievalMode
 
 
 @dataclass
@@ -390,7 +390,7 @@ async def _run(adapters: str) -> int:
                     if stats.embedded == 0:
                         break
 
-                def ctx_factory(mode: str) -> PipelineContext:
+                def ctx_factory(mode: RetrievalMode) -> PipelineContext:
                     return PipelineContext(
                         conn=vc.connection,
                         embedder=embedder,

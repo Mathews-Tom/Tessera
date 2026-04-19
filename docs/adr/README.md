@@ -32,6 +32,7 @@ ADRs are numbered sequentially. Numbers are never reused. Superseding decisions 
 | 0006 | [Ollama as default model runtime](0006-ollama-as-default-model-runtime.md) | Accepted |
 | 0007 | [Token lifecycle: short TTL, refresh, Unix-socket default](0007-token-lifecycle.md) | Accepted |
 | 0008 | [Adapter framework scope and registration](0008-adapter-framework-scope.md) | Accepted |
+| 0009 | [SWCR opt-in pending ablation](0009-swcr-opt-in-pending-ablation.md) | Accepted |
 
 ## When to write an ADR
 
