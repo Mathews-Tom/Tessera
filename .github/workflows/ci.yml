@@ -91,9 +91,15 @@ jobs:
     # every outbound destination except loopback blocked — proving no hidden
     # telemetry is in any transitive dependency's import path. Dependencies
     # install before the firewall drops so uv can still reach PyPI.
+    #
+    # 25-minute timeout (vs 10–15 on the other jobs) is deliberate: the first
+    # run after a lockfile change lands torch + sentence-transformers wheels
+    # (~1 GB combined) into the runner's uv cache, and the venv copy stage is
+    # I/O-bound even on a cache hit. Subsequent runs on the same lockfile
+    # complete in ~3 min.
     name: No-outbound network test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
