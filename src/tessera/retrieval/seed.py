@@ -20,6 +20,14 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import Final, Literal
+
+RetrievalMode = Literal["rrf_only", "rerank_only", "swcr"]
+
+# ADR 0009: default retrieval mode at v0.1 is ``rerank_only``. SWCR is
+# available as opt-in (``retrieval_mode="swcr"``) but does not ship
+# default-on until the v0.1.x ablation clears the spec thresholds.
+DEFAULT_RETRIEVAL_MODE: Final[RetrievalMode] = "rerank_only"
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +41,7 @@ class RetrievalConfig:
     rerank_model: str
     mmr_lambda: float
     max_candidates: int
-    retrieval_mode: str  # 'rrf_only' | 'rerank_only' | 'swcr'
+    retrieval_mode: RetrievalMode = DEFAULT_RETRIEVAL_MODE
 
     def hash(self) -> str:
         payload = json.dumps(

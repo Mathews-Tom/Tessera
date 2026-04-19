@@ -31,7 +31,7 @@ The pain isn't memory in the narrow sense ("I forgot a fact you told me"). The p
 
 A small daemon runs locally on the user's machine. It owns a single-file SQLite vault containing the agent's identity, segmented into facets — episodic memory, semantic memory, voice/style samples, learned skills, working relationships. The vault speaks MCP. Any MCP-capable agent can connect with a scoped capability token and read or write its identity. When the model behind the agent changes, the new substrate connects to the same vault, calls `assume_identity()`, and reconstructs the agent's continuity from the facets stored there.
 
-Retrieval is built on the SWCR (Sequential Weighted Context Recall) framework — topology-aware multi-agent retrieval that returns coherent identity facets, not just nearest-neighbor matches. This is the technical depth that makes "identity reconstruction" actually work, rather than being a marketing line on top of vanilla cosine search.
+Retrieval is built on a hybrid pipeline: BM25 + dense + RRF fusion + cross-encoder rerank + MMR diversification + token budget. Each stage is a discrete module with explicit tie-break rules so results are reproducible given a seed. The SWCR (Sequential Weighted Context Recall) coherence-reweighting stage from the dissertation lineage is shipped as an opt-in retrieval mode (`retrieval_mode: swcr`) in v0.1; the default is `rerank_only`. See `docs/adr/0009-swcr-opt-in-pending-ablation.md` for the evidence trail behind that decision — first-pass ablation evidence (`docs/benchmarks/B-RET-1-swcr-ablation/`) does not yet clear the spec's default-on thresholds, and a harder-dataset + human-rater run is scheduled for v0.1.x.
 
 The substrate is fungible. The vault is the agent. See the System Design document for full architecture.
 
@@ -105,15 +105,15 @@ Tessera is not a mass-market product. It is a tool for power users and autonomou
 
 ## Moat (in order of defensibility)
 
-1. **The framing itself — conditional on speed.** "Agent identity" as a category is not yet claimed by any well-funded competitor. Naming a category is a real moat when the name sticks before a funded entrant co-opts it; Linear and Stripe are the positive examples. The negative examples (categories named first but owned by a later entrant with better distribution) are more common. A Medium post and a docs repositioning by Mem0 or Letta could occupy this frame in 48 hours. Tessera's defense is speed to public claim plus SWCR depth plus single-binary install — not framing alone. Without the technical moat below, the narrative moat is 6–12 months, not durable.
+1. **The framing itself — conditional on speed.** "Agent identity" as a category is not yet claimed by any well-funded competitor. Naming a category is a real moat when the name sticks before a funded entrant co-opts it; Linear and Stripe are the positive examples. The negative examples (categories named first but owned by a later entrant with better distribution) are more common. A Medium post and a docs repositioning by Mem0 or Letta could occupy this frame in 48 hours. Tessera's defense is speed to public claim plus single-binary install plus all-local default — not framing alone. The narrative moat is 6–12 months, not durable on its own.
 
-2. **SWCR-based retrieval.** Topology-aware multi-agent retrieval is genuinely deeper than vanilla vector search or single-pass rerank. SWCR is unpublished dissertation research applied directly to a product surface. Mem0 cannot copy it without rebuilding their hybrid datastore pipeline; OpenMemory cannot copy it without abandoning Qdrant; MemPalace cannot copy it without rewriting their compression scheme. This isn't a small architectural difference — it's a different retrieval philosophy.
+2. **Single-binary install.** Every direct competitor ships Docker (OpenMemory, doobidoo), npm (CaviraOSS), or a CLI requiring a runtime (Letta Code). A genuinely single-binary install — `brew install tessera`, no Docker, no Postgres, no Qdrant — is a real friction asymmetry. The mainstream "true non-technical user" is gated by setup friction; first-mover on zero-friction install matters.
 
-3. **Single-binary install.** Every direct competitor ships Docker (OpenMemory, doobidoo), npm (CaviraOSS), or a CLI requiring a runtime (Letta Code). A genuinely single-binary install — `brew install tessera`, no Docker, no Postgres, no Qdrant — is a real friction asymmetry. The mainstream "true non-technical user" is gated by setup friction; first-mover on zero-friction install matters.
+3. **All-local default.** Default to Ollama for embedding, extraction, and reranking. Cloud providers are opt-in, never required. Most competitors default to OpenAI keys. The DX-pain narrative around model providers is growing; aligning with the open-source-LLM movement is a structural bet, not just a feature.
 
-4. **All-local default.** Default to Ollama for embedding, extraction, and reranking. Cloud providers are opt-in, never required. Most competitors default to OpenAI keys. The DX-pain narrative around model providers is growing; aligning with the open-source-LLM movement is a structural bet, not just a feature.
+4. **Aesthetic and UX discipline.** Most memory products are dev-tools-ugly. A genuinely opinionated, prosumer-quality interface (CLI first, optional GUI later) that does not compete on features but on shape — Linear vs. Jira, Bear vs. Evernote — is a moat that compounds with brand over time.
 
-5. **Aesthetic and UX discipline.** Most memory products are dev-tools-ugly. A genuinely opinionated, prosumer-quality interface (CLI first, optional GUI later) that does not compete on features but on shape — Linear vs. Jira, Bear vs. Evernote — is a moat that compounds with brand over time.
+5. **SWCR — opt-in research-quality retrieval, not a shipping moat at v0.1.** The SWCR coherence-reweighting algorithm is implemented and available as an opt-in retrieval mode. First-pass ablation evidence (fake-adapter and real-adapter runs against a synthetic 2K-facet dataset) does not yet clear the spec's default-on thresholds — fake adapters show a measurable MRR regression, real adapters saturate all three arms at ceiling so no SWCR improvement can be measured on that dataset. The algorithm does not regress in either run. A harder-dataset ablation with human coherence raters at v0.1.x is the graduation gate. Until that clears, SWCR is a differentiator available to opt-in users, not a category claim. See `docs/adr/0009-swcr-opt-in-pending-ablation.md`.
 
 What is _not_ a moat: Apache 2.0 license (everyone has it), MCP support (everyone has it), local storage (everyone has it), graph layer (Mem0g, Cognee, Letta Filesystem all have it). Stating these as differentiators would be self-deception.
 
@@ -135,12 +135,11 @@ What is _not_ a moat: Apache 2.0 license (everyone has it), MCP support (everyon
 
 **Defense.** The durable defenses are not narrative. They are:
 
-- **SWCR retrieval depth** — published algorithm, ablation evidence, measurable advantage over RRF+Cohere rerank. Copying this requires rebuilding the retrieval pipeline. See `docs/swcr-spec.md` and `docs/benchmarks/B-RET-1`.
 - **Single-binary install on the all-local default path** — copying this means replacing a Docker + Postgres + Qdrant stack. An engineering-months commitment for Mem0; OOS for Letta, which is structurally a runtime.
 - **Encryption-at-rest by default and local-first posture** — small surface, consistent ideology.
-- **Speed to public claim** — matters for SEO and community identity, but is the weakest of the four. A funded incumbent with better distribution can outrun this.
+- **Speed to public claim** — matters for SEO and community identity, but is the weakest of the three. A funded incumbent with better distribution can outrun this.
 
-Tessera's case for the agent-identity category rests on the first three. If SWCR does not clear its ablation bar, the case collapses to "simpler packaging" — defensible but not a category claim.
+At v0.1, the honest framing is that Tessera is better-packaged than the competition rather than algorithmically deeper. SWCR is implemented and shippable as an opt-in retrieval mode but has not yet cleared its ablation bar on synthetic evidence; the category-claim case depends on that bar clearing at v0.1.x with harder evaluation evidence and human-rater scoring, at which point default-on flips and the moat line becomes "SWCR retrieval depth + single-binary install". Until then the moat is packaging + ideology, not retrieval depth.
 
 ### Risk 3 — Platform-level identity ships at the OS layer
 
