@@ -112,6 +112,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen
+      - name: Pre-warm tiktoken encoding cache
+        # tiktoken downloads cl100k_base from openaipublic.blob.core.windows.net
+        # on first use. Cache it now, before the socket guard engages at
+        # pytest collection time, so the retrieval tests read from disk.
+        run: uv run python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
       - name: Run tests with outbound blocked (socket-layer guard)
         run: uv run pytest -m "not slow" --no-cov
 

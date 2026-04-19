@@ -33,6 +33,31 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     ),
     "facet_soft_deleted": frozenset({"facet_type"}),
     "facet_hard_deleted": frozenset({"facet_type"}),
+    # Retrieval pipeline (P4). The allowlist excludes query_text and
+    # facet content — docs/determinism-and-observability.md §Audit log
+    # fields for replay — so stolen-vault forensics cannot reconstruct
+    # what the agent searched for from this table alone.
+    "retrieval_executed": frozenset(
+        {
+            "seed",
+            "retrieval_mode",
+            "facet_types",
+            "k",
+            "duration_ms",
+            "stage_ms",
+            "candidate_counts",
+            "result_count",
+            "result_facet_ids",
+            "rerank_degraded",
+            "truncated",
+            # ``type(exc).__name__: str(exc)`` when a stage raised; null on
+            # clean completion. Type name + message only, not traceback —
+            # tracebacks can carry local-variable content that would break
+            # the §S4 no-content guarantee.
+            "pipeline_error",
+        }
+    ),
+    "retrieval_rerank_degraded": frozenset({"seed", "reranker_name", "reason"}),
 }
 
 
