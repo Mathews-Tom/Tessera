@@ -21,8 +21,12 @@ wait on that evidence per the spec's acceptance thresholds.
 Metrics this harness computes:
     MRR@k over ground-truth-persona facets
     nDCG@k over ground-truth-persona facets
-    coherence-synthetic: fraction of bundles where top-K facets all share
-        the target persona (proxy for "does this hang together?")
+    persona_purity_at_k: per-bundle average of "fraction of top-K facets
+        that belong to the target persona". This is a related but distinct
+        quantity from the spec's coherence-synthetic ("fraction of bundles
+        where top-K facets all share at least one entity"). Named honestly
+        so historical result files stay comparable when the true
+        coherence-synthetic lands at v0.1.x.
     latency p50 / p95 / p99 per-arm
 
 Reproduce:
@@ -131,7 +135,7 @@ class Arm:
 class ArmMetrics:
     mrr: float
     ndcg: float
-    coherence_synthetic: float
+    persona_purity: float
     latency_p50_ms: float
     latency_p95_ms: float
     latency_p99_ms: float
@@ -167,18 +171,23 @@ def _ndcg_at_k(result_facet_ids: list[str], relevant_ext_ids: set[str], *, k: in
     return dcg / idcg
 
 
-def _coherence_synthetic(
+def _persona_purity_at_k(
     result_facet_ids: list[str],
     per_facet_persona: dict[str, str],
     target_persona: str,
     *,
     k: int,
 ) -> float:
-    # "Top-K facets all share the target persona" = 1, else 0. Averaged
-    # over queries, this gives the coherence-synthetic metric the spec
-    # defines as "fraction of bundles where top-K facets share at least
-    # one entity" — proxied here by persona identity since each persona
-    # has its own entity vocabulary.
+    """Fraction of the top-K facets that belong to the target persona.
+
+    Deliberately not named ``coherence_synthetic`` — the spec defines that
+    as "fraction of bundles where top-K facets share at least one entity",
+    a binary-per-bundle measure. This is the finer-grained per-facet hit
+    rate averaged across queries, which behaves differently at the edges.
+    The v0.1.x graduation run will add the strict-coherence metric
+    alongside so historical numbers stay comparable.
+    """
+
     if not result_facet_ids:
         return 0.0
     top = result_facet_ids[:k]
@@ -269,11 +278,13 @@ async def _run_arm(
     ctx = ctx_factory(arm.retrieval_mode)
     mrrs: list[float] = []
     ndcgs: list[float] = []
-    coherences: list[float] = []
+    purities: list[float] = []
     latencies_ms: list[float] = []
-    # Warm-up: one discarded call primes any lazy state.
-    if queries:
-        await recall(ctx, query_text=queries[0]["query_text"])
+    # Warm-up: one call with a sentinel text primes lazy adapter state
+    # (torch load, keyring decode) without polluting the measured first
+    # sample. Using a real query would bias the first measurement because
+    # its cache state would differ from the rest.
+    await recall(ctx, query_text="__warmup__")
     for q in queries:
         relevant = set(q["relevant_external_ids"])
         start = time.perf_counter()
@@ -282,11 +293,11 @@ async def _run_arm(
         result_ids = [m.external_id for m in res.matches]
         mrrs.append(_mrr_at_k(result_ids, relevant, k=K))
         ndcgs.append(_ndcg_at_k(result_ids, relevant, k=K))
-        coherences.append(_coherence_synthetic(result_ids, external_to_persona, q["persona"], k=K))
+        purities.append(_persona_purity_at_k(result_ids, external_to_persona, q["persona"], k=K))
     return ArmMetrics(
         mrr=statistics.fmean(mrrs) if mrrs else 0.0,
         ndcg=statistics.fmean(ndcgs) if ndcgs else 0.0,
-        coherence_synthetic=statistics.fmean(coherences) if coherences else 0.0,
+        persona_purity=statistics.fmean(purities) if purities else 0.0,
         latency_p50_ms=_percentile(latencies_ms, 50),
         latency_p95_ms=_percentile(latencies_ms, 95),
         latency_p99_ms=_percentile(latencies_ms, 99),
@@ -426,7 +437,7 @@ async def _run(adapters: str) -> int:
                     arm_results[arm.id] = metrics
                     print(
                         f"{arm.id}: MRR={metrics.mrr:.3f} nDCG={metrics.ndcg:.3f} "
-                        f"coh-syn={metrics.coherence_synthetic:.3f} "
+                        f"purity={metrics.persona_purity:.3f} "
                         f"p95={metrics.latency_p95_ms:.1f}ms"
                     )
 
@@ -451,7 +462,7 @@ async def _run(adapters: str) -> int:
             arm_id: {
                 "mrr_at_k": m.mrr,
                 "ndcg_at_k": m.ndcg,
-                "coherence_synthetic": m.coherence_synthetic,
+                "persona_purity_at_k": m.persona_purity,
                 "latency_p50_ms": m.latency_p50_ms,
                 "latency_p95_ms": m.latency_p95_ms,
                 "latency_p99_ms": m.latency_p99_ms,

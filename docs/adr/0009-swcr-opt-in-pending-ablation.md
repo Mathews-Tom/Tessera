@@ -23,7 +23,7 @@ P5 produced the first evidence from `docs/benchmarks/B-RET-1-swcr-ablation/`, ru
 
 16-dim hash embedder, keyword-overlap "reranker", 2K synthetic facets across 5 personas, 50 queries.
 
-| Arm | MRR@5 | nDCG@5 | coh-syn | p95 |
+| Arm | MRR@5 | nDCG@5 | persona-purity@5 | p95 |
 |---|---|---|---|---|
 | A: RRF-only | 0.389 | 0.241 | 0.252 | 57.6 ms |
 | B: RRF+rerank | 1.000 | 0.840 | 0.788 | 58.2 ms |
@@ -38,7 +38,7 @@ P5 produced the first evidence from `docs/benchmarks/B-RET-1-swcr-ablation/`, ru
 
 Same dataset, same queries.
 
-| Arm | MRR@5 | nDCG@5 | coh-syn | p95 |
+| Arm | MRR@5 | nDCG@5 | persona-purity@5 | p95 |
 |---|---|---|---|---|
 | A: RRF-only | 1.000 | 1.000 | 1.000 | 960 ms |
 | B: RRF+rerank | 1.000 | 1.000 | 1.000 | 1121 ms |

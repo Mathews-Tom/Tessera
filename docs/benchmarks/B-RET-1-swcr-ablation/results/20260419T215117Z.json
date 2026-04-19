@@ -1,37 +1,37 @@
 {
   "arms": {
     "A_rrf_only": {
-      "coherence_synthetic": 0.252,
-      "latency_p50_ms": 48.75166609417647,
-      "latency_p95_ms": 57.63062497135252,
-      "latency_p99_ms": 58.283165912143886,
-      "mean_latency_ms": 48.09246003860608,
+      "latency_p50_ms": 48.92570897936821,
+      "latency_p95_ms": 57.33808397781104,
+      "latency_p99_ms": 58.54820797685534,
+      "mean_latency_ms": 48.099895804189146,
       "mrr_at_k": 0.3893333333333333,
-      "ndcg_at_k": 0.24100507288355197
+      "ndcg_at_k": 0.24100507288355197,
+      "persona_purity_at_k": 0.252
     },
     "B_rrf_rerank": {
-      "coherence_synthetic": 0.7879999999999999,
-      "latency_p50_ms": 48.96354197990149,
-      "latency_p95_ms": 58.186333044432104,
-      "latency_p99_ms": 58.54337499476969,
-      "mean_latency_ms": 48.29127235338092,
+      "latency_p50_ms": 49.10454200580716,
+      "latency_p95_ms": 57.74233292322606,
+      "latency_p99_ms": 58.207374997437,
+      "mean_latency_ms": 48.360706695821136,
       "mrr_at_k": 1.0,
-      "ndcg_at_k": 0.8398513787256939
+      "ndcg_at_k": 0.8398513787256939,
+      "persona_purity_at_k": 0.7879999999999999
     },
     "C_rrf_rerank_swcr": {
-      "coherence_synthetic": 0.816,
-      "latency_p50_ms": 50.8205839432776,
-      "latency_p95_ms": 59.20458398759365,
-      "latency_p99_ms": 60.58195803780109,
-      "mean_latency_ms": 50.28252005344257,
+      "latency_p50_ms": 51.51983303949237,
+      "latency_p95_ms": 60.65545801538974,
+      "latency_p99_ms": 62.129124999046326,
+      "mean_latency_ms": 51.0990283661522,
       "mrr_at_k": 0.98,
-      "ndcg_at_k": 0.857620826185749
+      "ndcg_at_k": 0.857620826185749,
+      "persona_purity_at_k": 0.816
     }
   },
   "benchmark_id": "B-RET-1",
   "decision": {
-    "latency_p95_delta_ms_C_minus_B": 1.0182509431615472,
-    "latency_p95_pct_regression": 1.7499830112751615,
+    "latency_p95_delta_ms_C_minus_B": 2.913125092163682,
+    "latency_p95_pct_regression": 5.045042250088786,
     "mrr_regression_C_vs_B": true,
     "ndcg_pct_improvement_C_over_B": 2.1157847578956908,
     "thresholds": {
@@ -47,9 +47,10 @@
     "arch": "arm64",
     "os": "macOS-26.3.1-arm64-arm-64bit",
     "python": "3.12.8",
-    "tessera_sha": "f5e0c8176e7029a7069fcb4a15044bf329661ff1"
+    "tessera_sha": "5add51827fec7909c5c7c04a0b43ae9a6f746a26"
   },
   "inputs": {
+    "adapters": "fake",
     "cohere_arm": "skipped \u2014 no licensed key in session",
     "dataset": "benchmarks/B-RET-1-swcr-ablation/dataset/s1.json",
     "dim": 16,
@@ -60,5 +61,5 @@
     "n_queries": 50,
     "reranker": "keyword-overlap-fake"
   },
-  "timestamp": "2026-04-19T20:37:50Z"
+  "timestamp": "2026-04-19T21:51:16Z"
 }

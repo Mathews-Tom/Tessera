@@ -26,9 +26,11 @@ can surface slow-query events per ``docs/determinism-and-observability.md``.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import sqlcipher3
 
@@ -210,33 +212,49 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
         if len(matches) < len(items):
             truncated = True
     except Exception as exc:
-        pipeline_error = f"{type(exc).__name__}: {exc}"[:500]
+        # Only the exception class name travels into the audit payload.
+        # str(exc) would embed upstream provider bodies (AdapterResponseError
+        # splices ``resp.text[:200]`` from Ollama/OpenAI/Cohere responses,
+        # which routinely echo the embedding input) and JSON-parse errors
+        # from ``_fetch_entities`` can surface metadata fragments. The audit
+        # log's §S4 no-content guarantee is categorical, not "best effort
+        # with truncation".
+        pipeline_error = type(exc).__name__
         raise
     finally:
-        audit.write(
-            ctx.conn,
-            op="retrieval_executed",
-            actor="retrieval",
-            agent_id=ctx.agent_id,
-            payload={
-                "seed": seed.seed_hex(call_seed),
-                "retrieval_mode": ctx.config.retrieval_mode,
-                "facet_types": list(ctx.facet_types),
-                "k": ctx.k,
-                "duration_ms": sum(stage_ms.values()),
-                "stage_ms": dict(stage_ms),
-                "candidate_counts": {
-                    "bm25": sum(len(lst) for lst in bm25_lists.values()),
-                    "dense": sum(len(lst) for lst in dense_lists.values()),
-                    "fused": len(fused),
-                },
-                "result_count": len(matches),
-                "result_facet_ids": [m.external_id for m in matches],
-                "rerank_degraded": rerank_outcome.degraded,
-                "truncated": truncated,
-                "pipeline_error": pipeline_error,
+        audit_payload: dict[str, Any] = {
+            "seed": seed.seed_hex(call_seed),
+            "retrieval_mode": ctx.config.retrieval_mode,
+            "facet_types": list(ctx.facet_types),
+            "k": ctx.k,
+            "duration_ms": sum(stage_ms.values()),
+            "stage_ms": dict(stage_ms),
+            "candidate_counts": {
+                "bm25": sum(len(lst) for lst in bm25_lists.values()),
+                "dense": sum(len(lst) for lst in dense_lists.values()),
+                "fused": len(fused),
             },
-        )
+            "result_count": len(matches),
+            "result_facet_ids": [m.external_id for m in matches],
+            "rerank_degraded": rerank_outcome.degraded,
+            "truncated": truncated,
+            "pipeline_error": pipeline_error,
+        }
+        # The audit write lives in its own try/except so a bug here —
+        # allowlist drift, sqlcipher IO error — cannot swallow the
+        # in-flight pipeline exception. We log to stderr and propagate
+        # the original; observability of the root cause matters more
+        # than fault-free audit emission.
+        try:
+            audit.write(
+                ctx.conn,
+                op="retrieval_executed",
+                actor="retrieval",
+                agent_id=ctx.agent_id,
+                payload=audit_payload,
+            )
+        except Exception as audit_exc:
+            sys.stderr.write(f"retrieval_executed audit write failed: {type(audit_exc).__name__}\n")
 
     total_found = len({r.facet_id for r in fused})
     warnings = _warnings(rerank_outcome.degraded, truncated)

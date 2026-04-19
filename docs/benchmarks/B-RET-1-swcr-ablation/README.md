@@ -32,7 +32,7 @@ uv run python docs/benchmarks/B-RET-1-swcr-ablation/dataset/generate.py \
 |---|---|
 | MRR@5 | Mean reciprocal rank of the first top-5 facet that belongs to the query's persona. |
 | nDCG@5 | Normalised DCG with binary relevance (persona match). |
-| coherence-synthetic | Fraction of top-5 facets sharing the target persona. Proxy for `docs/swcr-spec.md §Metrics`' "fraction of bundles where top-K facets share at least one entity". |
+| persona-purity@5 | Fraction of the top-5 facets that belong to the target persona, averaged across queries. Named deliberately distinct from the spec's coherence-synthetic ("fraction of bundles where top-K facets all share at least one entity") because they compute different quantities. The strict coherence-synthetic metric lands alongside at v0.1.x. |
 | latency p50 / p95 / p99 | End-to-end per-query pipeline latency. |
 
 Human coherence (3 blind raters × 50 bundles × 5-point) is the spec's definitive gate. It is **deferred** here — it cannot be automated inside a single session and is the graduation gate for flipping the default.
@@ -57,7 +57,7 @@ Results land under `results/<utc-timestamp>.json`. The harness refuses to overwr
 
 ### Fake adapters (hash embedder, keyword-overlap reranker)
 
-| Arm | MRR@5 | nDCG@5 | coh-syn | p95 |
+| Arm | MRR@5 | nDCG@5 | persona-purity | p95 |
 |---|---|---|---|---|
 | A: RRF-only | 0.389 | 0.241 | 0.252 | 57.6 ms |
 | B: RRF+rerank | 1.000 | 0.840 | 0.788 | 58.2 ms |
@@ -69,7 +69,7 @@ Results land under `results/<utc-timestamp>.json`. The harness refuses to overwr
 
 ### Real adapters (`nomic-embed-text` 768-dim, MiniLM cross-encoder)
 
-| Arm | MRR@5 | nDCG@5 | coh-syn | p95 |
+| Arm | MRR@5 | nDCG@5 | persona-purity | p95 |
 |---|---|---|---|---|
 | A: RRF-only | 1.000 | 1.000 | 1.000 | 960 ms |
 | B: RRF+rerank | 1.000 | 1.000 | 1.000 | 1121 ms |
