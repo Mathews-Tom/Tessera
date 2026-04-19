@@ -20,7 +20,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +79,3 @@ def seed_hex(seed: int) -> str:
     """Format a seed for audit-log inclusion (stable across replays)."""
 
     return f"0x{seed:016x}"
-
-
-_: Any = None  # keep import hook minimal; no __all__ defined on purpose

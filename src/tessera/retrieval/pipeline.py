@@ -14,8 +14,8 @@ touches one function, not the pipeline's shape.
 
 from __future__ import annotations
 
-import json
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -226,17 +226,27 @@ def _swcr_passthrough(fused: list[rrf.RRFResult]) -> list[rrf.RRFResult]:
     return fused
 
 
+def _iter_all_candidates(
+    bm25_by_type: dict[str, list[bm25.BM25Candidate]],
+    dense_by_type: dict[str, list[dense.DenseCandidate]],
+) -> Iterator[bm25.BM25Candidate | dense.DenseCandidate]:
+    # Both Candidate types share facet_id / external_id / facet_type /
+    # content, so downstream indexers can treat them uniformly. Order is
+    # BM25 first, then dense, so setdefault-style indexers preserve the
+    # BM25-wins-on-tie behaviour expected by _content_lookup / _to_matches.
+    for bm25_rows in bm25_by_type.values():
+        yield from bm25_rows
+    for dense_rows in dense_by_type.values():
+        yield from dense_rows
+
+
 def _content_lookup(
     bm25_by_type: dict[str, list[bm25.BM25Candidate]],
     dense_by_type: dict[str, list[dense.DenseCandidate]],
 ) -> dict[int, str]:
     out: dict[int, str] = {}
-    for bm25_rows in bm25_by_type.values():
-        for bm25_row in bm25_rows:
-            out.setdefault(bm25_row.facet_id, bm25_row.content)
-    for dense_rows in dense_by_type.values():
-        for dense_row in dense_rows:
-            out.setdefault(dense_row.facet_id, dense_row.content)
+    for row in _iter_all_candidates(bm25_by_type, dense_by_type):
+        out.setdefault(row.facet_id, row.content)
     return out
 
 
@@ -286,19 +296,12 @@ def _to_matches(
 ) -> list[RecallMatch]:
     # Build a per-facet metadata index over the candidate pool so we can
     # emit the user-facing fields without a second DB round-trip.
+    # captured_at is not on the Candidate dataclasses yet; the P4 pipeline
+    # returns facet_type + external_id for the MCP surface and leaves
+    # captured_at 0. P8 will enrich as needed.
     meta: dict[int, tuple[str, str, int]] = {}
-    for bm25_rows in bm25_by_type.values():
-        for row in bm25_rows:
-            meta.setdefault(row.facet_id, (row.external_id, row.facet_type, 0))
-    for dense_rows in dense_by_type.values():
-        for dense_row in dense_rows:
-            # captured_at is not on the Candidate dataclasses yet; the P4
-            # pipeline returns facet_type + external_id for the MCP
-            # surface and leaves captured_at 0. P8 will enrich as needed.
-            meta.setdefault(
-                dense_row.facet_id,
-                (dense_row.external_id, dense_row.facet_type, 0),
-            )
+    for row in _iter_all_candidates(bm25_by_type, dense_by_type):
+        meta.setdefault(row.facet_id, (row.external_id, row.facet_type, 0))
     matches: list[RecallMatch] = []
     for rank_idx, item in enumerate(items):
         facet_id = int(item.key)
@@ -330,10 +333,3 @@ def _warnings(rerank_degraded: bool, truncated: bool) -> tuple[str, ...]:
 
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000.0
-
-
-# Keep the ``json`` import live; the audit payload serialises the stage
-# map via the allowlist layer's own json.dumps, so we don't need a direct
-# call here — the import documents the stable stage_ms shape travels as
-# JSON downstream (events.db and diagnostic bundles).
-_ = json

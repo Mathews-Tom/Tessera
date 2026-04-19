@@ -16,7 +16,6 @@ query, not a structured one.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import sqlcipher3
 
@@ -85,6 +84,3 @@ def _quote_phrase(query_text: str) -> str:
     # tokens in user content are matched literally.
     escaped = query_text.replace('"', '""')
     return f'"{escaped}"'
-
-
-_: Any = None

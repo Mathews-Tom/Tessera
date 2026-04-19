@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
-from typing import Any
 
 import sqlcipher3
 
@@ -87,6 +86,3 @@ async def search(
 
 def _serialize_vector(vector: list[float]) -> bytes:
     return struct.pack(f"<{len(vector)}f", *vector)
-
-
-_: Any = None
