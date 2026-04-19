@@ -21,6 +21,8 @@ from typing import Any, Final
 import sqlcipher3
 from ulid import ULID
 
+from tessera.vault.connection import savepoint
+
 V0_1_FACET_TYPES: Final[frozenset[str]] = frozenset({"episodic", "semantic", "style"})
 
 
@@ -184,8 +186,7 @@ def soft_delete(conn: sqlcipher3.Connection, external_id: str) -> bool:
         "UPDATE facets SET is_deleted = 1, deleted_at = ? WHERE external_id = ? AND is_deleted = 0",
         (_now_epoch(), external_id),
     )
-    rowcount: int = cur.rowcount
-    return rowcount == 1
+    return int(cur.rowcount) == 1
 
 
 def hard_delete(conn: sqlcipher3.Connection, external_id: str) -> bool:
@@ -211,24 +212,12 @@ def hard_delete(conn: sqlcipher3.Connection, external_id: str) -> bool:
     # inline here to keep vault/ free of adapter-layer imports.
     if model_rows:
         _ensure_vec_loaded(conn)
-    # Savepoint (not BEGIN) so the caller can already be inside a
-    # transaction — for example the sqlite3 test connection that runs in
-    # pysqlite's legacy auto-begin mode. Production VaultConnection is
-    # autocommit, so the savepoint becomes the only transaction scope for
-    # the cascade.
-    conn.execute("SAVEPOINT hard_delete")
-    try:
+    with savepoint(conn, "hard_delete"):
         for model_row in model_rows:
             model_id = int(model_row[0])
             conn.execute(f"DELETE FROM vec_{model_id} WHERE facet_id = ?", (facet_id,))
         cur = conn.execute("DELETE FROM facets WHERE id = ?", (facet_id,))
-    except Exception:
-        conn.execute("ROLLBACK TO SAVEPOINT hard_delete")
-        conn.execute("RELEASE SAVEPOINT hard_delete")
-        raise
-    conn.execute("RELEASE SAVEPOINT hard_delete")
-    rowcount: int = cur.rowcount
-    return rowcount == 1
+    return int(cur.rowcount) == 1
 
 
 def _ensure_vec_loaded(conn: sqlcipher3.Connection) -> None:

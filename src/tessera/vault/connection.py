@@ -17,6 +17,8 @@ migration runner explicitly per the contract's "no auto-migrate" rule.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -195,3 +197,24 @@ def _as_int(key: str, raw: str) -> int:
         return int(raw)
     except ValueError as exc:
         raise VaultError(f"_meta.{key} is not an integer: {raw!r}") from exc
+
+
+@contextmanager
+def savepoint(conn: sqlcipher3.Connection, name: str) -> Iterator[None]:
+    """Scope a block of DML inside a SQLite SAVEPOINT.
+
+    SAVEPOINT (not BEGIN) works whether the caller is already inside a
+    transaction — pysqlite's legacy auto-begin mode used by unit tests — or
+    running against the autocommit ``VaultConnection`` used in production.
+    Rolls back to and releases the savepoint on exception; releases on clean
+    exit.
+    """
+
+    conn.execute(f"SAVEPOINT {name}")
+    try:
+        yield
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {name}")
+        conn.execute(f"RELEASE SAVEPOINT {name}")
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {name}")

@@ -29,16 +29,16 @@ inlined as a SQL CASE expression.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
 import sqlcipher3
 
 from tessera.adapters.errors import AdapterError
 from tessera.adapters.protocol import Embedder
 from tessera.retrieval.retry_policy import BACKOFF_SECONDS, MAX_ATTEMPTS, decide
+from tessera.vault.connection import savepoint
 
 DEFAULT_BATCH_SIZE = 16
 
@@ -124,12 +124,6 @@ def _fetch_candidates(
         """,
         (limit,),
     ).fetchall()
-    return _cast_candidate_rows(rows)
-
-
-def _cast_candidate_rows(
-    rows: Iterable[tuple[Any, ...]],
-) -> Iterator[tuple[int, str, int, int | None]]:
     for row in rows:
         last = int(row[3]) if row[3] is not None else None
         yield int(row[0]), str(row[1]), int(row[2]), last
@@ -152,12 +146,7 @@ def _record_success(
     now: int,
 ) -> None:
     serialized = _serialize_vector(vector)
-    # Savepoint rather than BEGIN because the caller may be running against
-    # a connection whose isolation mode auto-begins on the first DML (the
-    # legacy pysqlite mode the unit tests use). On the autocommit
-    # VaultConnection the savepoint is simply the transaction scope.
-    conn.execute("SAVEPOINT embed_write")
-    try:
+    with savepoint(conn, "embed_write"):
         conn.execute(
             f"INSERT OR REPLACE INTO {vec_table}(facet_id, embedding) VALUES (?, ?)",
             (facet_id, serialized),
@@ -174,11 +163,6 @@ def _record_success(
             """,
             (model_id, now, facet_id),
         )
-    except Exception:
-        conn.execute("ROLLBACK TO SAVEPOINT embed_write")
-        conn.execute("RELEASE SAVEPOINT embed_write")
-        raise
-    conn.execute("RELEASE SAVEPOINT embed_write")
 
 
 def _record_failure(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import struct
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -261,8 +261,3 @@ def test_vector_packing_is_little_endian_float32() -> None:
     packed = _serialize_vector(vec)
     assert struct.unpack("<2f", packed) == (1.0, 2.0)
     assert len(packed) == 8
-
-
-# The placeholder argument in make_vec exists to demonstrate the fixture pattern
-# used in other tests that parametrise vector content.
-_: Callable[[object], list[float]]
