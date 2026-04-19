@@ -33,6 +33,7 @@ Reproduce:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import json
@@ -51,6 +52,9 @@ from typing import Any, ClassVar
 
 import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
+from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.protocol import Embedder, Reranker
+from tessera.adapters.st_reranker import SentenceTransformersReranker
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
 from tessera.retrieval.pipeline import PipelineContext, recall
@@ -62,7 +66,10 @@ from tessera.vault.encryption import derive_key, new_salt
 HERE = Path(__file__).parent
 DATASET_PATH = HERE / "dataset" / "s1.json"
 RESULTS_DIR = HERE / "results"
-DIM = 16
+FAKE_DIM = 16
+OLLAMA_MODEL = "nomic-embed-text"
+OLLAMA_DIM = 768
+OLLAMA_HOST = "http://localhost:11434"
 K = 5
 
 
@@ -71,7 +78,7 @@ class _HashEmbedder:
 
     name: ClassVar[str] = "fake"
     model_name: str = "hash-fake"
-    dim: int = DIM
+    dim: int = FAKE_DIM
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         out: list[list[float]] = []
@@ -331,7 +338,28 @@ def _decide(arm_b: ArmMetrics, arm_c: ArmMetrics) -> dict[str, Any]:
     }
 
 
-async def _run() -> int:
+def _select_adapters(
+    adapters: str,
+) -> tuple[Embedder, Reranker, int, str, str]:
+    """Return ``(embedder, reranker, dim, embedder_id, reranker_id)``.
+
+    ``adapters="fake"`` keeps the harness deterministic and network-free;
+    ``adapters="real"`` swaps in the v0.1 DoD reference pair (Ollama
+    ``nomic-embed-text`` + sentence-transformers MiniLM cross-encoder)
+    so the ablation measures what the shipping default will actually
+    see at recall time.
+    """
+
+    if adapters == "fake":
+        return _HashEmbedder(), _KeywordReranker(), FAKE_DIM, "hash-fake", "keyword-overlap-fake"
+    if adapters == "real":
+        embedder = OllamaEmbedder(model_name=OLLAMA_MODEL, dim=OLLAMA_DIM, host=OLLAMA_HOST)
+        reranker = SentenceTransformersReranker()
+        return embedder, reranker, OLLAMA_DIM, f"ollama/{OLLAMA_MODEL}", reranker.model_name
+    raise SystemExit(f"unknown --adapters value: {adapters!r}")
+
+
+async def _run(adapters: str) -> int:
     if not DATASET_PATH.is_file():
         print(
             f"missing dataset: {DATASET_PATH}. Run dataset/generate.py first.",
@@ -339,6 +367,7 @@ async def _run() -> int:
         )
         return 1
     dataset: dict[str, Any] = json.loads(DATASET_PATH.read_text())
+    embedder, reranker, dim, embedder_id, reranker_id = _select_adapters(adapters)
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-1.db"
         passphrase = b"b-ret-1-ablation"
@@ -347,17 +376,16 @@ async def _run() -> int:
             bootstrap(vault_path, key)
             with VaultConnection.open(vault_path, key) as vc:
                 agent_id, _id_map, external_to_persona, queries = await _populate_vault(vc, dataset)
-                embedder = _HashEmbedder()
-                reranker = _KeywordReranker()
                 model = models_registry.register_embedding_model(
-                    vc.connection, name="ollama", dim=DIM, activate=True
+                    vc.connection, name="ollama", dim=dim, activate=True
                 )
+                print(f"embedding {len(dataset['facets'])} facets with {embedder_id} ...")
                 while True:
                     stats = await embed_worker.run_pass(
                         vc.connection,
                         embedder,
                         active_model_id=model.id,
-                        batch_size=128,
+                        batch_size=64,
                     )
                     if stats.embedded == 0:
                         break
@@ -372,7 +400,7 @@ async def _run() -> int:
                         vault_id="B-RET-1",
                         agent_id=agent_id,
                         config=RetrievalConfig(
-                            rerank_model="keyword-overlap",
+                            rerank_model=reranker_id,
                             mmr_lambda=0.7,
                             max_candidates=50,
                             retrieval_mode=mode,
@@ -411,10 +439,11 @@ async def _run() -> int:
             "dataset": str(DATASET_PATH.relative_to(HERE.parent.parent)),
             "n_facets": len(dataset["facets"]),
             "n_queries": len(dataset["queries"]),
-            "dim": DIM,
+            "dim": dim,
             "k": K,
-            "embedder": "hash-fake",
-            "reranker": "keyword-overlap-fake",
+            "adapters": adapters,
+            "embedder": embedder_id,
+            "reranker": reranker_id,
             "cohere_arm": "skipped — no licensed key in session",
             "human_raters": "deferred — requires 3 raters by 50 bundles",
         },
@@ -444,5 +473,21 @@ async def _run() -> int:
     return 0
 
 
+def _cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="b-ret-1")
+    parser.add_argument(
+        "--adapters",
+        choices=("fake", "real"),
+        default="fake",
+        help=(
+            "'fake' (default) runs deterministic hash embedder + keyword "
+            "reranker. 'real' requires Ollama (nomic-embed-text) and the "
+            "sentence-transformers MiniLM cross-encoder."
+        ),
+    )
+    args = parser.parse_args(argv)
+    return asyncio.run(_run(args.adapters))
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(_run()))
+    raise SystemExit(_cli())
