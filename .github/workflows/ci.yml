@@ -87,19 +87,24 @@ jobs:
   no-outbound:
     # The adapter framework is the first code in src/tessera that speaks to
     # the network (Ollama, OpenAI, Cohere). Per docs/determinism-and-
-    # observability.md §CI enforcement, the full test suite must pass with
-    # every outbound destination except loopback blocked — proving no hidden
-    # telemetry is in any transitive dependency's import path. Dependencies
-    # install before the firewall drops so uv can still reach PyPI.
+    # observability.md §CI enforcement, the test suite must pass with all
+    # non-loopback outbound traffic blocked — proving no transitive
+    # dependency makes a hidden outbound call (telemetry, update check,
+    # auto-download).
     #
-    # 25-minute timeout (vs 10–15 on the other jobs) is deliberate: the first
-    # run after a lockfile change lands torch + sentence-transformers wheels
-    # (~1 GB combined) into the runner's uv cache, and the venv copy stage is
-    # I/O-bound even on a cache hit. Subsequent runs on the same lockfile
-    # complete in ~3 min.
+    # Enforcement lives at the Python ``socket.socket.connect`` layer via
+    # ``tests/conftest.py`` (gated by ``TESSERA_NO_OUTBOUND=1``). The
+    # kernel-level alternative (iptables REJECT) fails on GitHub-hosted
+    # runners: the runner agent's own connection to GitHub's control plane
+    # gets blocked alongside the test traffic, leaving the job hung until
+    # timeout. Socket-level enforcement isolates the test process without
+    # disturbing the runner agent; the tradeoff is that a dependency using
+    # raw ctypes syscalls would bypass it (none in our dep graph do).
     name: No-outbound network test
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
+    env:
+      TESSERA_NO_OUTBOUND: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -107,13 +112,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen
-      - name: Block outbound except loopback
-        run: |
-          sudo iptables -A OUTPUT -o lo -j ACCEPT
-          sudo iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
-          sudo iptables -A OUTPUT -p udp --dport 53 -d 127.0.0.53 -j ACCEPT
-          sudo iptables -A OUTPUT -j REJECT --reject-with icmp-port-unreachable
-      - name: Run tests with outbound blocked
+      - name: Run tests with outbound blocked (socket-layer guard)
         run: uv run pytest -m "not slow" --no-cov
 
   secret-scan:
