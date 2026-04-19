@@ -99,13 +99,12 @@ def apply(
                 continue
             total += w * top[j].rerank_score
         bonuses[i] = params.lam * total
-    rescored = [
-        (idx, cand.facet_id, cand.rerank_score + bonuses[idx]) for idx, cand in enumerate(top)
-    ]
-    rescored.sort(key=lambda triple: (-triple[2], triple[1]))
+    # Tie-break: score DESC, then facet_id ASC (non-negotiable per spec).
+    rescored = [(cand.facet_id, cand.rerank_score + bonuses[idx]) for idx, cand in enumerate(top)]
+    rescored.sort(key=lambda pair: (-pair[1], pair[0]))
     return [
         SWCRResult(facet_id=facet_id, score=score, rank=new_rank)
-        for new_rank, (_orig_idx, facet_id, score) in enumerate(rescored)
+        for new_rank, (facet_id, score) in enumerate(rescored)
     ]
 
 

@@ -375,7 +375,7 @@ async def _run(adapters: str) -> int:
         with derive_key(passphrase, salt) as key:
             bootstrap(vault_path, key)
             with VaultConnection.open(vault_path, key) as vc:
-                agent_id, _id_map, external_to_persona, queries = await _populate_vault(vc, dataset)
+                agent_id, _, external_to_persona, queries = await _populate_vault(vc, dataset)
                 model = models_registry.register_embedding_model(
                     vc.connection, name="ollama", dim=dim, activate=True
                 )

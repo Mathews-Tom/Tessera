@@ -113,8 +113,8 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
 
         # Stage 2 — RRF fusion. Per-type ranks preserved deliberately.
         t0 = time.perf_counter()
-        flat_bm25 = _flatten_bm25(bm25_lists)
-        flat_dense = _flatten_dense(dense_lists)
+        flat_bm25 = [row for lst in bm25_lists.values() for row in lst]
+        flat_dense = [row for lst in dense_lists.values() for row in lst]
         fused = rrf.fuse(flat_bm25, flat_dense)
         stage_ms["rrf"] = _elapsed_ms(t0)
 
@@ -284,24 +284,6 @@ async def _gather_candidates(
             limit=ctx.candidates_per_list,
         )
     return bm25_by_type, dense_by_type
-
-
-def _flatten_bm25(
-    lists_by_type: dict[str, list[bm25.BM25Candidate]],
-) -> list[bm25.BM25Candidate]:
-    flat: list[bm25.BM25Candidate] = []
-    for items in lists_by_type.values():
-        flat.extend(items)
-    return flat
-
-
-def _flatten_dense(
-    lists_by_type: dict[str, list[dense.DenseCandidate]],
-) -> list[dense.DenseCandidate]:
-    flat: list[dense.DenseCandidate] = []
-    for items in lists_by_type.values():
-        flat.extend(items)
-    return flat
 
 
 def _iter_all_candidates(

@@ -28,41 +28,50 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
+
 # Persona-scoped vocabulary. Each persona's entities rarely overlap with
 # the others (2 shared ambient entities that mimic real cross-persona
 # noise like "python" or "2026"). The ablation measures whether the
 # retriever can surface persona-coherent facets despite ambient overlap.
-_PERSONAS: list[dict[str, object]] = [
-    {
-        "id": "tom_dev",
-        "voice": "terse, imperative, code over prose",
-        "entities": ["tessera", "sqlite", "ollama", "mcp", "rust"],
-        "goals": ["ship v0.1", "reduce CI time", "document threat model"],
-    },
-    {
-        "id": "sarah_writer",
-        "voice": "literary, first-person, reflective",
-        "entities": ["manuscript", "editor_kim", "galley", "cover_design"],
-        "goals": ["finish chapter seven", "respond to beta readers"],
-    },
-    {
-        "id": "alex_scientist",
-        "voice": "precise, passive, citation-heavy",
-        "entities": ["reagent_x", "lab_4", "prof_patel", "grant_nsf"],
-        "goals": ["replicate 2025 result", "submit grant renewal"],
-    },
-    {
-        "id": "jordan_designer",
-        "voice": "visual, second-person, action-oriented",
-        "entities": ["figma_doc", "brand_palette", "client_atlas", "revision_7"],
-        "goals": ["finalize rebrand", "prep presentation for atlas"],
-    },
-    {
-        "id": "morgan_analyst",
-        "voice": "structured, data-first, sparse",
-        "entities": ["q3_report", "ticker_acme", "spreadsheet_14", "cfo_chen"],
-        "goals": ["close q3 memo", "update forecast model"],
-    },
+@dataclass(frozen=True, slots=True)
+class _Persona:
+    id: str
+    voice: str
+    entities: tuple[str, ...]
+    goals: tuple[str, ...]
+
+
+_PERSONAS: list[_Persona] = [
+    _Persona(
+        id="tom_dev",
+        voice="terse, imperative, code over prose",
+        entities=("tessera", "sqlite", "ollama", "mcp", "rust"),
+        goals=("ship v0.1", "reduce CI time", "document threat model"),
+    ),
+    _Persona(
+        id="sarah_writer",
+        voice="literary, first-person, reflective",
+        entities=("manuscript", "editor_kim", "galley", "cover_design"),
+        goals=("finish chapter seven", "respond to beta readers"),
+    ),
+    _Persona(
+        id="alex_scientist",
+        voice="precise, passive, citation-heavy",
+        entities=("reagent_x", "lab_4", "prof_patel", "grant_nsf"),
+        goals=("replicate 2025 result", "submit grant renewal"),
+    ),
+    _Persona(
+        id="jordan_designer",
+        voice="visual, second-person, action-oriented",
+        entities=("figma_doc", "brand_palette", "client_atlas", "revision_7"),
+        goals=("finalize rebrand", "prep presentation for atlas"),
+    ),
+    _Persona(
+        id="morgan_analyst",
+        voice="structured, data-first, sparse",
+        entities=("q3_report", "ticker_acme", "spreadsheet_14", "cfo_chen"),
+        goals=("close q3 memo", "update forecast model"),
+    ),
 ]
 
 _AMBIENT_ENTITIES: list[str] = ["python", "2026", "slack", "github"]
@@ -124,49 +133,23 @@ def generate(
     facet_id = 1
     per_persona = n_facets // len(_PERSONAS)
     for persona in _PERSONAS:
-        pid = str(persona["id"])
-        entities = list(persona["entities"])  # type: ignore[arg-type]
-        goals = list(persona["goals"])  # type: ignore[arg-type]
-        voice = str(persona["voice"])
         episodic_count = int(per_persona * 0.4)
         semantic_count = int(per_persona * 0.4)
         style_count = per_persona - episodic_count - semantic_count
-        facet_id = _emit_batch(
-            facets,
-            facet_id=facet_id,
-            persona_id=pid,
-            facet_type="episodic",
-            count=episodic_count,
-            templates=_EPISODIC_TEMPLATES,
-            entities=entities,
-            goals=goals,
-            voice=voice,
-            rng=rng,
-        )
-        facet_id = _emit_batch(
-            facets,
-            facet_id=facet_id,
-            persona_id=pid,
-            facet_type="semantic",
-            count=semantic_count,
-            templates=_SEMANTIC_TEMPLATES,
-            entities=entities,
-            goals=goals,
-            voice=voice,
-            rng=rng,
-        )
-        facet_id = _emit_batch(
-            facets,
-            facet_id=facet_id,
-            persona_id=pid,
-            facet_type="style",
-            count=style_count,
-            templates=_STYLE_TEMPLATES,
-            entities=entities,
-            goals=goals,
-            voice=voice,
-            rng=rng,
-        )
+        for facet_type, count, templates in (
+            ("episodic", episodic_count, _EPISODIC_TEMPLATES),
+            ("semantic", semantic_count, _SEMANTIC_TEMPLATES),
+            ("style", style_count, _STYLE_TEMPLATES),
+        ):
+            facet_id = _emit_batch(
+                facets,
+                facet_id=facet_id,
+                persona=persona,
+                facet_type=facet_type,
+                count=count,
+                templates=templates,
+                rng=rng,
+            )
     queries = _build_queries(facets, n_queries=n_queries, rng=rng)
     return facets, queries
 
@@ -175,25 +158,22 @@ def _emit_batch(
     out: list[Facet],
     *,
     facet_id: int,
-    persona_id: str,
+    persona: _Persona,
     facet_type: str,
     count: int,
     templates: list[str],
-    entities: list[str],
-    goals: list[str],
-    voice: str,
     rng: random.Random,
 ) -> int:
     for _ in range(count):
         tpl = rng.choice(templates)
-        entity = rng.choice(entities)
-        goal = rng.choice(goals)
-        content = tpl.format(persona_id=persona_id, entity=entity, goal=goal, voice=voice)
+        entity = rng.choice(persona.entities)
+        goal = rng.choice(persona.goals)
+        content = tpl.format(persona_id=persona.id, entity=entity, goal=goal, voice=persona.voice)
         ambient = [rng.choice(_AMBIENT_ENTITIES)] if rng.random() < 0.3 else []
         out.append(
             Facet(
                 facet_id=facet_id,
-                persona=persona_id,
+                persona=persona.id,
                 facet_type=facet_type,
                 content=content,
                 entities=[entity, *ambient],
@@ -211,16 +191,14 @@ def _build_queries(facets: list[Facet], *, n_queries: int, rng: random.Random) -
     per_persona = max(1, n_queries // len(_PERSONAS))
     queries: list[Query] = []
     for persona in _PERSONAS:
-        pid = str(persona["id"])
-        goals = list(persona["goals"])  # type: ignore[arg-type]
         for _ in range(per_persona):
-            goal = rng.choice(goals)
+            goal = rng.choice(persona.goals)
             tpl = rng.choice(_QUERY_TEMPLATES)
             queries.append(
                 Query(
-                    query_text=tpl.format(persona_id=pid, goal=goal),
-                    persona=pid,
-                    relevant_facet_ids=list(per_persona_facets[pid]),
+                    query_text=tpl.format(persona_id=persona.id, goal=goal),
+                    persona=persona.id,
+                    relevant_facet_ids=list(per_persona_facets[persona.id]),
                 )
             )
     return queries
