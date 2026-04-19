@@ -112,6 +112,31 @@ def test_search_respects_limit(open_vault: VaultConnection) -> None:
 
 
 @pytest.mark.unit
+def test_multi_word_query_finds_non_adjacent_matches(open_vault: VaultConnection) -> None:
+    """Regression: a bag-of-words query must not require adjacency.
+
+    An earlier phrase-wrapping implementation forced all tokens adjacent
+    and in order, so ``retrieval pipeline`` silently missed documents
+    containing both words with other text between them.
+    """
+
+    agent_id = _make_agent(open_vault)
+    _capture(
+        open_vault,
+        agent_id,
+        ftype="episodic",
+        content="the retrieval task for the downstream pipeline",
+    )
+    hits = bm25.search(
+        open_vault.connection,
+        query_text="retrieval pipeline",
+        agent_id=agent_id,
+        facet_type="episodic",
+    )
+    assert len(hits) == 1
+
+
+@pytest.mark.unit
 def test_search_does_not_crash_on_operator_tokens(open_vault: VaultConnection) -> None:
     # A query containing FTS5 operator tokens (AND, OR, NOT, double
     # quotes) must not raise an ``sqlite3.OperationalError`` even when it

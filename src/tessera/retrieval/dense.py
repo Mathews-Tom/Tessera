@@ -3,9 +3,9 @@
 Queries the per-model ``vec_<active_id>`` virtual table for the top-``k``
 nearest neighbours to a query vector, then joins back to ``facets`` to
 filter by agent / facet_type / non-deleted. sqlite-vec's ``MATCH``
-operator expects a JSON array of floats; the query vector is serialised
-via ``vec_f32()`` so we stay on the same packed-float32 representation
-the embed worker writes.
+operator accepts the query vector serialised as packed little-endian
+float32 bytes — the same shape the embed worker writes into the table
+— so the caller never converts into an intermediate JSON form.
 
 The embedder adapter produces the query vector — the caller passes in an
 already-instantiated ``Embedder`` rather than this module picking one.

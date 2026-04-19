@@ -21,8 +21,13 @@ from typing import Protocol
 
 
 class _Ranked(Protocol):
-    facet_id: int
-    rank: int
+    # Read-only attributes so frozen dataclasses (BM25Candidate,
+    # DenseCandidate) structurally satisfy the protocol. A settable-attr
+    # protocol would reject frozen instances under mypy's strict mode.
+    @property
+    def facet_id(self) -> int: ...
+    @property
+    def rank(self) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)

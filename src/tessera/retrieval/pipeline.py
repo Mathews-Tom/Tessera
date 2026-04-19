@@ -17,7 +17,6 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
 
 import sqlcipher3
 
@@ -71,7 +70,13 @@ class PipelineContext:
 
 
 async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
-    """Run the full retrieval pipeline for a single query."""
+    """Run the full retrieval pipeline for a single query.
+
+    Audit correctness contract: every call writes exactly one
+    ``retrieval_executed`` row, even on mid-pipeline exception. The
+    row lands inside a ``try/finally`` so a crash in MMR or budget
+    does not leave a gap in the forensic trail.
+    """
 
     stage_ms: dict[str, float] = {}
     call_seed = seed.compute_seed(
@@ -80,95 +85,111 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
         active_embedding_model_id=ctx.active_model_id,
         config=ctx.config,
     )
-    # Stage 1 — hybrid candidate generation per facet type, in parallel.
-    t0 = time.perf_counter()
-    bm25_lists, dense_lists = await _gather_candidates(ctx, query_text)
-    stage_ms["candidates"] = _elapsed_ms(t0)
+    bm25_lists: dict[str, list[bm25.BM25Candidate]] = {}
+    dense_lists: dict[str, list[dense.DenseCandidate]] = {}
+    reweighted: list[rrf.RRFResult] = []
+    rerank_outcome = rerank.RerankOutcome(results=[], degraded=False, error_message=None)
+    matches: tuple[RecallMatch, ...] = ()
+    truncated = False
+    pipeline_error: str | None = None
 
-    # Stage 2 — RRF fusion across BM25 + dense for all facet types.
-    t0 = time.perf_counter()
-    flat_bm25 = _flatten_with_rerank(bm25_lists)
-    flat_dense = _flatten_with_rerank(dense_lists)
-    fused = rrf.fuse(flat_bm25, flat_dense)
-    stage_ms["rrf"] = _elapsed_ms(t0)
+    try:
+        # Stage 1 — hybrid candidate generation per facet type.
+        t0 = time.perf_counter()
+        bm25_lists, dense_lists = await _gather_candidates(ctx, query_text)
+        stage_ms["candidates"] = _elapsed_ms(t0)
 
-    # Stage 3 — SWCR reweight (pass-through at P4).
-    t0 = time.perf_counter()
-    reweighted = _swcr_passthrough(fused)
-    stage_ms["swcr"] = _elapsed_ms(t0)
+        # Stage 2 — RRF fusion. Per-type ranks preserved deliberately so
+        # a doc at rank 0 in two lists accumulates a larger fused score
+        # than a doc that only appears once.
+        t0 = time.perf_counter()
+        flat_bm25 = _flatten_bm25(bm25_lists)
+        flat_dense = _flatten_dense(dense_lists)
+        fused = rrf.fuse(flat_bm25, flat_dense)
+        stage_ms["rrf"] = _elapsed_ms(t0)
 
-    # Stage 4 — cross-encoder rerank.
-    content_lookup = _content_lookup(bm25_lists, dense_lists)
-    rerank_input = [
-        (item.facet_id, content_lookup.get(item.facet_id, ""))
-        for item in reweighted
-        if item.facet_id in content_lookup
-    ]
-    t0 = time.perf_counter()
-    rerank_outcome = await rerank.rerank(
-        ctx.reranker,
-        query_text=query_text,
-        candidates=rerank_input,
-        seed=call_seed,
-    )
-    stage_ms["rerank"] = _elapsed_ms(t0)
-    if rerank_outcome.degraded:
+        # Stage 3 — SWCR reweight (pass-through at P4).
+        t0 = time.perf_counter()
+        reweighted = _swcr_passthrough(fused)
+        stage_ms["swcr"] = _elapsed_ms(t0)
+
+        # Stage 4 — cross-encoder rerank.
+        content_lookup = _content_lookup(bm25_lists, dense_lists)
+        rerank_input = [
+            (item.facet_id, content_lookup.get(item.facet_id, ""))
+            for item in reweighted
+            if item.facet_id in content_lookup
+        ]
+        t0 = time.perf_counter()
+        rerank_outcome = await rerank.rerank(
+            ctx.reranker,
+            query_text=query_text,
+            candidates=rerank_input,
+            seed=call_seed,
+        )
+        stage_ms["rerank"] = _elapsed_ms(t0)
+        if rerank_outcome.degraded:
+            audit.write(
+                ctx.conn,
+                op="retrieval_rerank_degraded",
+                actor="retrieval",
+                agent_id=ctx.agent_id,
+                payload={
+                    "seed": seed.seed_hex(call_seed),
+                    "reranker_name": type(ctx.reranker).__name__,
+                    "reason": rerank_outcome.error_message or "unknown",
+                },
+            )
+
+        # Stage 5 — MMR diversification.
+        t0 = time.perf_counter()
+        mmr_input = await _build_mmr_input(ctx, rerank_outcome.results, content_lookup)
+        diversified = mmr.diversify(
+            mmr_input,
+            k=min(ctx.k * 3, len(mmr_input)),  # over-select; budget trims below
+            mmr_lambda=ctx.config.mmr_lambda,
+        )
+        stage_ms["mmr"] = _elapsed_ms(t0)
+
+        # Stage 6 — token-budget enforcement.
+        t0 = time.perf_counter()
+        items, truncated = _apply_budget(ctx, diversified, content_lookup)
+        stage_ms["budget"] = _elapsed_ms(t0)
+
+        matches = tuple(_to_matches(items, bm25_lists, dense_lists))[: ctx.k]
+        if len(matches) < len(items):
+            truncated = True
+    except Exception as exc:
+        pipeline_error = f"{type(exc).__name__}: {exc}"[:500]
+        raise
+    finally:
         audit.write(
             ctx.conn,
-            op="retrieval_rerank_degraded",
+            op="retrieval_executed",
             actor="retrieval",
             agent_id=ctx.agent_id,
             payload={
                 "seed": seed.seed_hex(call_seed),
-                "reranker_name": type(ctx.reranker).__name__,
-                "reason": rerank_outcome.error_message or "unknown",
+                "retrieval_mode": ctx.config.retrieval_mode,
+                "facet_types": list(ctx.facet_types),
+                "k": ctx.k,
+                "duration_ms": sum(stage_ms.values()),
+                "stage_ms": dict(stage_ms),
+                "candidate_counts": {
+                    "bm25": sum(len(lst) for lst in bm25_lists.values()),
+                    "dense": sum(len(lst) for lst in dense_lists.values()),
+                    "fused": len(reweighted),
+                },
+                "result_count": len(matches),
+                "result_facet_ids": [m.external_id for m in matches],
+                "rerank_degraded": rerank_outcome.degraded,
+                "truncated": truncated,
+                "pipeline_error": pipeline_error,
             },
         )
 
-    # Stage 5 — MMR diversification.
-    t0 = time.perf_counter()
-    mmr_input = await _build_mmr_input(ctx, rerank_outcome.results, content_lookup)
-    diversified = mmr.diversify(
-        mmr_input,
-        k=min(ctx.k * 3, len(mmr_input)),  # over-select; budget trims below
-        mmr_lambda=ctx.config.mmr_lambda,
-    )
-    stage_ms["mmr"] = _elapsed_ms(t0)
-
-    # Stage 6 — token-budget enforcement.
-    t0 = time.perf_counter()
-    items, truncated = _apply_budget(ctx, diversified, content_lookup)
-    stage_ms["budget"] = _elapsed_ms(t0)
-
-    matches = tuple(_to_matches(items, bm25_lists, dense_lists))[: ctx.k]
-    if len(matches) < len(items):
-        truncated = True
     total_found = len({r.facet_id for r in reweighted})
     warnings = _warnings(rerank_outcome.degraded, truncated)
-
-    audit.write(
-        ctx.conn,
-        op="retrieval_executed",
-        actor="retrieval",
-        agent_id=ctx.agent_id,
-        payload={
-            "seed": seed.seed_hex(call_seed),
-            "retrieval_mode": ctx.config.retrieval_mode,
-            "facet_types": list(ctx.facet_types),
-            "k": ctx.k,
-            "duration_ms": sum(stage_ms.values()),
-            "stage_ms": dict(stage_ms),
-            "candidate_counts": {
-                "bm25": sum(len(lst) for lst in bm25_lists.values()),
-                "dense": sum(len(lst) for lst in dense_lists.values()),
-                "fused": len(reweighted),
-            },
-            "result_count": len(matches),
-            "result_facet_ids": [m.external_id for m in matches],
-            "rerank_degraded": rerank_outcome.degraded,
-            "truncated": truncated,
-        },
-    )
     return RecallResult(
         matches=matches,
         total_found=total_found,
@@ -211,10 +232,19 @@ async def _gather_candidates(
     return bm25_by_type, dense_by_type
 
 
-def _flatten_with_rerank(
-    lists_by_type: dict[str, list[Any]],
-) -> list[Any]:
-    flat: list[Any] = []
+def _flatten_bm25(
+    lists_by_type: dict[str, list[bm25.BM25Candidate]],
+) -> list[bm25.BM25Candidate]:
+    flat: list[bm25.BM25Candidate] = []
+    for items in lists_by_type.values():
+        flat.extend(items)
+    return flat
+
+
+def _flatten_dense(
+    lists_by_type: dict[str, list[dense.DenseCandidate]],
+) -> list[dense.DenseCandidate]:
+    flat: list[dense.DenseCandidate] = []
     for items in lists_by_type.values():
         flat.extend(items)
     return flat

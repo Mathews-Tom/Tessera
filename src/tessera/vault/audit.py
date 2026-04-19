@@ -50,6 +50,11 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
             "result_facet_ids",
             "rerank_degraded",
             "truncated",
+            # ``type(exc).__name__: str(exc)`` when a stage raised; null on
+            # clean completion. Type name + message only, not traceback —
+            # tracebacks can carry local-variable content that would break
+            # the §S4 no-content guarantee.
+            "pipeline_error",
         }
     ),
     "retrieval_rerank_degraded": frozenset({"seed", "reranker_name", "reason"}),

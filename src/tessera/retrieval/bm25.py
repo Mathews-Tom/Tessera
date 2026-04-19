@@ -79,8 +79,22 @@ def search(
 
 
 def _quote_phrase(query_text: str) -> str:
-    # FTS5 treats a double-quoted literal as a phrase. Inner double quotes
-    # are escaped by doubling. Wrapping the whole query ensures operator
-    # tokens in user content are matched literally.
-    escaped = query_text.replace('"', '""')
-    return f'"{escaped}"'
+    """Tokenise query_text and join per-token quoted literals.
+
+    Wrapping the entire query as one FTS5 phrase would enforce adjacency —
+    ``retrieval pipeline`` would miss documents containing both words
+    non-adjacent. Splitting on whitespace and quoting each token (with
+    ``""`` doubling for literal inner quotes) gives bag-of-words recall
+    with FTS5's default AND semantics across the resulting tokens, while
+    still neutralising operator tokens (``AND``, ``OR``, ``NOT``, ``*``)
+    the user did not mean as syntax.
+    """
+
+    tokens = [tok for tok in query_text.split() if tok]
+    if not tokens:
+        return '""'
+    quoted: list[str] = []
+    for tok in tokens:
+        escaped = tok.replace('"', '""')
+        quoted.append(f'"{escaped}"')
+    return " ".join(quoted)
