@@ -9,9 +9,23 @@ set -euo pipefail
 
 FORBIDDEN='^\s*(import|from)\s+(requests|httpx|aiohttp|urllib\.request)\b'
 
-# Paths to scan: src/tessera minus the adapters subtree.
+# Paths to scan: src/tessera minus the adapters subtree and the
+# two daemon/CLI call sites that legitimately need an HTTP client:
+#   - src/tessera/daemon/doctor.py probes Ollama's /api/tags for
+#     reachability as part of the `tessera doctor` health matrix.
+#     It is a bounded, user-initiated, localhost-by-default call with
+#     a 1-second timeout — not telemetry.
+#   - src/tessera/cli/tools_cmd.py is the CLI's loopback client to
+#     tesserad's HTTP MCP endpoint at 127.0.0.1. Calls from CLI to the
+#     local daemon do not leave the machine.
+# Extending this list requires a matching §CI enforcement note in
+# docs/determinism-and-observability.md.
 SCAN_ROOT="src/tessera"
 ALLOWLIST="src/tessera/adapters"
+ALLOWLISTED_FILES=(
+  "src/tessera/daemon/doctor.py"
+  "src/tessera/cli/tools_cmd.py"
+)
 
 if [[ ! -d "${SCAN_ROOT}" ]]; then
   echo "no_telemetry_grep: ${SCAN_ROOT} does not exist; skipping"
@@ -22,9 +36,25 @@ fi
 # anchor therefore matches on file-path prefix only. The trailing slash is
 # load-bearing — without it, a hypothetical src/tessera/adapters_evil/ tree
 # would be excluded by the allowlist by mistake.
-offenders=$(grep -REn --include='*.py' "${FORBIDDEN}" "${SCAN_ROOT}" \
+raw_offenders=$(grep -REn --include='*.py' "${FORBIDDEN}" "${SCAN_ROOT}" \
   | grep -v "^${ALLOWLIST}/" \
   || true)
+
+offenders=""
+while IFS= read -r line; do
+  [[ -z "${line}" ]] && continue
+  skip=0
+  for allowed in "${ALLOWLISTED_FILES[@]}"; do
+    if [[ "${line}" == "${allowed}:"* ]]; then
+      skip=1
+      break
+    fi
+  done
+  if [[ "${skip}" -eq 0 ]]; then
+    offenders+="${line}"$'\n'
+  fi
+done <<< "${raw_offenders}"
+offenders="${offenders%$'\n'}"
 
 if [[ -n "${offenders}" ]]; then
   echo "no-telemetry gate failed; forbidden imports outside ${ALLOWLIST}:"

@@ -168,7 +168,7 @@ Any assertion failure aborts bundle creation with a clear error. The bundle is c
 Three CI jobs enforce the commitments:
 
 1. **No-outbound test**: run the full test suite with `iptables -A OUTPUT -d ! 127.0.0.1 -j REJECT` (Linux CI). Tests pass only if all required calls go to the expected adapters. Failure = some dependency made a hidden outbound call.
-2. **No-telemetry grep**: reject PRs that add imports of `requests`, `httpx`, `aiohttp`, `urllib.request` outside `src/tessera/adapters/`. Adapters have their own allowlist.
+2. **No-telemetry grep**: reject PRs that add imports of `requests`, `httpx`, `aiohttp`, `urllib.request` outside `src/tessera/adapters/`. Adapters have their own allowlist. Two non-adapter files are also allowlisted by exact path: `src/tessera/daemon/doctor.py` (probes Ollama `/api/tags` for the `tessera doctor` health matrix) and `src/tessera/cli/tools_cmd.py` (CLI loopback client to `tesserad` at `127.0.0.1`). Both are user-initiated, bounded, and reach only localhost or the configured Ollama host. Extending this list requires the same-commit update in `scripts/no_telemetry_grep.sh`.
 3. **Determinism test**: run 100 `recall` calls with the same query on the same seeded vault; assert bit-identical results.
 
 ## What this is NOT
