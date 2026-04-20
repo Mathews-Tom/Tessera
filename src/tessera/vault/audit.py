@@ -58,6 +58,25 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
         }
     ),
     "retrieval_rerank_degraded": frozenset({"seed", "reranker_name", "reason"}),
+    # Identity bundle assembly (P6). Emitted once per ``assume_identity``
+    # call. No query text, no facet content; ``per_role_counts`` is a
+    # plain ``{role_name: int}`` shape the forensic trail can inspect
+    # without reconstructing the bundle.
+    "identity_bundle_assembled": frozenset(
+        {
+            "seed",
+            "model_hint",
+            "recent_window_hours",
+            "retrieval_mode",
+            "total_tokens",
+            "total_budget_tokens",
+            "per_role_counts",
+            "truncated",
+            "duration_ms",
+            "rerank_degraded",
+            "pipeline_error",
+        }
+    ),
 }
 
 
