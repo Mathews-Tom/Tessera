@@ -1,0 +1,89 @@
+"""``python -m tessera.cli`` — top-level CLI entrypoint.
+
+Dispatches subcommands to focused handlers. Commands that need a
+running daemon talk to it over the Unix control socket
+(``tessera daemon {status,stop}``) or the HTTP MCP endpoint
+(``tessera {capture,recall,show,stats}``). Commands that operate on a
+locked vault unlock it directly (``tessera init``,
+``tessera tokens``, ``tessera agents``, ``tessera doctor``).
+
+This module stays argparse-based to match ``tessera.cli.models`` and
+``tessera.cli.vault``; switching one subtree to Typer would create a
+split-brain user experience.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from collections.abc import Callable
+
+from tessera.cli import agents_cmd, daemon_cmd, doctor_cmd, init_cmd, tokens_cmd, tools_cmd
+from tessera.cli import models as models_cli
+from tessera.cli import vault as vault_cli
+
+_DelegateRun = Callable[[list[str] | None], int]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    handler = getattr(args, "handler", None)
+    if handler is None:
+        parser.print_help()
+        return 2
+    try:
+        return int(handler(args))
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="tessera")
+    subparsers = parser.add_subparsers(dest="command")
+
+    init_cmd.register(subparsers)
+    daemon_cmd.register(subparsers)
+    agents_cmd.register(subparsers)
+    tokens_cmd.register(subparsers)
+    tools_cmd.register(subparsers)
+    doctor_cmd.register(subparsers)
+
+    # Existing stubs from earlier phases.
+    models_parser = subparsers.add_parser(
+        "models", help="embedding / reranker adapters", add_help=False
+    )
+    models_parser.set_defaults(handler=_delegate(models_cli.run))
+    vault_parser = subparsers.add_parser("vault", help="vault maintenance", add_help=False)
+    vault_parser.set_defaults(handler=_delegate(vault_cli.run))
+
+    stdio_parser = subparsers.add_parser(
+        "stdio", help="stdio MCP bridge (stub; full impl at v0.1.x)"
+    )
+    stdio_parser.set_defaults(handler=_run_stdio_stub)
+
+    return parser
+
+
+def _delegate(run_fn: _DelegateRun) -> Callable[[argparse.Namespace], int]:
+    """Wrap a submodule ``run(argv)`` so it matches the handler signature."""
+
+    def _handler(args: argparse.Namespace) -> int:
+        del args
+        # Recover the original argv slice after the top-level subcommand.
+        idx = sys.argv.index(sys.argv[1]) if len(sys.argv) > 1 else 1
+        return int(run_fn(sys.argv[idx + 1 :]))
+
+    return _handler
+
+
+def _run_stdio_stub(args: argparse.Namespace) -> int:
+    del args
+    from tessera.daemon.stdio_bridge import run_stub
+
+    return run_stub()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
