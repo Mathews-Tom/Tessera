@@ -35,7 +35,7 @@ import hashlib
 import json
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -50,7 +50,7 @@ from tessera.identity.roles import (
     active_roles_for_schema,
     normalise_budget_fractions,
 )
-from tessera.retrieval.pipeline import PipelineContext, RecallMatch, recall
+from tessera.retrieval.pipeline import PipelineContext, RecallMatch, RecallResult, recall
 from tessera.vault import audit
 
 # Default query text per role. BM25 + dense hybrid within a single
@@ -150,26 +150,22 @@ async def assume_identity(
             )
             for role in active
         ]
-        role_outcomes = await asyncio.gather(*per_role_tasks)
+        role_results = await asyncio.gather(*per_role_tasks)
         stage_ms["roles"] = _elapsed_ms(t0)
 
         t0 = time.perf_counter()
         captured_at_by_ext = _fetch_captured_at(
             ctx.conn,
-            (
-                match.external_id
-                for matches in (o.matches for o in role_outcomes)
-                for match in matches
-            ),
+            (match.external_id for r in role_results for match in r.matches),
         )
         stage_ms["captured_at_lookup"] = _elapsed_ms(t0)
 
-        for role, outcome in zip(active, role_outcomes, strict=True):
-            if outcome.rerank_degraded:
+        for role, result in zip(active, role_results, strict=True):
+            if result.rerank_degraded:
                 rerank_degraded = True
             facets = _facets_for_role(
                 role=role,
-                outcome=outcome,
+                matches=result.matches,
                 captured_at_by_ext=captured_at_by_ext,
                 now=now,
                 explain=explain,
@@ -186,7 +182,7 @@ async def assume_identity(
 
         # Rebuild per_role to reflect budget trimming.
         per_role = _regroup_by_role(kept, active)
-        combined_raw = list(kept)
+        combined_raw = kept
     except Exception as exc:
         pipeline_error = type(exc).__name__
         raise
@@ -218,32 +214,20 @@ async def assume_identity(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _RoleOutcome:
-    role_name: str
-    matches: tuple[RecallMatch, ...]
-    rerank_degraded: bool
-
-
 async def _run_role(
     ctx: PipelineContext,
     *,
     role: RoleSpec,
     query_text: str,
     sub_budget: int,
-) -> _RoleOutcome:
+) -> RecallResult:
     role_ctx = replace(
         ctx,
         facet_types=(role.facet_type,),
         k=role.k_max,
         tool_budget_tokens=sub_budget,
     )
-    result = await recall(role_ctx, query_text=query_text)
-    return _RoleOutcome(
-        role_name=role.name,
-        matches=result.matches,
-        rerank_degraded=result.rerank_degraded,
-    )
+    return await recall(role_ctx, query_text=query_text)
 
 
 def _sub_budget(total_budget: int, fraction: float) -> int:
@@ -276,7 +260,7 @@ def _fetch_captured_at(conn: sqlcipher3.Connection, external_ids: Iterable[str])
 def _facets_for_role(
     *,
     role: RoleSpec,
-    outcome: _RoleOutcome,
+    matches: Sequence[RecallMatch],
     captured_at_by_ext: dict[str, int],
     now: int,
     explain: bool,
@@ -285,7 +269,7 @@ def _facets_for_role(
 
     window_cutoff = now - role.time_window_hours * 3600 if role.time_window_hours else None
     out: list[IdentityFacet] = []
-    for match in outcome.matches:
+    for match in matches:
         captured_at = captured_at_by_ext.get(match.external_id, 0)
         if window_cutoff is not None and captured_at < window_cutoff:
             continue
@@ -322,16 +306,12 @@ def _apply_bundle_budget(
 ) -> tuple[list[IdentityFacet], bool]:
     kept: list[IdentityFacet] = []
     used = 0
-    truncated = False
     for facet in facets:
         if used + facet.token_count > budget:
-            truncated = True
-            break
+            return kept, True
         kept.append(facet)
         used += facet.token_count
-    if len(kept) < len(facets):
-        truncated = True
-    return kept, truncated
+    return kept, False
 
 
 def _regroup_by_role(
@@ -341,7 +321,7 @@ def _regroup_by_role(
     # shape is stable across calls with identical inputs.
     by_role: dict[str, list[IdentityFacet]] = {role.name: [] for role in active}
     for facet in facets:
-        by_role.setdefault(facet.role, []).append(facet)
+        by_role[facet.role].append(facet)
     return {role.name: tuple(by_role[role.name]) for role in active}
 
 
