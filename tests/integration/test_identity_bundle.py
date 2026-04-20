@@ -239,6 +239,63 @@ async def test_bundle_total_tokens_match_sum_of_facet_tokens(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_bundle_k_min_warnings_match_final_per_role_counts(
+    open_vault: VaultConnection,
+) -> None:
+    """Regression: k_min warnings reflect the POST-trim per_role state.
+
+    The earlier implementation checked per-role counts before
+    ``_apply_bundle_budget`` could trim them. A role that met k_min
+    pre-trim but fell below it under budget pressure was silent. Now the
+    warning recomputes against ``per_role`` after regrouping, so the
+    warning and the bundle always agree about which roles are starved.
+    """
+
+    ctx = await _bootstrap(open_vault, style_count=10, episodic_count=20)
+    bundle = await assume_identity(
+        ctx,
+        now_epoch=1_000_000 + 100,
+        total_budget_tokens=40,
+    )
+    active_k_mins = {"voice": 3, "recent_events": 5}
+    for role_name, k_min in active_k_mins.items():
+        final = len(bundle.per_role[role_name])
+        warned = any(role_name in w for w in bundle.warnings)
+        if final < k_min:
+            assert warned, (
+                f"role {role_name} returned {final} < k_min={k_min}; warnings={bundle.warnings}"
+            )
+        else:
+            assert not warned, (
+                f"role {role_name} has {final} >= k_min={k_min}; should not have a k_min warning"
+            )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_bundle_seed_captures_budget_and_query(
+    open_vault: VaultConnection,
+) -> None:
+    """Regression: seed fingerprints every input that can change outputs.
+
+    Two calls differing only in total_budget_tokens or query_text must
+    produce different seeds so replay from the audit log recovers the
+    exact inputs.
+    """
+
+    ctx = await _bootstrap(open_vault)
+    base = await assume_identity(ctx, now_epoch=1_000_000 + 100)
+    smaller = await assume_identity(ctx, now_epoch=1_000_000 + 100, total_budget_tokens=1000)
+    custom_query = await assume_identity(
+        ctx, now_epoch=1_000_000 + 100, query_text="shipped retrieval"
+    )
+    assert base.seed != smaller.seed
+    assert base.seed != custom_query.seed
+    assert smaller.seed != custom_query.seed
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_bundle_custom_role_with_single_active(open_vault: VaultConnection) -> None:
     ctx = await _bootstrap(open_vault)
     voice_only = (

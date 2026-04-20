@@ -120,6 +120,8 @@ async def assume_identity(
     bundle_seed = _bundle_seed(
         model_hint=model_hint,
         recent_window_hours=recent_window_hours,
+        total_budget_tokens=total_budget_tokens,
+        query_text=query_text,
         roles=active,
         vault_id=ctx.vault_id,
     )
@@ -172,8 +174,6 @@ async def assume_identity(
             )
             per_role[role.name] = facets
             combined_raw.extend(facets)
-            if len(facets) < role.k_min:
-                warnings.append(f"role:{role.name} returned {len(facets)} < k_min={role.k_min}")
 
         t0 = time.perf_counter()
         kept, truncated = _apply_bundle_budget(combined_raw, budget=total_budget_tokens)
@@ -183,6 +183,16 @@ async def assume_identity(
         # Rebuild per_role to reflect budget trimming.
         per_role = _regroup_by_role(kept, active)
         combined_raw = kept
+
+        # k_min warnings are recomputed against the FINAL per-role counts so
+        # a role that met k_min pre-trim but fell below it after
+        # bundle-level budget enforcement still surfaces to the caller. The
+        # pre-trim check would miss exactly the case that matters —
+        # silent starvation of a role under budget pressure.
+        for role in active:
+            count = len(per_role.get(role.name, ()))
+            if count < role.k_min:
+                warnings.append(f"role:{role.name} returned {count} < k_min={role.k_min}")
     except Exception as exc:
         pipeline_error = type(exc).__name__
         raise
@@ -329,13 +339,25 @@ def _bundle_seed(
     *,
     model_hint: str | None,
     recent_window_hours: int,
+    total_budget_tokens: int,
+    query_text: str | None,
     roles: tuple[RoleSpec, ...],
     vault_id: str,
 ) -> int:
+    """Complete fingerprint of the caller's inputs.
+
+    Folds in every parameter that can change which facets the bundle
+    returns or how many survive truncation. Two calls that agree on all
+    of these produce the same seed and — given a stable vault — the
+    same bundle; a change to any one is a different identity regime.
+    """
+
     payload = json.dumps(
         {
             "model_hint": model_hint or "",
             "window_hours": recent_window_hours,
+            "total_budget_tokens": total_budget_tokens,
+            "query_text": query_text or "",
             "vault_id": vault_id,
             "roles": [r.name for r in roles],
         },
