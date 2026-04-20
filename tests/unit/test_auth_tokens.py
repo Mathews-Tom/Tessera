@@ -8,6 +8,7 @@ pure-Python parts so format or hashing regressions fail fast.
 from __future__ import annotations
 
 import re
+from typing import cast
 
 import pytest
 
@@ -15,6 +16,7 @@ from tessera.auth.tokens import (
     _ACCESS_TTL_SECONDS,
     _REFRESH_TTL_SECONDS,
     _TOKEN_FORMAT,
+    TokenClass,
     _hash,
     _mint,
     _parse_raw_token,
@@ -47,12 +49,12 @@ def test_mint_hash_uses_the_stored_salt() -> None:
 
 
 @pytest.mark.unit
-def test_parse_raw_token_accepts_each_class() -> None:
-    for cls in ("session", "service", "subagent"):
-        raw, _, _ = _mint(cls)  # type: ignore[arg-type]
-        parsed = _parse_raw_token(raw)
-        assert parsed is not None
-        assert parsed[0] == cls
+@pytest.mark.parametrize("cls", ["session", "service", "subagent"])
+def test_parse_raw_token_accepts_each_class(cls: str) -> None:
+    raw, _, _ = _mint(cast("TokenClass", cls))
+    parsed = _parse_raw_token(raw)
+    assert parsed is not None
+    assert parsed[0] == cls
 
 
 @pytest.mark.unit
