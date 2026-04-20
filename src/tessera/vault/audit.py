@@ -77,6 +77,29 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
             "pipeline_error",
         }
     ),
+    # Capability lifecycle (P7). ``token_id`` is the capabilities rowid and
+    # ``token_hash_prefix`` is the first 12 chars of the stored sha256 —
+    # enough for forensics to correlate issue → refresh → revoke without
+    # disclosing the raw token. Raw token values never land in the audit
+    # log (§S4 threat model).
+    "token_issued": frozenset(
+        {"token_id", "token_class", "client_name", "token_hash_prefix", "expires_at"}
+    ),
+    "token_refreshed": frozenset(
+        {
+            "old_token_id",
+            "new_token_id",
+            "token_class",
+            "client_name",
+            "token_hash_prefix",
+            "expires_at",
+        }
+    ),
+    "token_revoked": frozenset(
+        {"token_id", "token_class", "client_name", "token_hash_prefix", "reason"}
+    ),
+    "auth_denied": frozenset({"client_name", "reason"}),
+    "scope_denied": frozenset({"token_id", "client_name", "required_op", "required_facet_type"}),
 }
 
 

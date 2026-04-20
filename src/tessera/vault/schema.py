@@ -124,22 +124,29 @@ _TABLES: Final[tuple[str, ...]] = (
     """,
     """
     CREATE TABLE IF NOT EXISTS capabilities (
-        id            INTEGER PRIMARY KEY,
-        agent_id      INTEGER NOT NULL REFERENCES agents(id),
-        client_name   TEXT NOT NULL,
-        token_hash    TEXT NOT NULL UNIQUE,
-        salt          TEXT NOT NULL,
-        scopes        TEXT NOT NULL,
-        token_class   TEXT NOT NULL CHECK (token_class IN ('session', 'service', 'subagent')),
-        created_at    INTEGER NOT NULL,
-        expires_at    INTEGER NOT NULL,
-        last_used_at  INTEGER,
-        revoked_at    INTEGER
+        id                   INTEGER PRIMARY KEY,
+        agent_id             INTEGER NOT NULL REFERENCES agents(id),
+        client_name          TEXT NOT NULL,
+        token_hash           TEXT NOT NULL UNIQUE,
+        salt                 TEXT NOT NULL,
+        scopes               TEXT NOT NULL,
+        token_class          TEXT NOT NULL CHECK (token_class IN ('session', 'service', 'subagent')),
+        created_at           INTEGER NOT NULL,
+        expires_at           INTEGER NOT NULL,
+        last_used_at         INTEGER,
+        revoked_at           INTEGER,
+        refresh_token_hash   TEXT UNIQUE,
+        refresh_salt         TEXT,
+        refresh_expires_at   INTEGER
     )
     """,
     """
     CREATE INDEX IF NOT EXISTS capabilities_agent
         ON capabilities(agent_id, revoked_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS capabilities_expires
+        ON capabilities(expires_at) WHERE revoked_at IS NULL
     """,
     """
     CREATE TABLE IF NOT EXISTS audit_log (
