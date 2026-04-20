@@ -24,6 +24,7 @@ boundary thin keeps the audit and scope invariants legible.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -55,12 +56,25 @@ from tessera.vault import facets as vault_facets
 # or buggy caller from the operator.
 _MAX_CONTENT_CHARS: Final[int] = 65_536
 _MAX_QUERY_CHARS: Final[int] = 4_096
-_MAX_CLIENT_NAME_CHARS: Final[int] = 64
 _MAX_MODEL_HINT_CHARS: Final[int] = 128
 _MIN_K: Final[int] = 1
 _MAX_K: Final[int] = 100
 _MIN_LIMIT: Final[int] = 1
 _MAX_LIMIT: Final[int] = 100
+# Recent-window cap at one year in hours — long enough for any sensible
+# identity-bundle horizon, short enough to bound the SQL scan.
+_MIN_WINDOW_HOURS: Final[int] = 1
+_MAX_WINDOW_HOURS: Final[int] = 8_760
+# Metadata is a small structured blob, not a freeform dump. Caps here
+# mirror the "validate all input at the system boundary" rule for
+# dict-shaped payloads: a bounded JSON size and a shallow depth.
+_MAX_METADATA_KEYS: Final[int] = 32
+_MAX_METADATA_BYTES: Final[int] = 4_096
+# ``since`` is a Unix epoch in seconds. Reject negatives and anything
+# past year 9999 so a malformed int cannot drive the SQL WHERE to an
+# unreachable partition.
+_MIN_SINCE_EPOCH: Final[int] = 0
+_MAX_SINCE_EPOCH: Final[int] = 253_402_300_799  # 9999-12-31T23:59:59Z
 
 # Per-tool token budgets (cl100k_base). Callers may request smaller
 # budgets but never larger — ``recall`` and ``assume_identity`` clamp
@@ -119,6 +133,20 @@ class BudgetExceeded(ToolError):
     """
 
     code = "budget_exceeded"
+
+
+class StorageError(ToolError):
+    """A storage-layer primitive raised; wrapped so the error-code
+    contract holds at the MCP boundary.
+
+    Used for downstream exceptions that escape the ``ToolError``
+    hierarchy (unknown agent id, unsupported facet type after a race,
+    vault-level IO errors). The wire layer renders a stable
+    ``storage_error`` code and does not leak the underlying exception
+    class or message verbatim.
+    """
+
+    code = "storage_error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,17 +281,24 @@ async def capture(
 
     _validate_length("content", content, _MAX_CONTENT_CHARS, allow_empty=False)
     _validate_facet_type(facet_type)
+    _validate_metadata(metadata)
     resolved_source = source_client or tctx.verified.client_name
     _validate_client_name(resolved_source)
     _require_scope(tctx, op="write", facet_type=facet_type)
-    result = vault_capture.capture(
-        tctx.conn,
-        agent_id=tctx.verified.agent_id,
-        facet_type=facet_type,
-        content=content,
-        source_client=resolved_source,
-        metadata=metadata,
-    )
+    try:
+        result = vault_capture.capture(
+            tctx.conn,
+            agent_id=tctx.verified.agent_id,
+            facet_type=facet_type,
+            content=content,
+            source_client=resolved_source,
+            metadata=metadata,
+        )
+    except vault_facets.UnknownAgentError as exc:
+        # Agent rows are the vault's stable root; a capability pointing
+        # at a vanished agent is a data-integrity break that the MCP
+        # boundary surfaces as a storage error with a stable code.
+        raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
     return CaptureResponse(
         external_id=result.external_id,
         is_duplicate=result.is_duplicate,
@@ -336,6 +371,7 @@ async def assume_identity(
         _validate_length("model_hint", model_hint, _MAX_MODEL_HINT_CHARS, allow_empty=False)
     if query_text is not None:
         _validate_length("query_text", query_text, _MAX_QUERY_CHARS, allow_empty=False)
+    _validate_recent_window_hours(recent_window_hours)
     budget_tokens = _resolve_response_budget(
         requested_budget_tokens, ASSUME_IDENTITY_RESPONSE_BUDGET
     )
@@ -418,6 +454,8 @@ async def list_facets(
 
     _validate_facet_type(facet_type)
     _validate_limit(limit)
+    if since is not None:
+        _validate_since(since)
     _require_scope(tctx, op="read", facet_type=facet_type)
     rows = vault_facets.list_by_type(
         tctx.conn,
@@ -533,6 +571,44 @@ def _validate_limit(limit: int) -> None:
         raise ValidationError("limit must be an integer")
     if limit < _MIN_LIMIT or limit > _MAX_LIMIT:
         raise ValidationError(f"limit={limit} outside [{_MIN_LIMIT}, {_MAX_LIMIT}]")
+
+
+def _validate_recent_window_hours(hours: int) -> None:
+    if not isinstance(hours, int) or isinstance(hours, bool):
+        raise ValidationError("recent_window_hours must be an integer")
+    if hours < _MIN_WINDOW_HOURS or hours > _MAX_WINDOW_HOURS:
+        raise ValidationError(
+            f"recent_window_hours={hours} outside [{_MIN_WINDOW_HOURS}, {_MAX_WINDOW_HOURS}]"
+        )
+
+
+def _validate_since(since: int) -> None:
+    if not isinstance(since, int) or isinstance(since, bool):
+        raise ValidationError("since must be an integer")
+    if since < _MIN_SINCE_EPOCH or since > _MAX_SINCE_EPOCH:
+        raise ValidationError(f"since={since} outside [{_MIN_SINCE_EPOCH}, {_MAX_SINCE_EPOCH}]")
+
+
+def _validate_metadata(metadata: dict[str, Any] | None) -> None:
+    """Bound metadata shape before it reaches storage.
+
+    Enforces a top-level-key ceiling and a serialised-byte ceiling. Key
+    types are checked because SQLite's JSON treatment of non-string
+    keys is not the caller's business to rely on.
+    """
+
+    if metadata is None:
+        return
+    if not isinstance(metadata, dict):
+        raise ValidationError(f"metadata must be a dict, got {type(metadata).__name__}")
+    if len(metadata) > _MAX_METADATA_KEYS:
+        raise ValidationError(f"metadata has {len(metadata)} keys; max {_MAX_METADATA_KEYS}")
+    for key in metadata:
+        if not isinstance(key, str):
+            raise ValidationError(f"metadata keys must be strings, got {type(key).__name__}")
+    serialised = json.dumps(metadata, ensure_ascii=False)
+    if len(serialised.encode("utf-8")) > _MAX_METADATA_BYTES:
+        raise ValidationError(f"metadata serialised size exceeds {_MAX_METADATA_BYTES} bytes")
 
 
 def _validate_ulid(value: str) -> None:

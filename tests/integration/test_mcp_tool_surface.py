@@ -377,6 +377,69 @@ async def test_stats_exposes_required_fields(open_vault: VaultConnection, vault_
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_assume_identity_rejects_bad_recent_window_hours(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(open_vault, vault_path)
+    with pytest.raises(mcp.ValidationError):
+        await mcp.assume_identity(tctx, recent_window_hours=0)
+    with pytest.raises(mcp.ValidationError):
+        await mcp.assume_identity(tctx, recent_window_hours=10_000)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_capture_rejects_oversized_metadata(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(open_vault, vault_path)
+    with pytest.raises(mcp.ValidationError, match="serialised size"):
+        await mcp.capture(
+            tctx,
+            content="ok",
+            facet_type="style",
+            metadata={"big": "x" * 5_000},
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_facets_rejects_bad_since(open_vault: VaultConnection, vault_path: Path) -> None:
+    tctx = await _bootstrap(open_vault, vault_path)
+    with pytest.raises(mcp.ValidationError):
+        await mcp.list_facets(tctx, facet_type="style", limit=5, since=-1)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_show_budget_exceeded_when_snippet_alone_overflows(
+    open_vault: VaultConnection,
+    vault_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``show`` BudgetExceeded branch fires when per-snippet truncation
+    (256 tokens by default) still leaves the response above SHOW_RESPONSE_BUDGET.
+
+    ``monkeypatch`` drops the tool's response ceiling to 1 token so a
+    single facet's snippet is guaranteed to overflow. The test pins
+    that the code path raises with the stable ``budget_exceeded`` code
+    instead of silently returning oversized data.
+    """
+
+    import tessera.mcp_surface.tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "SHOW_RESPONSE_BUDGET", 1)
+    tctx = await _bootstrap(open_vault, vault_path)
+    external_id = open_vault.connection.execute(
+        "SELECT external_id FROM facets WHERE facet_type='style' LIMIT 1"
+    ).fetchone()[0]
+    with pytest.raises(mcp.BudgetExceeded) as exc:
+        await mcp.show(tctx, external_id=external_id)
+    assert exc.value.code == "budget_exceeded"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_all_tool_errors_carry_distinct_codes(
     open_vault: VaultConnection, vault_path: Path
 ) -> None:

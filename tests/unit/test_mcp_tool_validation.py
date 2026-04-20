@@ -20,6 +20,9 @@ from tessera.mcp_surface.tools import (
     _validate_k,
     _validate_length,
     _validate_limit,
+    _validate_metadata,
+    _validate_recent_window_hours,
+    _validate_since,
     _validate_ulid,
 )
 
@@ -154,6 +157,64 @@ def test_resolve_response_budget_rejects_zero_and_negative() -> None:
         _resolve_response_budget(0, 6_000)
     with pytest.raises(ValidationError):
         _resolve_response_budget(-1, 6_000)
+
+
+@pytest.mark.unit
+def test_validate_recent_window_hours_accepts_bounds() -> None:
+    _validate_recent_window_hours(1)
+    _validate_recent_window_hours(8760)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("hours", [0, -1, 9_000, 10**9])
+def test_validate_recent_window_hours_rejects_out_of_range(hours: int) -> None:
+    with pytest.raises(ValidationError):
+        _validate_recent_window_hours(hours)
+
+
+@pytest.mark.unit
+def test_validate_since_accepts_bounds() -> None:
+    _validate_since(0)
+    _validate_since(253_402_300_799)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("since", [-1, 253_402_300_800, 10**20])
+def test_validate_since_rejects_out_of_range(since: int) -> None:
+    with pytest.raises(ValidationError):
+        _validate_since(since)
+
+
+@pytest.mark.unit
+def test_validate_metadata_accepts_none_and_small_dict() -> None:
+    _validate_metadata(None)
+    _validate_metadata({"source": "cli", "mode": "test"})
+
+
+@pytest.mark.unit
+def test_validate_metadata_rejects_too_many_keys() -> None:
+    payload = {f"k{i}": i for i in range(40)}
+    with pytest.raises(ValidationError, match="keys"):
+        _validate_metadata(payload)
+
+
+@pytest.mark.unit
+def test_validate_metadata_rejects_non_string_key() -> None:
+    with pytest.raises(ValidationError, match="keys must be strings"):
+        _validate_metadata({1: "value"})  # type: ignore[dict-item]
+
+
+@pytest.mark.unit
+def test_validate_metadata_rejects_oversized_payload() -> None:
+    big_value = "x" * 5_000
+    with pytest.raises(ValidationError, match="serialised size"):
+        _validate_metadata({"big": big_value})
+
+
+@pytest.mark.unit
+def test_validate_metadata_rejects_non_dict() -> None:
+    with pytest.raises(ValidationError, match="must be a dict"):
+        _validate_metadata([("a", 1)])  # type: ignore[arg-type]
 
 
 @pytest.mark.unit
