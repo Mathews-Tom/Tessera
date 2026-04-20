@@ -27,12 +27,13 @@ import re
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 import sqlcipher3
 
 from tessera.auth.scopes import Scope, parse_scope
 from tessera.vault import audit
+from tessera.vault.connection import savepoint
 
 TokenClass = Literal["session", "service", "subagent"]
 
@@ -321,45 +322,52 @@ def refresh(
         )
         raise AuthDenied("scope_unparseable", client_hint=client_name) from exc
     token_class = _coerce_token_class(stored_class)
-    # Revoke the old row (kept for audit continuity and to render the
-    # old refresh-token hash unusable from any subsequent refresh).
-    conn.execute(
-        """
-        UPDATE capabilities
-           SET revoked_at = ?, refresh_token_hash = NULL, refresh_salt = NULL
-         WHERE id = ?
-        """,
-        (now_epoch, old_id),
-    )
-    new_pair = issue(
-        conn,
-        agent_id=agent_id,
-        client_name=client_name,
-        token_class=token_class,
-        scope=scope,
-        now_epoch=now_epoch,
-        actor=actor,
-    )
-    # Replace the plain ``token_issued`` row written inside ``issue`` is
-    # a deliberate choice; the ``token_refreshed`` entry here adds the
-    # link back to ``old_id`` so replay traces connect both ends.
-    audit.write(
-        conn,
-        op="token_refreshed",
-        actor=actor,
-        agent_id=agent_id,
-        payload={
-            "old_token_id": old_id,
-            "new_token_id": new_pair.token_id,
-            "token_class": token_class,
-            "client_name": client_name,
-            "token_hash_prefix": _hash(new_pair.raw_token, _read_salt(conn, new_pair.token_id))[
-                :_HASH_PREFIX_LEN
-            ],
-            "expires_at": new_pair.expires_at,
-        },
-        at=now_epoch,
-    )
+    # Rotation is all-or-nothing: the old-row revoke, the new-row
+    # insert, and the token_refreshed audit entry run under one savepoint
+    # so a crash between statements cannot leave the client stranded
+    # with a revoked refresh and no replacement pair. SAVEPOINT (not
+    # BEGIN) so callers already inside a transaction compose cleanly.
+    with savepoint(conn, "auth_refresh"):
+        # Revoke the old row (kept for audit continuity and to render
+        # the old refresh-token hash unusable from any subsequent
+        # refresh).
+        conn.execute(
+            """
+            UPDATE capabilities
+               SET revoked_at = ?, refresh_token_hash = NULL, refresh_salt = NULL
+             WHERE id = ?
+            """,
+            (now_epoch, old_id),
+        )
+        new_pair = issue(
+            conn,
+            agent_id=agent_id,
+            client_name=client_name,
+            token_class=token_class,
+            scope=scope,
+            now_epoch=now_epoch,
+            actor=actor,
+        )
+        # Keeping the ``token_issued`` row from ``issue()`` is deliberate
+        # — the ``token_refreshed`` entry here adds the link back to
+        # ``old_id`` so replay traces connect both ends.
+        audit.write(
+            conn,
+            op="token_refreshed",
+            actor=actor,
+            agent_id=agent_id,
+            payload={
+                "old_token_id": old_id,
+                "new_token_id": new_pair.token_id,
+                "token_class": token_class,
+                "client_name": client_name,
+                "token_hash_prefix": _hash(new_pair.raw_token, _read_salt(conn, new_pair.token_id))[
+                    :_HASH_PREFIX_LEN
+                ],
+                "expires_at": new_pair.expires_at,
+            },
+            at=now_epoch,
+        )
     return new_pair
 
 
@@ -507,7 +515,8 @@ def _find_by_access_token(
         """,
         (token_class,),
     ).fetchall()
-    return _match_against(rows, raw_token=raw_token, hash_col=7, salt_col=8)
+    match = _match_against(rows, raw_token=raw_token, hash_col=7, salt_col=8)
+    return cast("tuple[int, int, str, str, str, int, int | None] | None", match)
 
 
 def _find_by_refresh_token(
@@ -527,7 +536,8 @@ def _find_by_refresh_token(
         """,
         (token_class,),
     ).fetchall()
-    return _match_against(rows, raw_token=raw_refresh_token, hash_col=7, salt_col=8)
+    match = _match_against(rows, raw_token=raw_refresh_token, hash_col=7, salt_col=8)
+    return cast("tuple[int, int, str, str, str, int | None, int | None] | None", match)
 
 
 def _match_against(
@@ -536,7 +546,7 @@ def _match_against(
     raw_token: str,
     hash_col: int,
     salt_col: int,
-) -> tuple:  # type: ignore[type-arg]
+) -> tuple[object, ...] | None:
     """Linear scan with constant-time compare per row.
 
     Uses :func:`hmac.compare_digest` on each candidate so timing cannot
@@ -553,7 +563,7 @@ def _match_against(
         candidate = _hash(raw_token, stored_salt)
         if hmac.compare_digest(candidate, stored_hash):
             return row[:hash_col]
-    return None  # type: ignore[return-value]
+    return None
 
 
 def _read_salt(conn: sqlcipher3.Connection, token_id: int) -> str:

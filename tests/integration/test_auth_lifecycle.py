@@ -288,6 +288,53 @@ def test_refresh_is_strictly_one_time_use(open_vault: VaultConnection) -> None:
 
 
 @pytest.mark.integration
+def test_refresh_token_cannot_be_used_as_access_token(
+    open_vault: VaultConnection,
+) -> None:
+    """Access and refresh hashes are stored in different columns.
+
+    Both secrets share the ``tessera_<class>_`` prefix so the token
+    shape alone does not distinguish them. The lookup in
+    ``verify_and_touch`` probes ``token_hash``, while the refresh hash
+    lives in ``refresh_token_hash``, so an attacker who exfiltrates only
+    the refresh-token string and tries it as an access token is
+    rejected as ``unknown_token``.
+    """
+
+    agent_id = _new_agent(open_vault)
+    issued = tokens.issue(
+        open_vault.connection,
+        agent_id=agent_id,
+        client_name="cli",
+        token_class="session",
+        scope=build_scope(read=["style"], write=["style"]),
+        now_epoch=1_000_000,
+    )
+    assert issued.raw_refresh_token is not None
+    with pytest.raises(tokens.AuthDenied) as exc:
+        tokens.verify_and_touch(
+            open_vault.connection,
+            raw_token=issued.raw_refresh_token,
+            now_epoch=1_000_001,
+        )
+    assert exc.value.reason == "unknown_token"
+    # Same guarantee for the NEW refresh token after a rotation.
+    new_pair = tokens.refresh(
+        open_vault.connection,
+        raw_refresh_token=issued.raw_refresh_token,
+        now_epoch=1_000_100,
+    )
+    assert new_pair.raw_refresh_token is not None
+    with pytest.raises(tokens.AuthDenied) as exc:
+        tokens.verify_and_touch(
+            open_vault.connection,
+            raw_token=new_pair.raw_refresh_token,
+            now_epoch=1_000_101,
+        )
+    assert exc.value.reason == "unknown_token"
+
+
+@pytest.mark.integration
 def test_subagent_refresh_rejected(open_vault: VaultConnection) -> None:
     agent_id = _new_agent(open_vault)
     issued = tokens.issue(
