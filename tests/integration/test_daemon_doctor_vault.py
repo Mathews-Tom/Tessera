@@ -1,0 +1,103 @@
+"""Doctor checks that require an unlocked vault.
+
+Complements ``tests/unit/test_daemon_doctor.py`` which covers the
+vault-less path: here we open a freshly bootstrapped vault, register a
+model, issue a token, and assert every vault-backed check reports OK.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import httpx
+import pytest
+
+from tessera.adapters import models_registry
+from tessera.auth import tokens
+from tessera.auth.scopes import build_scope
+from tessera.daemon.config import resolve_config
+from tessera.daemon.doctor import DoctorStatus, run_all
+from tessera.vault.connection import VaultConnection
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_all_vault_checks_ok_on_healthy_vault(
+    open_vault: VaultConnection,
+    vault_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TESSERA_PASSPHRASE", "x")
+    models_registry.register_embedding_model(
+        open_vault.connection, name="ollama", dim=8, activate=True
+    )
+    open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('01DR', 'a', 0)"
+    )
+    tokens.issue(
+        open_vault.connection,
+        agent_id=1,
+        client_name="cli",
+        token_class="session",
+        scope=build_scope(read=["style"], write=[]),
+        now_epoch=1_000_000,
+    )
+
+    class _Reachable(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"models": [{"name": "nomic-embed-text"}]})
+
+    config = resolve_config(vault_path=vault_path, http_port=_pick_port())
+    client = httpx.AsyncClient(base_url=config.ollama_host, transport=_Reachable())
+    try:
+        report = await run_all(config, conn=open_vault.connection, httpx_client=client)
+    finally:
+        await client.aclose()
+    names = {r.name for r in report.results}
+    assert {"sqlite_vec", "active_model", "schema_match", "tokens"} <= names
+    by_name = {r.name: r for r in report.results}
+    assert by_name["sqlite_vec"].status is DoctorStatus.OK
+    assert by_name["active_model"].status is DoctorStatus.OK
+    assert by_name["schema_match"].status is DoctorStatus.OK
+    assert by_name["tokens"].status is DoctorStatus.OK
+    assert by_name["ollama"].status is DoctorStatus.OK
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_doctor_reports_missing_active_model(
+    open_vault: VaultConnection, vault_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No active embedding model → active_model check is ERROR."""
+
+    monkeypatch.delenv("TESSERA_PASSPHRASE", raising=False)
+    config = resolve_config(vault_path=vault_path, http_port=_pick_port())
+    report = await run_all(config, conn=open_vault.connection)
+    active = next(r for r in report.results if r.name == "active_model")
+    assert active.status is DoctorStatus.ERROR
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_doctor_reports_no_tokens_warning(
+    open_vault: VaultConnection, vault_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A freshly bootstrapped vault has no capabilities → WARN."""
+
+    monkeypatch.delenv("TESSERA_PASSPHRASE", raising=False)
+    config = resolve_config(vault_path=vault_path, http_port=_pick_port())
+    report = await run_all(config, conn=open_vault.connection)
+    tokens_check = next(r for r in report.results if r.name == "tokens")
+    assert tokens_check.status is DoctorStatus.WARN
+
+
+def _pick_port() -> int:
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = int(s.getsockname()[1])
+    s.close()
+    return port
