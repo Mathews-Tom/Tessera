@@ -4,6 +4,14 @@ The sentence-transformers ``CrossEncoder`` is a thin PyTorch wrapper. The
 model is loaded once per process and held for the daemon lifetime; cold-load
 on first use is the documented tax that the P9 daemon warms up at startup.
 
+Device selection: defaults to ``"auto"``, which picks CUDA > MPS > CPU via
+:func:`tessera.adapters.devices.detect_best_device`. Callers can force a
+specific backend by constructing with ``device="cpu"|"mps"|"cuda"``, and
+users can force CPU via the ``TESSERA_RERANK_DEVICE`` env var — the
+primary reason to force CPU is the stronger determinism contract (MPS
+and CUDA are bit-identical within a single daemon lifetime on same
+hardware only; CPU is bit-identical across runs).
+
 Determinism: the retrieval seed (docs/determinism-and-observability.md
 §Retrieval pipeline determinism) is translated into ``torch.manual_seed``
 per call, scoped to the predict path. Global
@@ -12,8 +20,9 @@ some arm64 torch builds SIGBUS on non-deterministic fallback ops in the
 graph, reproducible on macOS developer hardware. The per-call seed
 covers the RNG surface that matters for retrieval determinism on CPU;
 the broader bit-identical guarantee is verified at the retrieval
-integration layer. GPU determinism requires ``CUBLAS_WORKSPACE_CONFIG``
-and is out of scope for P2.
+integration layer on the CPU backend. CUDA determinism additionally
+requires ``CUBLAS_WORKSPACE_CONFIG``; MPS float-op ordering is not
+guaranteed stable across torch versions.
 """
 
 from __future__ import annotations
@@ -26,6 +35,7 @@ from typing import Any, ClassVar, Final, cast
 import torch
 from sentence_transformers import CrossEncoder
 
+from tessera.adapters.devices import detect_best_device
 from tessera.adapters.errors import AdapterResponseError
 from tessera.adapters.registry import register_reranker
 
@@ -44,9 +54,21 @@ class SentenceTransformersReranker:
     name: ClassVar[str] = "sentence-transformers"
 
     model_name: str = DEFAULT_MODEL
-    device: str = "cpu"
+    device: str = "auto"
     max_length: int = 512
     _model: CrossEncoder | None = field(default=None, init=False, repr=False)
+    _resolved_device: str = field(default="", init=False, repr=False)
+
+    @property
+    def resolved_device(self) -> str:
+        """The device string the CrossEncoder was loaded with.
+
+        Empty until :meth:`_ensure_loaded` has been called at least once.
+        Surfaced via the daemon warm-up audit event so operators can
+        verify the active tier without reading logs.
+        """
+
+        return self._resolved_device
 
     async def score(
         self,
@@ -74,12 +96,14 @@ class SentenceTransformersReranker:
 
     async def _ensure_loaded(self) -> None:
         if self._model is None:
+            resolved = detect_best_device(self.device)
             self._model = await asyncio.to_thread(
                 CrossEncoder,
                 self.model_name,
-                device=self.device,
+                device=resolved,
                 max_length=self.max_length,
             )
+            self._resolved_device = resolved
 
     def _score_sync(self, query: str, passages: list[str], seed: int | None) -> list[float]:
         if self._model is None:
