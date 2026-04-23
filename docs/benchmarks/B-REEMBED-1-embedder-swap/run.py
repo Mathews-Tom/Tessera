@@ -35,6 +35,8 @@ from typing import Any, ClassVar
 import tessera.adapters.ollama_embedder
 import tessera.adapters.openai_embedder  # noqa: F401
 from tessera.adapters import models_registry
+from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.protocol import Embedder
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
 from tessera.vault import capture
@@ -43,8 +45,11 @@ from tessera.vault.encryption import derive_key, new_salt
 
 RESULTS_DIR = Path(__file__).parent / "results"
 DEFAULT_FACETS = 10_000
-DIM_A = 8
-DIM_B = 16
+FAKE_DIM_A = 8
+FAKE_DIM_B = 16
+OLLAMA_MODEL = "nomic-embed-text"
+OLLAMA_DIM = 768
+OLLAMA_HOST = "http://localhost:11434"
 
 
 class _FakeEmbedder:
@@ -64,6 +69,25 @@ class _FakeEmbedder:
 
     async def health_check(self) -> None:
         return None
+
+
+def _resolve_target_embedder(adapters: str) -> tuple[Embedder, int, str]:
+    """Return the embedder the reembed pass writes against.
+
+    ``adapters='fake'`` keeps both sides of the swap deterministic.
+    ``adapters='real'`` targets Ollama's ``nomic-embed-text`` so the
+    recorded wall time is the v0.1 DoD number directly.
+    """
+
+    if adapters == "fake":
+        return _FakeEmbedder(dim=FAKE_DIM_B, model_name="fake-b"), FAKE_DIM_B, "fake-b"
+    if adapters == "real":
+        return (
+            OllamaEmbedder(model_name=OLLAMA_MODEL, dim=OLLAMA_DIM, host=OLLAMA_HOST),
+            OLLAMA_DIM,
+            f"ollama/{OLLAMA_MODEL}",
+        )
+    raise SystemExit(f"unknown --adapters value: {adapters!r}")
 
 
 def _percentile(samples: list[float], pct: float) -> float:
@@ -95,7 +119,14 @@ def _git_sha() -> str:
     return out.decode().strip()
 
 
-async def _run(*, facets: int, batch_size: int) -> int:
+async def _run(*, facets: int, batch_size: int, adapters: str) -> int:
+    # The preload phase always runs on the fake embedder — the purpose
+    # of B-REEMBED-1 is to measure the *re-embed* path, not the
+    # initial-embed path. Using the fake adapter for preload keeps the
+    # benchmark reproducible in under a second even at 10K scale.
+    embedder_a = _FakeEmbedder(dim=FAKE_DIM_A, model_name="fake-a")
+    embedder_b, dim_b, embedder_b_id = _resolve_target_embedder(adapters)
+
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-reembed-1.db"
         salt = new_salt()
@@ -110,10 +141,13 @@ async def _run(*, facets: int, batch_size: int) -> int:
                         "SELECT id FROM agents WHERE external_id='01BENCH'"
                     ).fetchone()[0]
                 )
+                # Preload uses the fake adapter registered under the
+                # "openai" family name so the real-adapter run can
+                # register Ollama under "ollama" without colliding on
+                # the UNIQUE(name) constraint in embedding_models.
                 model_a = models_registry.register_embedding_model(
-                    vc.connection, name="ollama", dim=DIM_A, activate=True
+                    vc.connection, name="openai", dim=FAKE_DIM_A, activate=True
                 )
-                embedder_a = _FakeEmbedder(dim=DIM_A, model_name="fake-a")
                 for i in range(facets):
                     capture.capture(
                         vc.connection,
@@ -131,13 +165,13 @@ async def _run(*, facets: int, batch_size: int) -> int:
                     )
                     if stats.embedded == 0:
                         break
-                # Register model B with a distinct dim so a fresh vec
-                # table is created; activate it so the worker knows to
-                # route writes to the new model.
+                # Register model B under the "ollama" family so the
+                # real-adapter run targets OllamaEmbedder naturally;
+                # under the fake-adapter run the family is a label
+                # only, no network call happens.
                 model_b = models_registry.register_embedding_model(
-                    vc.connection, name="openai", dim=DIM_B, activate=True
+                    vc.connection, name="ollama", dim=dim_b, activate=True
                 )
-                embedder_b = _FakeEmbedder(dim=DIM_B, model_name="fake-b")
                 # Mark every existing facet pending so the worker
                 # re-embeds them against model B.
                 vc.connection.execute(
@@ -195,11 +229,11 @@ async def _run(*, facets: int, batch_size: int) -> int:
         "inputs": {
             "facets": facets,
             "batch_size": batch_size,
-            "dim_a": DIM_A,
-            "dim_b": DIM_B,
-            "adapters": "fake",
+            "dim_a": FAKE_DIM_A,
+            "dim_b": dim_b,
+            "adapters": adapters,
             "embedder_a": "fake-a",
-            "embedder_b": "fake-b",
+            "embedder_b": embedder_b_id,
         },
         "metrics": metrics,
     }
@@ -224,8 +258,14 @@ def _cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="b-reembed-1")
     parser.add_argument("--facets", type=int, default=DEFAULT_FACETS)
     parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument(
+        "--adapters",
+        choices=("fake", "real"),
+        default="fake",
+        help="'real' re-embeds through Ollama nomic-embed-text for the v0.1 DoD wall-time gate",
+    )
     args = parser.parse_args(argv)
-    return asyncio.run(_run(facets=args.facets, batch_size=args.batch_size))
+    return asyncio.run(_run(facets=args.facets, batch_size=args.batch_size, adapters=args.adapters))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,35 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — v0.1.0-pre
 
+### Benchmark finalisation — live Ollama reruns
+
+Real-adapter reruns against Ollama `nomic-embed-text` (768 dim) +
+sentence-transformers `cross-encoder/ms-marco-MiniLM-L-6-v2` on the
+reference hardware baseline (MacBook Pro M1 Pro, 16 GB RAM, macOS
+15.x, no concurrent Ollama workload).
+
+- B-RET-1 @ 2K live: MRR both arms saturated at 1.000;
+  p95 `rerank_only` 1078 ms, `swcr` 1183 ms — +105 ms / +9.7%,
+  inside the +15% / +100 ms regression-guard bound.
+- **B-RET-2 @ 10K live: p50 1094 ms, p95 1154 ms, p99 1514 ms.**
+  Exceeds the v0.1 DoD ceiling (p50 < 500 ms, p95 < 1000 ms). The
+  CPU MiniLM cross-encoder rerank on 50 candidates is the dominant
+  cost; Ollama embed for a single query is ~20–50 ms. DoD target
+  needs re-calibration against real-adapter costs (P14 decision
+  point: revise target, shrink candidate count, make reranker
+  optional on slow hardware, or accept the number and document it
+  in release notes).
+- **B-RET-3 @ 10K live: p50 2110 ms, p95 2316 ms, p99 2395 ms.**
+  p50 exceeds 1500 ms; p95/p99 inside 3000 ms. Same reranker
+  bottleneck, compounded by five-facet-type fan-out.
+- **B-REEMBED-1 @ 10K live: 442.7 s (7.4 min) wall, 22.6 facets/s
+  throughput. Inside the < 10 min DoD ceiling.** The storage-side
+  2 s ceiling from the fake-adapter run bounds the theoretical
+  minimum; the rest is Ollama embedding throughput.
+
+Live reruns are committed alongside the fake-adapter 10K results;
+DoD reconciliation lands in P14.
+
 ### Benchmark finalisation at 10K facets
 
 - B-RET-1 dataset generator now emits a 10K variant

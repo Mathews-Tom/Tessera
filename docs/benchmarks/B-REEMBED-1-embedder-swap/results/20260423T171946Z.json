@@ -1,0 +1,29 @@
+{
+  "benchmark_id": "B-REEMBED-1",
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.3.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "d75c821a54e475a7ae1cf99f2254576025424b7f"
+  },
+  "inputs": {
+    "adapters": "real",
+    "batch_size": 64,
+    "dim_a": 8,
+    "dim_b": 768,
+    "embedder_a": "fake-a",
+    "embedder_b": "ollama/nomic-embed-text",
+    "facets": 10000
+  },
+  "metrics": {
+    "batch_count": 158,
+    "batch_p50_ms": 2833.199500455521,
+    "batch_p95_ms": 2961.0303749796003,
+    "batch_p99_ms": 3067.53774988465,
+    "final_embedded": 10000,
+    "final_pending": 0,
+    "throughput_facets_per_sec": 22.590059999007998,
+    "wall_ms": 442672.5737089291
+  },
+  "timestamp": "2026-04-23T17:19:46Z"
+}
