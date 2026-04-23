@@ -25,7 +25,6 @@ import pytest
 from tessera.adapters import models_registry
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope
-from tessera.daemon import state as daemon_state
 from tessera.daemon import supervisor
 from tessera.daemon.config import resolve_config
 from tessera.daemon.control import call_control
@@ -127,7 +126,10 @@ async def test_supervisor_starts_serves_and_stops(
         model = models_registry.active_model(conn)
         return _FakeEmbedder(), model.id, models_registry.vec_table_name(model.id)
 
-    monkeypatch.setattr(daemon_state, "resolve_embedder", _fake_resolve)
+    # supervisor.py binds `resolve_embedder` at import time via
+    # `from tessera.daemon.state import resolve_embedder`, so the patch
+    # must target the supervisor module's namespace, not daemon_state's.
+    monkeypatch.setattr(supervisor, "resolve_embedder", _fake_resolve)
     monkeypatch.setattr(supervisor, "SentenceTransformersReranker", _FakeReranker)
 
     port = _pick_port()
@@ -175,6 +177,112 @@ async def test_supervisor_starts_serves_and_stops(
     # Shutdown cleans up socket + pid.
     assert not config.socket_path.exists()
     assert not config.pid_path.exists()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_supervisor_emits_daemon_warmed_audit_row(
+    short_run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pre-warmed fake adapters must still land a daemon_warmed audit row
+    # so operators can see which reranker tier the daemon is running on.
+    # Fake reranker has no resolved_device attribute; the supervisor
+    # records "unknown" in that case.
+    vault_path = short_run_dir / "vault.db"
+    passphrase = b"warmup-test"
+    salt = new_salt()
+    save_salt(vault_path, salt)
+    with derive_key(bytearray(passphrase), salt) as key:
+        bootstrap(vault_path, key)
+        with VaultConnection.open(vault_path, key) as vc:
+            vc.connection.execute(
+                "INSERT INTO agents(external_id, name, created_at) VALUES ('01WARM', 'a', 0)"
+            )
+            models_registry.register_embedding_model(
+                vc.connection, name="ollama", dim=8, activate=True
+            )
+
+    embed_calls: list[list[str]] = []
+    score_calls: list[tuple[str, list[str]]] = []
+
+    class _RecordingReranker(_FakeReranker):
+        async def score(
+            self, query: str, passages: Sequence[str], *, seed: int | None = None
+        ) -> list[float]:
+            score_calls.append((query, list(passages)))
+            return await super().score(query, passages, seed=seed)
+
+    @dataclass
+    class _RecordingEmbedder(_FakeEmbedder):
+        async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+            embed_calls.append(list(texts))
+            return await super().embed(texts)
+
+    def _fake_resolve(conn: Any, *, ollama_host: str) -> tuple[_RecordingEmbedder, int, str]:
+        del ollama_host
+        model = models_registry.active_model(conn)
+        return _RecordingEmbedder(), model.id, models_registry.vec_table_name(model.id)
+
+    # supervisor.py binds `resolve_embedder` at import time via
+    # `from tessera.daemon.state import resolve_embedder`, so the patch
+    # must target the supervisor module's namespace, not daemon_state's.
+    monkeypatch.setattr(supervisor, "resolve_embedder", _fake_resolve)
+    monkeypatch.setattr(supervisor, "SentenceTransformersReranker", _RecordingReranker)
+
+    port = _pick_port()
+    config = resolve_config(
+        vault_path=vault_path,
+        http_port=port,
+        socket_path=short_run_dir / "w.sock",
+        passphrase=passphrase,
+    )
+    config = config.__class__(
+        vault_path=config.vault_path,
+        http_host=config.http_host,
+        http_port=config.http_port,
+        socket_path=config.socket_path,
+        log_path=short_run_dir / "log",
+        pid_path=short_run_dir / "pid",
+        events_db_path=short_run_dir / "events.db",
+        allowed_origins=config.allowed_origins,
+        ollama_host=config.ollama_host,
+        reranker_model=config.reranker_model,
+        passphrase=config.passphrase,
+    )
+    stop = asyncio.Event()
+    ready = asyncio.Event()
+    daemon_task = asyncio.create_task(
+        supervisor.run_daemon(config, stop_event=stop, ready=ready)
+    )
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=10.0)
+    finally:
+        stop.set()
+        await asyncio.wait_for(daemon_task, timeout=10.0)
+
+    # Both adapters were exercised during warm-up.
+    assert embed_calls
+    assert embed_calls[0] == ["warm"]
+    assert score_calls
+    assert score_calls[0][0] == "warm"
+    assert len(score_calls[0][1]) >= 2
+
+    # Audit row lands with the expected payload shape.
+    import json as _json
+
+    with (
+        derive_key(bytearray(passphrase), salt) as key,
+        VaultConnection.open(vault_path, key) as vc,
+    ):
+        row = vc.connection.execute(
+            "SELECT payload FROM audit_log WHERE op='daemon_warmed' ORDER BY at DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None, "supervisor did not emit a daemon_warmed audit row"
+    payload = _json.loads(row[0])
+    assert payload["reranker_device"] == "unknown"
+    assert payload["embedder_name"] == "_RecordingEmbedder"
+    assert isinstance(payload["duration_ms"], int | float)
+    assert payload["duration_ms"] >= 0.0
 
 
 @pytest.mark.integration

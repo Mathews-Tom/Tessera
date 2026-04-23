@@ -13,12 +13,14 @@ import asyncio
 import contextlib
 import signal
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tessera.adapters.protocol import Embedder, Reranker
 from tessera.adapters.st_reranker import SentenceTransformersReranker
 from tessera.auth.tokens import VerifiedCapability
 from tessera.daemon.config import DaemonConfig
@@ -29,6 +31,8 @@ from tessera.daemon.http_mcp import serve_http_mcp
 from tessera.daemon.state import DaemonState, open_vault_for_daemon, resolve_embedder
 from tessera.observability.events import EventLog
 from tessera.retrieval import embed_worker
+from tessera.vault import audit
+from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import ProtectedKey, derive_key, load_salt
 
 _EMBED_WORKER_BATCH = 128
@@ -74,6 +78,7 @@ async def run_daemon(
             )
             reranker = SentenceTransformersReranker(model_name=config.reranker_model)
             event_log = EventLog.open(config.events_db_path)
+            await _warm_adapters(vault, embedder, reranker)
             state = DaemonState(
                 vault_path=config.vault_path,
                 vault=vault,
@@ -136,6 +141,44 @@ def _derive_key(config: DaemonConfig) -> ProtectedKey:
         )
     salt = load_salt(config.vault_path)
     return derive_key(bytearray(config.passphrase), salt)
+
+
+async def _warm_adapters(
+    vault: VaultConnection, embedder: Embedder, reranker: Reranker
+) -> None:
+    """Force both adapters to load before the daemon accepts traffic.
+
+    Ollama's embed endpoint pays a cold-load cost (~2-5 s for
+    nomic-embed-text on M1 Pro) on first call after the model has
+    unloaded. sentence-transformers loads its CrossEncoder on first
+    ``score`` call. Without this warm-up, the first MCP recall after
+    daemon start pays both costs in series.
+
+    The reranker's ``score`` call uses two dummy passages because arm64
+    torch builds have SIGBUSed on single-example forward paths — the
+    adapter's own ``health_check`` documents the same workaround.
+
+    Fails loud: any exception propagates and blocks daemon startup,
+    consistent with the no-fallback policy. A user who sees this error
+    has a misconfigured Ollama / missing model / broken torch install,
+    and a silent fallback to a non-functional daemon would hide it.
+    """
+
+    start = time.perf_counter()
+    await embedder.embed(["warm"])
+    await reranker.score("warm", ["warm up", "probe"])
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    resolved_device = getattr(reranker, "resolved_device", "") or "unknown"
+    audit.write(
+        vault.connection,
+        op="daemon_warmed",
+        actor="daemon",
+        payload={
+            "reranker_device": resolved_device,
+            "embedder_name": type(embedder).__name__,
+            "duration_ms": round(elapsed_ms, 1),
+        },
+    )
 
 
 def _install_signal_handlers(stop: asyncio.Event) -> None:
