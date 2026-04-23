@@ -92,9 +92,7 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     # which performance tier (cpu / mps / cuda) the daemon is running on.
     # No user content crosses the boundary: the warm-up uses the literal
     # string ``"warm"`` as input.
-    "daemon_warmed": frozenset(
-        {"reranker_device", "embedder_name", "duration_ms"}
-    ),
+    "daemon_warmed": frozenset({"reranker_device", "embedder_name", "duration_ms"}),
 }
 
 

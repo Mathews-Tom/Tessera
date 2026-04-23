@@ -143,9 +143,7 @@ def _derive_key(config: DaemonConfig) -> ProtectedKey:
     return derive_key(bytearray(config.passphrase), salt)
 
 
-async def _warm_adapters(
-    vault: VaultConnection, embedder: Embedder, reranker: Reranker
-) -> None:
+async def _warm_adapters(vault: VaultConnection, embedder: Embedder, reranker: Reranker) -> None:
     """Force both adapters to load before the daemon accepts traffic.
 
     Ollama's embed endpoint pays a cold-load cost (~2-5 s for

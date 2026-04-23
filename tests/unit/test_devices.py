@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import _patch, patch
 
 import pytest
 
@@ -14,7 +15,9 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(ENV_OVERRIDE, raising=False)
 
 
-def _patch_backends(*, cuda: bool, mps_available: bool, mps_built: bool):
+def _patch_backends(
+    *, cuda: bool, mps_available: bool, mps_built: bool
+) -> tuple[_patch[Any], _patch[Any], _patch[Any]]:
     return (
         patch("tessera.adapters.devices.torch.cuda.is_available", return_value=cuda),
         patch(

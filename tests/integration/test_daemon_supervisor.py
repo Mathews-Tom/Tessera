@@ -251,9 +251,7 @@ async def test_supervisor_emits_daemon_warmed_audit_row(
     )
     stop = asyncio.Event()
     ready = asyncio.Event()
-    daemon_task = asyncio.create_task(
-        supervisor.run_daemon(config, stop_event=stop, ready=ready)
-    )
+    daemon_task = asyncio.create_task(supervisor.run_daemon(config, stop_event=stop, ready=ready))
     try:
         await asyncio.wait_for(ready.wait(), timeout=10.0)
     finally:

@@ -54,12 +54,8 @@ def detect_best_device(explicit: str = "auto") -> str:
             f"invalid device {resolved!r}; expected one of cpu, mps, cuda, cuda:<index>"
         )
     if base == "cuda" and not torch.cuda.is_available():
-        raise ValueError(
-            f"device {resolved!r} requested but torch.cuda.is_available() is False"
-        )
-    if base == "mps" and not (
-        torch.backends.mps.is_available() and torch.backends.mps.is_built()
-    ):
+        raise ValueError(f"device {resolved!r} requested but torch.cuda.is_available() is False")
+    if base == "mps" and not (torch.backends.mps.is_available() and torch.backends.mps.is_built()):
         raise ValueError(
             f"device {resolved!r} requested but torch MPS backend is unavailable on this host"
         )
