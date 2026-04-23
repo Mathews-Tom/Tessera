@@ -32,10 +32,22 @@ The retrieval pipeline (system-design.md §Retrieval pipeline) has five stages. 
 | BM25 (FTS5)               | Yes                     | None required; FTS5 is deterministic                          |
 | Dense search (sqlite-vec) | Yes                     | None required; cosine is deterministic                        |
 | RRF fusion                | Yes                     | Tie-break on `facets.id` ascending                            |
-| Cross-encoder rerank      | Yes given model weights | `torch.manual_seed(seed)` per call (scoped RNG; global `torch.use_deterministic_algorithms(True)` is not set because some arm64 torch builds SIGBUS on non-deterministic fallback ops — see `src/tessera/adapters/st_reranker.py`). The seeded RNG covers every sampling point inside `CrossEncoder.predict` on the CPU path. GPU determinism requires `CUBLAS_WORKSPACE_CONFIG` and is deferred until a user reports a GPU deployment. |
+| Cross-encoder rerank      | Tier-dependent; see *Device-tier determinism* below | `torch.manual_seed(seed)` per call (scoped RNG; global `torch.use_deterministic_algorithms(True)` is not set because some arm64 torch builds SIGBUS on non-deterministic fallback ops — see `src/tessera/adapters/st_reranker.py`). The seeded RNG covers every sampling point inside `CrossEncoder.predict` on the CPU path. |
 | SWCR reweighting          | Yes                     | Closed-form; no sampling                                      |
 | MMR diversification       | Yes                     | Greedy with deterministic tie-break on `facets.id`            |
 | Token budget enforcement  | Yes                     | Integer token counts                                          |
+
+### Device-tier determinism
+
+The cross-encoder reranker runs via PyTorch through `sentence-transformers.CrossEncoder`. Device selection defaults to `"auto"` and picks CUDA > MPS > CPU; see `src/tessera/adapters/devices.py`. The determinism guarantee varies by device:
+
+| Device | Bit-identical across runs? | Notes |
+|--------|----------------------------|-------|
+| CPU | Yes | Integration test (`tests/integration/test_retrieval_pipeline.py`) pins `device="cpu"` and asserts bit-identical rerun of the same query. This is the strong guarantee. |
+| MPS | Within a single daemon lifetime on same hardware | Metal float-op ordering can vary across process launches on some torch revisions. `torch.manual_seed(seed)` scopes the RNG correctly within one process. |
+| CUDA | Within a single daemon lifetime on same hardware, with `CUBLAS_WORKSPACE_CONFIG=:4096:8` | Without the env var, CUDA's cuBLAS can select non-deterministic algorithms. Tessera does not set it globally because CPU is the determinism ground truth. |
+
+`TESSERA_RERANK_DEVICE=cpu` forces the CPU path for users who need cross-run bit-identity (audit-log replay testing, reproducibility studies). The `daemon_warmed` audit row records the resolved device at startup so operators can verify which tier the daemon is running on after the fact.
 
 ### Seed source
 

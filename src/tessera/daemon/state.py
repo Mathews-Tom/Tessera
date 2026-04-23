@@ -81,6 +81,12 @@ def build_pipeline_context(
         tool_budget_tokens=tool_budget_tokens,
         k=k,
         facet_types=facet_types,
+        # B-RET-2 sweep at 10K facets on the reference hardware baseline
+        # (see docs/benchmarks/B-RET-2-recall-latency/results/) showed the
+        # cross-encoder scales linearly with candidate pool; capping the
+        # rerank input at 20 cuts p50 latency by ~35% vs the unbounded
+        # fused list with no observed quality regression in B-RET-1.
+        rerank_candidate_limit=20,
         event_log=state.event_log,
     )
 

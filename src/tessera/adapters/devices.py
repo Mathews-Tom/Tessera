@@ -66,4 +66,4 @@ def detect_best_device(explicit: str = "auto") -> str:
     return resolved
 
 
-__all__ = ["detect_best_device", "ENV_OVERRIDE"]
+__all__ = ["ENV_OVERRIDE", "detect_best_device"]

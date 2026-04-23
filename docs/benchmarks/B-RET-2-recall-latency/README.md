@@ -23,15 +23,31 @@ records the shape for later comparison.
 ## Reproduce
 
 ```bash
+# fake adapters, 1K facets, deterministic
 uv run python docs/benchmarks/B-RET-2-recall-latency/run.py
+
+# DoD measurement: live Ollama + sentence-transformers MiniLM at 10K, k=20
+uv run python docs/benchmarks/B-RET-2-recall-latency/run.py \
+  --n-facets 10000 --trials 100 \
+  --adapters real --retrieval-mode swcr \
+  --rerank-k 20 --device auto
 ```
 
+Flags:
+- `--rerank-k N` — cap the RRF-ranked candidate count sent into the
+  cross-encoder. Production default is `20` per `docs/release-spec.md
+  §v0.1 DoD`; omit to rerank the full fused list.
+- `--device {auto,cpu,mps,cuda,cuda:N}` — reranker device for `--adapters
+  real`. `auto` (default) picks CUDA > MPS > CPU via
+  `tessera.adapters.devices.detect_best_device`.
+
 Results land under `results/<utc-timestamp>.json`. New runs produce new
-files.
+files; the harness refuses to overwrite.
 
 ## Metric shape
 
 - `env` — OS, arch, Python, git sha.
 - `inputs` — facet count, dim, trial count, embedder / reranker
-  identifiers, retrieval mode.
+  identifiers, retrieval mode, `rerank_k`, requested `device`, and the
+  `resolved_device` the CrossEncoder actually loaded with.
 - `metrics` — p50, p95, p99, min, max, mean latency in milliseconds.
