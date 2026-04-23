@@ -67,19 +67,21 @@ class _HashEmbedder:
         return None
 
 
-def _select_adapters(adapters: str) -> tuple[Embedder, Reranker, int, str, str]:
+def _select_adapters(adapters: str, device: str) -> tuple[Embedder, Reranker, int, str, str]:
     """Return ``(embedder, reranker, dim, embedder_id, reranker_id)``.
 
     ``adapters='fake'`` is the reproducible default; ``adapters='real'``
     swaps in the v0.1 DoD reference pair (Ollama ``nomic-embed-text`` +
-    sentence-transformers MiniLM cross-encoder).
+    sentence-transformers MiniLM cross-encoder). ``device`` is passed
+    through to the reranker for ``real`` runs — ``auto`` (default) picks
+    CUDA > MPS > CPU.
     """
 
     if adapters == "fake":
         return _HashEmbedder(), _LengthReranker(), FAKE_DIM, "hash-fake", "length-fake"
     if adapters == "real":
         embedder = OllamaEmbedder(model_name=OLLAMA_MODEL, dim=OLLAMA_DIM, host=OLLAMA_HOST)
-        reranker = SentenceTransformersReranker()
+        reranker = SentenceTransformersReranker(device=device)
         return embedder, reranker, OLLAMA_DIM, f"ollama/{OLLAMA_MODEL}", reranker.model_name
     raise SystemExit(f"unknown --adapters value: {adapters!r}")
 
@@ -133,8 +135,10 @@ async def _run(
     trials: int,
     retrieval_mode: RetrievalMode,
     adapters: str,
+    rerank_k: int | None,
+    device: str,
 ) -> int:
-    embedder, reranker, dim, embedder_id, reranker_id = _select_adapters(adapters)
+    embedder, reranker, dim, embedder_id, reranker_id = _select_adapters(adapters, device)
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-2.db"
         passphrase = b"b-ret-2-passphrase"
@@ -184,6 +188,7 @@ async def _run(
                     tool_budget_tokens=2000,
                     k=5,
                     facet_types=("project",),
+                    rerank_candidate_limit=rerank_k,
                 )
                 # Warm-up call, discarded.
                 await recall(ctx, query_text="warm-up")
@@ -213,6 +218,9 @@ async def _run(
             "embedder": embedder_id,
             "reranker": reranker_id,
             "retrieval_mode": retrieval_mode,
+            "rerank_k": rerank_k,
+            "device": device,
+            "resolved_device": getattr(reranker, "resolved_device", "") or None,
         },
         "metrics": metrics,
     }
@@ -247,6 +255,17 @@ def _cli(argv: list[str] | None = None) -> int:
         default="fake",
         help="'real' requires Ollama with nomic-embed-text and the sentence-transformers MiniLM cross-encoder",
     )
+    parser.add_argument(
+        "--rerank-k",
+        type=int,
+        default=None,
+        help="cap the number of RRF-ranked candidates sent into the cross-encoder; omit to rerank the full fused list",
+    )
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="reranker device for --adapters real: auto (default) picks CUDA > MPS > CPU; or force cpu / mps / cuda / cuda:N",
+    )
     args = parser.parse_args(argv)
     return asyncio.run(
         _run(
@@ -254,6 +273,8 @@ def _cli(argv: list[str] | None = None) -> int:
             trials=args.trials,
             retrieval_mode=args.retrieval_mode,
             adapters=args.adapters,
+            rerank_k=args.rerank_k,
+            device=args.device,
         )
     )
 

@@ -1,0 +1,28 @@
+{
+  "benchmark_id": "B-RET-2",
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.3.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "563f0c027c8f96dfa3c9c30f18dffb5e83651709"
+  },
+  "inputs": {
+    "adapters": "real",
+    "dim": 768,
+    "embedder": "ollama/nomic-embed-text",
+    "facets": 10000,
+    "rerank_k": 50,
+    "reranker": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "retrieval_mode": "swcr",
+    "trials": 100
+  },
+  "metrics": {
+    "max_ms": 5723.549542017281,
+    "mean_ms": 1163.4290284011513,
+    "min_ms": 1051.126457983628,
+    "p50_ms": 1107.2883539600298,
+    "p95_ms": 1220.611667027697,
+    "p99_ms": 1350.752874976024
+  },
+  "timestamp": "2026-04-23T18:06:56Z"
+}
