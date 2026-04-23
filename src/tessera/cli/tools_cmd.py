@@ -18,14 +18,24 @@ import httpx
 
 from tessera.cli._common import fail
 from tessera.daemon.config import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
+from tessera.vault.facets import V0_1_FACET_TYPES
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
     capture = subparsers.add_parser("capture", help="capture a facet")
     _add_http_args(capture)
     capture.add_argument("content")
-    capture.add_argument("--facet-type", default="episodic")
-    capture.add_argument("--source-client", default=None)
+    # ``--facet-type`` is required. Under the post-reframe five-facet
+    # model (ADR 0010) there is no single sensible default — every
+    # facet type is an explicit user choice between identity /
+    # preference / workflow / project / style.
+    capture.add_argument(
+        "--facet-type",
+        required=True,
+        choices=sorted(V0_1_FACET_TYPES),
+        help="one of the five v0.1 facet types",
+    )
+    capture.add_argument("--source-tool", default=None)
     capture.set_defaults(handler=_cmd_capture)
 
     recall = subparsers.add_parser("recall", help="hybrid recall")
@@ -43,6 +53,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     stats = subparsers.add_parser("stats", help="vault stats")
     _add_http_args(stats)
     stats.set_defaults(handler=_cmd_stats)
+
+    forget = subparsers.add_parser("forget", help="soft-delete one facet by external_id")
+    _add_http_args(forget)
+    forget.add_argument("external_id")
+    forget.add_argument("--reason", default=None)
+    forget.set_defaults(handler=_cmd_forget)
 
 
 def _add_http_args(parser: argparse.ArgumentParser) -> None:
@@ -87,8 +103,8 @@ def _call(args: argparse.Namespace, method: str, payload: dict[str, Any]) -> dic
 
 def _cmd_capture(args: argparse.Namespace) -> int:
     payload = {"content": args.content, "facet_type": args.facet_type}
-    if args.source_client:
-        payload["source_client"] = args.source_client
+    if args.source_tool:
+        payload["source_tool"] = args.source_tool
     try:
         result = _call(args, "capture", payload)
     except SystemExit as exc:
@@ -121,6 +137,18 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _cmd_stats(args: argparse.Namespace) -> int:
     try:
         result = _call(args, "stats", {})
+    except SystemExit as exc:
+        return fail(str(exc))
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def _cmd_forget(args: argparse.Namespace) -> int:
+    payload: dict[str, Any] = {"external_id": args.external_id}
+    if args.reason:
+        payload["reason"] = args.reason
+    try:
+        result = _call(args, "forget", payload)
     except SystemExit as exc:
         return fail(str(exc))
     print(json.dumps(result, indent=2))

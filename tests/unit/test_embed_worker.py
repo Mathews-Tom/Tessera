@@ -65,9 +65,9 @@ def _capture_n(vc: VaultConnection, agent_id: int, n: int) -> list[str]:
         result = capture.capture(
             vc.connection,
             agent_id=agent_id,
-            facet_type="episodic",
+            facet_type="project",
             content=f"event-{i}",
-            source_client="test",
+            source_tool="test",
         )
         ids.append(result.external_id)
     return ids

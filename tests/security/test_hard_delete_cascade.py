@@ -44,9 +44,9 @@ async def test_hard_delete_removes_facet_fts_and_vec(open_vault: VaultConnection
     result = capture.capture(
         conn,
         agent_id=agent_id,
-        facet_type="episodic",
+        facet_type="project",
         content="secret thing the agent remembered",
-        source_client="test",
+        source_tool="test",
     )
     await embed_worker.run_pass(conn, _FixedEmbedder(), active_model_id=model_a.id, now_epoch=100)
 
@@ -95,9 +95,9 @@ async def test_hard_delete_cascades_across_multiple_vec_tables(
     result = capture.capture(
         conn,
         agent_id=agent_id,
-        facet_type="episodic",
+        facet_type="project",
         content="content A",
-        source_client="test",
+        source_tool="test",
     )
     await embed_worker.run_pass(conn, _FixedEmbedder(), active_model_id=model_a.id, now_epoch=100)
 

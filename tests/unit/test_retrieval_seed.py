@@ -5,10 +5,28 @@ from __future__ import annotations
 import pytest
 
 from tessera.retrieval.seed import (
+    DEFAULT_RETRIEVAL_MODE,
     RetrievalConfig,
     compute_seed,
     seed_hex,
 )
+
+
+@pytest.mark.unit
+def test_default_retrieval_mode_is_swcr() -> None:
+    # ADR 0011: SWCR ships default-on at v0.1. Flipping this back to
+    # ``rerank_only`` would contradict the post-reframe positioning and
+    # must be accompanied by a new ADR.
+    assert DEFAULT_RETRIEVAL_MODE == "swcr"
+    assert (
+        RetrievalConfig(
+            rerank_model="x",
+            mmr_lambda=0.7,
+            max_candidates=50,
+        ).retrieval_mode
+        == "swcr"
+    )
+
 
 _CFG = RetrievalConfig(
     rerank_model="cross-encoder/ms-marco-MiniLM-L-6-v2",

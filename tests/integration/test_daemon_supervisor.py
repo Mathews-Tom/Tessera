@@ -106,7 +106,7 @@ async def test_supervisor_starts_serves_and_stops(
                 agent_id=agent_id,
                 facet_type="style",
                 content="voice",
-                source_client="t",
+                source_tool="t",
                 captured_at=1_000_000,
             )
             # Issue token at the real wall clock so it is not already

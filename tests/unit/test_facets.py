@@ -42,9 +42,9 @@ def test_insert_returns_new_external_id_on_first_write(conn: sqlite3.Connection)
     external_id, is_new = facets.insert(
         conn,
         agent_id=_agent_id(conn),
-        facet_type="semantic",
+        facet_type="preference",
         content="the sky is blue",
-        source_client="cli",
+        source_tool="cli",
     )
     assert is_new is True
     assert external_id.startswith("0")
@@ -54,10 +54,10 @@ def test_insert_returns_new_external_id_on_first_write(conn: sqlite3.Connection)
 def test_insert_dedups_on_same_agent_and_normalized_content(conn: sqlite3.Connection) -> None:
     aid = _agent_id(conn)
     first, _ = facets.insert(
-        conn, agent_id=aid, facet_type="semantic", content="hi", source_client="cli"
+        conn, agent_id=aid, facet_type="preference", content="hi", source_tool="cli"
     )
     second, is_new = facets.insert(
-        conn, agent_id=aid, facet_type="semantic", content=" hi ", source_client="cli"
+        conn, agent_id=aid, facet_type="preference", content=" hi ", source_tool="cli"
     )
     assert second == first
     assert is_new is False
@@ -71,7 +71,7 @@ def test_insert_rejects_unsupported_facet_type(conn: sqlite3.Connection) -> None
             agent_id=_agent_id(conn),
             facet_type="skill",
             content="x",
-            source_client="cli",
+            source_tool="cli",
         )
 
 
@@ -81,9 +81,9 @@ def test_insert_rejects_unknown_agent(conn: sqlite3.Connection) -> None:
         facets.insert(
             conn,
             agent_id=99999,
-            facet_type="semantic",
+            facet_type="preference",
             content="x",
-            source_client="cli",
+            source_tool="cli",
         )
 
 
@@ -98,20 +98,20 @@ def test_list_by_type_orders_by_captured_at_desc(conn: sqlite3.Connection) -> No
     facets.insert(
         conn,
         agent_id=aid,
-        facet_type="episodic",
+        facet_type="project",
         content="one",
-        source_client="cli",
+        source_tool="cli",
         captured_at=100,
     )
     facets.insert(
         conn,
         agent_id=aid,
-        facet_type="episodic",
+        facet_type="project",
         content="two",
-        source_client="cli",
+        source_tool="cli",
         captured_at=200,
     )
-    results = facets.list_by_type(conn, agent_id=aid, facet_type="episodic")
+    results = facets.list_by_type(conn, agent_id=aid, facet_type="project")
     assert [f.content for f in results] == ["two", "one"]
 
 
@@ -121,27 +121,27 @@ def test_list_by_type_respects_since_filter(conn: sqlite3.Connection) -> None:
     facets.insert(
         conn,
         agent_id=aid,
-        facet_type="episodic",
+        facet_type="project",
         content="old",
-        source_client="cli",
+        source_tool="cli",
         captured_at=100,
     )
     facets.insert(
         conn,
         agent_id=aid,
-        facet_type="episodic",
+        facet_type="project",
         content="new",
-        source_client="cli",
+        source_tool="cli",
         captured_at=200,
     )
-    results = facets.list_by_type(conn, agent_id=aid, facet_type="episodic", since=150)
+    results = facets.list_by_type(conn, agent_id=aid, facet_type="project", since=150)
     assert [f.content for f in results] == ["new"]
 
 
 @pytest.mark.unit
 def test_list_by_type_excludes_soft_deleted(conn: sqlite3.Connection) -> None:
     aid = _agent_id(conn)
-    eid, _ = facets.insert(conn, agent_id=aid, facet_type="style", content="x", source_client="cli")
+    eid, _ = facets.insert(conn, agent_id=aid, facet_type="style", content="x", source_tool="cli")
     facets.soft_delete(conn, eid)
     assert facets.list_by_type(conn, agent_id=aid, facet_type="style") == []
 
@@ -149,7 +149,7 @@ def test_list_by_type_excludes_soft_deleted(conn: sqlite3.Connection) -> None:
 @pytest.mark.unit
 def test_soft_delete_is_idempotent_and_preserves_row(conn: sqlite3.Connection) -> None:
     aid = _agent_id(conn)
-    eid, _ = facets.insert(conn, agent_id=aid, facet_type="style", content="x", source_client="cli")
+    eid, _ = facets.insert(conn, agent_id=aid, facet_type="style", content="x", source_tool="cli")
     assert facets.soft_delete(conn, eid) is True
     assert facets.soft_delete(conn, eid) is False  # already deleted
     still = facets.get(conn, eid)
@@ -163,9 +163,9 @@ def test_hard_delete_cascades_to_fts(conn: sqlite3.Connection) -> None:
     eid, _ = facets.insert(
         conn,
         agent_id=aid,
-        facet_type="semantic",
+        facet_type="preference",
         content="haystack content",
-        source_client="cli",
+        source_tool="cli",
     )
     assert conn.execute("SELECT COUNT(*) FROM facets_fts").fetchone()[0] == 1
     assert facets.hard_delete(conn, eid) is True
@@ -182,12 +182,12 @@ def test_hard_delete_nonexistent_returns_false(conn: sqlite3.Connection) -> None
 def test_insert_after_soft_delete_restores_the_row(conn: sqlite3.Connection) -> None:
     aid = _agent_id(conn)
     eid, _ = facets.insert(
-        conn, agent_id=aid, facet_type="style", content="my voice sample", source_client="cli"
+        conn, agent_id=aid, facet_type="style", content="my voice sample", source_tool="cli"
     )
     assert facets.soft_delete(conn, eid) is True
 
     eid2, is_new = facets.insert(
-        conn, agent_id=aid, facet_type="style", content="my voice sample", source_client="cli"
+        conn, agent_id=aid, facet_type="style", content="my voice sample", source_tool="cli"
     )
     assert eid2 == eid
     assert is_new is False
@@ -211,7 +211,7 @@ def test_v0_1_facet_types_are_subset_of_schema_check() -> None:
         conn.execute(
             """
             INSERT INTO facets(external_id, agent_id, facet_type, content,
-                               content_hash, source_client, captured_at)
+                               content_hash, source_tool, captured_at)
             VALUES (?, 1, ?, 'x', ?, 'cli', 1)
             """,
             (f"01{ft.upper()}", ft, ft),

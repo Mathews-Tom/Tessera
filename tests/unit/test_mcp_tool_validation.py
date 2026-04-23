@@ -11,18 +11,17 @@ from __future__ import annotations
 import pytest
 
 from tessera.mcp_surface.tools import (
-    _CLIENT_NAME_PATTERN,
+    _SOURCE_TOOL_PATTERN,
     _ULID_PATTERN,
     ValidationError,
     _resolve_response_budget,
-    _validate_client_name,
     _validate_facet_type,
     _validate_k,
     _validate_length,
     _validate_limit,
     _validate_metadata,
-    _validate_recent_window_hours,
     _validate_since,
+    _validate_source_tool,
     _validate_ulid,
 )
 
@@ -48,8 +47,18 @@ def test_validate_length_rejects_non_string() -> None:
 
 @pytest.mark.unit
 def test_validate_facet_type_accepts_v0_1_vocab() -> None:
-    for t in ("style", "episodic", "semantic"):
+    for t in ("identity", "preference", "workflow", "project", "style"):
         _validate_facet_type(t)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("retired", ["episodic", "semantic", "relationship", "goal", "judgment"])
+def test_validate_facet_type_rejects_retired_types(retired: str) -> None:
+    # Per ADR 0010 the retired facet types are no longer writable at
+    # v0.1; the MCP boundary must reject them so stale clients can't
+    # sneak rows past the schema CHECK.
+    with pytest.raises(ValidationError, match="not in"):
+        _validate_facet_type(retired)
 
 
 @pytest.mark.unit
@@ -69,8 +78,8 @@ def test_validate_facet_type_rejects_unknown() -> None:
         "svc.v2-2026",
     ],
 )
-def test_client_name_pattern_accepts(name: str) -> None:
-    _validate_client_name(name)
+def test_source_tool_pattern_accepts(name: str) -> None:
+    _validate_source_tool(name)
 
 
 @pytest.mark.unit
@@ -85,9 +94,9 @@ def test_client_name_pattern_accepts(name: str) -> None:
         "slash/sep",
     ],
 )
-def test_client_name_pattern_rejects(name: str) -> None:
+def test_source_tool_pattern_rejects(name: str) -> None:
     with pytest.raises(ValidationError):
-        _validate_client_name(name)
+        _validate_source_tool(name)
 
 
 @pytest.mark.unit
@@ -160,19 +169,6 @@ def test_resolve_response_budget_rejects_zero_and_negative() -> None:
 
 
 @pytest.mark.unit
-def test_validate_recent_window_hours_accepts_bounds() -> None:
-    _validate_recent_window_hours(1)
-    _validate_recent_window_hours(8760)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("hours", [0, -1, 9_000, 10**9])
-def test_validate_recent_window_hours_rejects_out_of_range(hours: int) -> None:
-    with pytest.raises(ValidationError):
-        _validate_recent_window_hours(hours)
-
-
-@pytest.mark.unit
 def test_validate_since_accepts_bounds() -> None:
     _validate_since(0)
     _validate_since(253_402_300_799)
@@ -221,7 +217,7 @@ def test_validate_metadata_rejects_non_dict() -> None:
 def test_regex_patterns_are_anchored() -> None:
     # Regressions where the anchors were dropped would let
     # "good_prefix_then bad chars" slip past. Anchor sanity check.
-    assert _CLIENT_NAME_PATTERN.pattern.startswith("^")
-    assert _CLIENT_NAME_PATTERN.pattern.endswith("$")
+    assert _SOURCE_TOOL_PATTERN.pattern.startswith("^")
+    assert _SOURCE_TOOL_PATTERN.pattern.endswith("$")
     assert _ULID_PATTERN.pattern.startswith("^")
     assert _ULID_PATTERN.pattern.endswith("$")

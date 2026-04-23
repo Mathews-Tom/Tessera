@@ -87,7 +87,7 @@ def resolve_embedder(conn: sqlcipher3.Connection, *, ollama_host: str) -> tuple[
 
     Raises :class:`~tessera.adapters.models_registry.NoActiveModelError`
     when the vault has no row with ``is_active=1``; the daemon cannot
-    serve recall/assume_identity without one and refuses to start.
+    serve ``recall`` without one and refuses to start.
     """
 
     model = models_registry.active_model(conn)

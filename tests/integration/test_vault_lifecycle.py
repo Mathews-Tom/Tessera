@@ -10,16 +10,17 @@ from tessera.migration import bootstrap, upgrade
 from tessera.vault import facets
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt
+from tessera.vault.schema import SCHEMA_VERSION
 
 
 @pytest.mark.integration
-def test_bootstrap_creates_schema_v1(tmp_path: Path) -> None:
+def test_bootstrap_creates_schema_at_current_version(tmp_path: Path) -> None:
     vault = tmp_path / "vault.db"
     salt = new_salt()
     key = derive_key(bytearray(b"passphrase"), salt)
     state = bootstrap(vault, key)
     key.wipe()
-    assert state.schema_version == 1
+    assert state.schema_version == SCHEMA_VERSION
     assert state.schema_target is None
     assert state.vault_id
     assert state.kdf_version == 1
@@ -47,7 +48,7 @@ def test_vault_round_trip_writes_and_reads_facet(tmp_path: Path) -> None:
             agent_id=agent_id,
             facet_type="style",
             content="short, punchy sentences are my voice",
-            source_client="test",
+            source_tool="test",
         )
         assert is_new is True
     k2.wipe()
@@ -71,7 +72,7 @@ def test_upgrade_is_noop_when_already_at_binary_version(tmp_path: Path) -> None:
     k2 = derive_key(bytearray(b"pass"), salt)
     state = upgrade(vault, k2)
     k2.wipe()
-    assert state.schema_version == 1
+    assert state.schema_version == SCHEMA_VERSION
 
 
 @pytest.mark.integration

@@ -5,16 +5,18 @@ SWCR is a post-rerank stage: it consumes per-candidate rerank scores
 ``s_r(f)`` and augments each one with a coherence bonus proportional to
 how strongly ``f`` connects to other high-scoring candidates across the
 coherence graph. Cross-type edges contribute more than same-type edges
-so the boost favours facets that reinforce a multi-facet agent identity
-(voice sample that matches recent episodics, skill that matches active
-goals, etc).
+so the boost favours facets that reinforce a multi-facet user-context
+bundle (style sample that matches the project facet's register,
+workflow whose procedural shape matches the project in scope, and so
+on).
 
 This module is pure: no DB, no adapters, no async. The inputs are the
 candidate set and the derived scores; the output is a new ranked list.
-P5 ablation exists exactly because every decision here (alpha, beta,
-gamma, lambda, sparsification threshold) is load-bearing for the
-product's "coherence differentiator" claim — they get tuned against
-``B-RET-1`` and justified in writing or the claim is retracted.
+The B-RET-1 ablation harness exists exactly because every decision here
+(alpha, beta, gamma, lambda, sparsification threshold) is load-bearing
+for the product's cross-facet-coherence claim — they get tuned against
+``B-RET-1`` and justified in writing or the claim is retracted
+(``docs/swcr-spec.md §Evidence gates``).
 """
 
 from __future__ import annotations

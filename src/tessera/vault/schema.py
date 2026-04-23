@@ -1,8 +1,15 @@
-"""v1 vault schema per docs/system-design.md §Vault schema and §Failure taxonomy.
+"""v2 vault schema per docs/system-design.md §Vault schema and §Failure taxonomy.
 
-The schema is emitted as a list of ordered DDL statements. The migration
-runner applies them inside a single transaction guarded by ``_meta.schema_target``
-so a crash midway leaves the vault diagnosable rather than half-formed.
+Schema v2 is the first post-reframe schema: the ``facet_type`` CHECK
+reflects the five-facet v0.1 vocabulary plus reserved v0.3/v0.5 types
+(ADR 0010), each facet row carries a ``mode`` column and a
+``source_tool`` column, and the ``compiled_artifacts`` table is
+reserved (empty but present) for v0.5 write-time compilation.
+
+The schema is emitted as a list of ordered DDL statements. The
+migration runner applies them inside a single transaction guarded by
+``_meta.schema_target`` so a crash midway leaves the vault
+diagnosable rather than half-formed.
 """
 
 from __future__ import annotations
@@ -10,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 1
+SCHEMA_VERSION: Final[int] = 2
 
 _PRAGMAS: Final[tuple[str, ...]] = (
     "PRAGMA foreign_keys = ON",
@@ -60,11 +67,13 @@ _TABLES: Final[tuple[str, ...]] = (
         external_id            TEXT NOT NULL UNIQUE,
         agent_id               INTEGER NOT NULL REFERENCES agents(id),
         facet_type             TEXT NOT NULL CHECK (facet_type IN
-            ('episodic', 'semantic', 'style', 'skill',
-             'relationship', 'goal', 'judgment')),
+            ('identity', 'preference', 'workflow', 'project', 'style',
+             'person', 'skill', 'compiled_notebook')),
         content                TEXT NOT NULL,
         content_hash           TEXT NOT NULL,
-        source_client          TEXT NOT NULL,
+        mode                   TEXT NOT NULL DEFAULT 'query_time'
+            CHECK (mode IN ('query_time', 'write_time', 'hybrid')),
+        source_tool            TEXT NOT NULL,
         captured_at            INTEGER NOT NULL,
         metadata               TEXT NOT NULL DEFAULT '{}',
         is_deleted             INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
@@ -86,6 +95,10 @@ _TABLES: Final[tuple[str, ...]] = (
     """
     CREATE INDEX IF NOT EXISTS facets_captured
         ON facets(captured_at DESC) WHERE is_deleted = 0
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS facets_mode
+        ON facets(mode, facet_type) WHERE is_deleted = 0
     """,
     """
     CREATE INDEX IF NOT EXISTS facets_embed_model
@@ -121,6 +134,24 @@ _TABLES: Final[tuple[str, ...]] = (
             VALUES ('delete', old.id, old.content);
         INSERT INTO facets_fts(rowid, content) VALUES (new.id, new.content);
     END
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS compiled_artifacts (
+        id                INTEGER PRIMARY KEY,
+        external_id       TEXT NOT NULL UNIQUE,
+        agent_id          INTEGER NOT NULL REFERENCES agents(id),
+        source_facets     TEXT NOT NULL,
+        artifact_type     TEXT NOT NULL,
+        content           TEXT NOT NULL,
+        compiled_at       INTEGER NOT NULL,
+        compiler_version  TEXT NOT NULL,
+        is_stale          INTEGER NOT NULL DEFAULT 0 CHECK (is_stale IN (0, 1)),
+        metadata          TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS compiled_agent_type
+        ON compiled_artifacts(agent_id, artifact_type, compiled_at DESC)
     """,
     """
     CREATE TABLE IF NOT EXISTS capabilities (

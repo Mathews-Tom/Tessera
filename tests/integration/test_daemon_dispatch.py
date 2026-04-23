@@ -69,16 +69,16 @@ async def _bootstrap(
             agent_id=agent_id,
             facet_type="style",
             content=f"voice sample {i}",
-            source_client="t",
+            source_tool="t",
             captured_at=1_000_000 + i,
         )
     for i in range(4):
         vault_capture.capture(
             open_vault.connection,
             agent_id=agent_id,
-            facet_type="episodic",
-            content=f"event {i}",
-            source_client="t",
+            facet_type="project",
+            content=f"project note {i}",
+            source_tool="t",
             captured_at=1_000_000 + i,
         )
     while True:
@@ -93,7 +93,7 @@ async def _bootstrap(
         agent_id=agent_id,
         client_name="cli",
         token_class="session",
-        scope=build_scope(read=["style", "episodic"], write=["style", "episodic"]),
+        scope=build_scope(read=["style", "project"], write=["style", "project"]),
         now_epoch=now,
     )
     verified = tokens.verify_and_touch(
@@ -129,7 +129,7 @@ async def test_dispatch_capture(open_vault: VaultConnection, vault_path: Path) -
         state,
         verified,
         "capture",
-        {"content": "new event", "facet_type": "episodic"},
+        {"content": "new project note", "facet_type": "project"},
     )
     assert result["is_duplicate"] is False
     assert len(result["external_id"]) == 26
@@ -181,16 +181,6 @@ async def test_dispatch_recall_rejects_non_int_k(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_dispatch_assume_identity(open_vault: VaultConnection, vault_path: Path) -> None:
-    state, verified = await _bootstrap(open_vault, vault_path)
-    result = await dispatch_tool_call(state, verified, "assume_identity", {})
-    assert "facets" in result
-    assert "per_role_counts" in result
-    assert result["total_tokens"] > 0
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
 async def test_dispatch_show(open_vault: VaultConnection, vault_path: Path) -> None:
     state, verified = await _bootstrap(open_vault, vault_path)
     external_id = open_vault.connection.execute(
@@ -199,6 +189,7 @@ async def test_dispatch_show(open_vault: VaultConnection, vault_path: Path) -> N
     result = await dispatch_tool_call(state, verified, "show", {"external_id": external_id})
     assert result["external_id"] == external_id
     assert result["token_count"] > 0
+    assert result["source_tool"] == "t"
 
 
 @pytest.mark.integration
@@ -218,3 +209,29 @@ async def test_dispatch_stats(open_vault: VaultConnection, vault_path: Path) -> 
     result = await dispatch_tool_call(state, verified, "stats", {})
     assert result["facet_count"] == 8
     assert result["embed_health"]["embedded"] == 8
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_dispatch_forget(open_vault: VaultConnection, vault_path: Path) -> None:
+    state, verified = await _bootstrap(open_vault, vault_path)
+    external_id = open_vault.connection.execute(
+        "SELECT external_id FROM facets WHERE facet_type='style' LIMIT 1"
+    ).fetchone()[0]
+    result = await dispatch_tool_call(
+        state,
+        verified,
+        "forget",
+        {"external_id": external_id, "reason": "retire example"},
+    )
+    assert result["external_id"] == external_id
+    assert result["facet_type"] == "style"
+    assert result["deleted_at"] > 0
+    # The second forget is a validation error: the facet is already soft-deleted.
+    with pytest.raises(mcp.ValidationError):
+        await dispatch_tool_call(
+            state,
+            verified,
+            "forget",
+            {"external_id": external_id},
+        )

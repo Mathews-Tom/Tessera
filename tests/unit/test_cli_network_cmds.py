@@ -44,7 +44,7 @@ def test_capture_sends_bearer_token(
     monkeypatch.setattr("tessera.cli.tools_cmd.httpx.post", _fake_post)
     monkeypatch.setenv("TESSERA_TOKEN", "tessera_session_AAAAAAAAAAAAAAAAAAAAAAAA")
     parser = _build_parser()
-    args = parser.parse_args(["capture", "hello world", "--facet-type", "episodic"])
+    args = parser.parse_args(["capture", "hello world", "--facet-type", "project"])
     assert args.handler(args) == 0
     assert seen["headers"]["Authorization"].startswith("Bearer tessera_session_")
     assert seen["body"]["method"] == "capture"
@@ -56,8 +56,28 @@ def test_capture_sends_bearer_token(
 def test_capture_fails_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TESSERA_TOKEN", raising=False)
     parser = _build_parser()
-    args = parser.parse_args(["capture", "hi"])
+    args = parser.parse_args(["capture", "hi", "--facet-type", "style"])
     assert args.handler(args) == 1
+
+
+@pytest.mark.unit
+def test_capture_requires_facet_type(capsys: pytest.CaptureFixture[str]) -> None:
+    # Per ADR 0010 every capture is an explicit user choice between the
+    # five v0.1 facet types; argparse must refuse to produce a default.
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["capture", "hi"])
+    err = capsys.readouterr().err
+    assert "--facet-type" in err
+
+
+@pytest.mark.unit
+def test_capture_rejects_retired_facet_type(capsys: pytest.CaptureFixture[str]) -> None:
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["capture", "hi", "--facet-type", "episodic"])
+    err = capsys.readouterr().err
+    assert "invalid choice" in err or "argument" in err
 
 
 @pytest.mark.unit

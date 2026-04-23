@@ -1,17 +1,18 @@
 """Capture orchestrator — the synchronous write path for new facets.
 
-The MCP ``capture`` tool (P8) and the ``tessera capture`` CLI (P9) both land
-here. Capture is deliberately synchronous and cheap: validation + dedup +
+The MCP ``capture`` tool and the ``tessera capture`` CLI both land here.
+Capture is deliberately synchronous and cheap: validation + dedup +
 insert + audit, all inside one transaction, with the expensive step
-(embedding the content) punted to the async embed worker. This is what lets
-``capture`` return under the ``p95 < 50 ms`` DoD ceiling regardless of how
-slow the embedder is.
+(embedding the content) punted to the async embed worker. This is what
+lets ``capture`` return under the ``p95 < 50 ms`` DoD ceiling
+regardless of how slow the embedder is.
 
-Dedup semantics: two captures of the same normalized content against the
-same agent collapse to one facet by the ``UNIQUE(agent_id, content_hash)``
-constraint. A soft-deleted match is restored rather than treated as new —
-re-capturing content the user previously removed is an intentional un-
-delete, not a silent collision with a tombstone.
+Dedup semantics: two captures of the same normalized content against
+the same agent collapse to one facet by the
+``UNIQUE(agent_id, content_hash)`` constraint. A soft-deleted match is
+restored rather than treated as new — re-capturing content the user
+previously removed is an intentional un-delete, not a silent collision
+with a tombstone.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def capture(
     agent_id: int,
     facet_type: str,
     content: str,
-    source_client: str,
+    source_tool: str,
     metadata: dict[str, Any] | None = None,
     captured_at: int | None = None,
 ) -> CaptureResult:
@@ -53,19 +54,19 @@ def capture(
         agent_id=agent_id,
         facet_type=facet_type,
         content=content,
-        source_client=source_client,
+        source_tool=source_tool,
         metadata=metadata,
         captured_at=captured_at,
     )
     audit.write(
         conn,
         op="facet_inserted",
-        actor=source_client,
+        actor=source_tool,
         agent_id=agent_id,
         target_external_id=external_id,
         payload={
             "facet_type": facet_type,
-            "source_client": source_client,
+            "source_tool": source_tool,
             "is_duplicate": not is_new,
             "content_hash_prefix": facets.content_hash(content)[:8],
         },

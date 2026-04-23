@@ -17,6 +17,7 @@ from tessera.vault.connection import (
     _as_int,
 )
 from tessera.vault.encryption import derive_key
+from tessera.vault.schema import SCHEMA_VERSION
 
 _SALT = b"\x00" * 16
 _PASS = b"vaulttest"
@@ -107,7 +108,8 @@ def test_open_detects_case_c_schema_too_new(
 def test_open_detects_case_a_needs_migration(
     fresh_vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("tessera.vault.connection.BINARY_SCHEMA_VERSION", 2)
+    # Bump the binary past the vault's on-disk version to force Case A.
+    monkeypatch.setattr("tessera.vault.connection.BINARY_SCHEMA_VERSION", SCHEMA_VERSION + 1)
     k = derive_key(bytearray(_PASS), _SALT)
     try:
         with pytest.raises(NeedsMigrationError):
@@ -121,7 +123,8 @@ def test_open_detects_case_d_migration_interrupted(fresh_vault: Path) -> None:
     k1 = derive_key(bytearray(_PASS), _SALT)
     with VaultConnection.open_raw(fresh_vault, k1) as vc:
         vc.connection.execute(
-            "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_target', '2')"
+            "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_target', ?)",
+            (str(SCHEMA_VERSION + 1),),
         )
     k1.wipe()
 
@@ -178,11 +181,11 @@ def test_failed_open_does_not_leak_sqlite_handles(
     # still be held; subsequent open must succeed against the clean vault.
     monkeypatch.setattr(
         "tessera.vault.connection.BINARY_SCHEMA_VERSION",
-        1,
+        SCHEMA_VERSION,
     )
     k2 = derive_key(bytearray(_PASS), _SALT)
     try:
         with VaultConnection.open(fresh_vault, k2) as vc:
-            assert vc.state.schema_version == 1
+            assert vc.state.schema_version == SCHEMA_VERSION
     finally:
         k2.wipe()
