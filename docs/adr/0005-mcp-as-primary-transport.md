@@ -6,11 +6,11 @@
 
 ## Context
 
-Tessera's vault must be accessible to any agent — autonomous or human-driven — that wants to read or write identity. Candidate transports:
+Tessera's vault must be accessible to any MCP-speaking AI tool — whether it's a human-driven assistant like Claude Desktop or ChatGPT, or an autonomous agent — that wants to read or write the user's context. Candidate transports:
 
 | Transport | Standard | Agent support | Auth model | Complexity |
 |---|---|---|---|---|
-| MCP (Model Context Protocol) | Anthropic spec, widely adopted | Claude Desktop, Claude Code, Cursor, Codex, ChatGPT Dev Mode, Cline, OpenClaw, Letta | Per-connection capability tokens | Moderate |
+| MCP (Model Context Protocol) | Anthropic spec, widely adopted | Claude Desktop, Claude Code, Cursor, Codex, ChatGPT Dev Mode, Cline, Letta, any MCP-compliant tool | Per-connection capability tokens | Moderate |
 | REST + OpenAPI | Universal | Universal, but each agent hand-writes a client | Bearer tokens | Low |
 | gRPC | Broad | Rare in agent runtimes | mTLS or bearer | High |
 | Direct SQLite access | Native | Any library with SQLite bindings | Filesystem perms | Low, but wrong semantics |
@@ -23,8 +23,8 @@ Tessera's vault must be accessible to any agent — autonomous or human-driven �
 ## Rationale
 
 1. **Agent-runtime alignment.** By April 2026, every major agent runtime speaks MCP natively. Writing a custom protocol means every user writes a custom client. MCP lets Claude Code, Cursor, Codex, and ChatGPT Dev Mode connect with a config file change.
-2. **Tool-surface is the right abstraction.** Identity operations (`capture`, `recall`, `assume_identity`) map cleanly to MCP tools. REST would require designing URL structures, parameter encoding, and error conventions that MCP already specifies.
-3. **Auth fits the scoped-capability model.** MCP connections already carry a session identity; Tessera's capability token attaches to the session. Per-scope, per-facet-type authorization is expressible in the existing MCP tool-call flow.
+2. **Tool-surface is the right abstraction.** Context operations (`capture`, `recall`, `show`, `list_facets`, `stats`, `forget`) map cleanly to MCP tools. REST would require designing URL structures, parameter encoding, and error conventions that MCP already specifies.
+3. **Auth fits the scoped-capability model.** MCP connections already carry a session identity; Tessera's capability token attaches to the session. Per-tool, per-scope, per-facet-type authorization is expressible in the existing MCP tool-call flow.
 4. **Localhost-first matches local-first.** HTTP on loopback is zero-config on every platform. No certificates, no DNS, no tunneling. Unix sockets for CLI control plane keep privileged operations off the network interface entirely.
 
 ## Consequences

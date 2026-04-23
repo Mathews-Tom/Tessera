@@ -2,9 +2,9 @@
 
 **Goal:** quantify the per-query reranker latency for the reference
 cross-encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`) across candidate-set
-sizes. The reranker runs once per `recall` / `assume_identity` call over the
-RRF-merged top-50, so this number is a load-bearing component of the
-end-to-end recall p95 target (`docs/release-spec.md §v0.1 DoD`).
+sizes. The reranker runs once per `recall` call over the RRF-merged
+top-50, so this number is a load-bearing component of the end-to-end
+recall p95 target (`docs/release-spec.md §v0.1 DoD`).
 
 **Scope at P2 (this first baseline):**
 - Top-50 candidate set (the production candidate set).

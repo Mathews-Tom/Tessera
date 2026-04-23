@@ -1,8 +1,10 @@
 # ADR 0004 — Seven-facet identity model
 
-**Status:** Accepted
+**Status:** Superseded by [ADR 0010 — Five-facet user-context model](0010-five-facet-user-context-model.md)
 **Date:** April 2026
 **Deciders:** Tom Mathews
+
+> **Supersede note.** This ADR reflects the pre-reframe agent-identity framing of Tessera. ADR 0010 documents the current five-facet user-context model that replaced the seven-facet decomposition recorded here. This file is retained for historical record; it is not the current design. Where this ADR and ADR 0010 disagree, ADR 0010 wins.
 
 ## Context
 

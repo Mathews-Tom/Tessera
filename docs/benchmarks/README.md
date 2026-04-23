@@ -21,9 +21,9 @@ No claim in the Tessera docs stands without a corresponding benchmark here.
 
 | ID          | Benchmark                                                                             | Why it matters                                   | Target metric                                                                                 | Shipping requirement                                                        |
 | ----------- | ------------------------------------------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| B-RET-1     | SWCR vs. RRF-only vs. RRF+rerank vs. RRF+rerank+SWCR                                  | Ablation for the central retrieval claim         | Coherence-human ≥ 4.0/5, nDCG@k ≥ +10%                                                        | Must pass before SWCR is default-on (see `swcr-spec.md §Ablation protocol`) |
-| B-RET-2     | Retrieval latency at 1K / 10K / 100K facets                                           | DoD claim: <500 ms recall at 10K                 | p50 < 500 ms, p95 < 1 s at 10K                                                                | DoD gate for v0.1                                                           |
-| B-RET-3     | `assume_identity` latency + bundle coherence at 10K facets                            | DoD claim: <1.5 s at 10K                         | p50 < 1.5 s, p95 < 3 s; coherence-human ≥ 4.0                                                 | DoD gate for v0.1                                                           |
+| B-RET-1     | SWCR vs. RRF-only vs. RRF+rerank vs. RRF+rerank+SWCR                                  | Regression guard on the default retrieval pipeline  | No MRR / latency regression vs. `rerank_only`; cross-facet coherence on the harder v0.1.x dataset ≥ +0.3 human-rater improvement | Regression guard for v0.1 (per ADR 0011); secondary evidence gate at v0.1.x |
+| B-RET-2     | Retrieval latency at 1K / 10K / 100K facets                                           | DoD claim: <500 ms recall at 10K on reference hardware | p50 < 500 ms, p95 < 1 s at 10K                                                            | DoD gate for v0.1                                                           |
+| B-RET-3     | Cross-facet `recall(facet_types=all)` bundle-assembly latency at 10K facets           | DoD claim on the load-bearing T-shape primitive  | p50 < 500 ms at 10K on reference hardware (aligned with B-RET-2)                               | DoD gate for v0.1                                                           |
 | B-WRITE-1   | SQLite concurrent-capture throughput                                                  | Multi-agent writes, WAL checkpoint contention    | Sustained ≥ 50 writes/sec at p99 < 200 ms, 10 concurrent writers                              | DoD gate for v0.1                                                           |
 | B-EMB-1     | Async embed throughput; failure and recovery                                          | Capture returns immediately; embeds happen async | No facet lingers unembedded > 10 min under nominal load; recovery after Ollama restart < 60 s | DoD gate for v0.1                                                           |
 | B-REEMBED-1 | End-to-end re-embed wall time for 10K / 100K facets; recall quality during transition | Embedder-swap story is load-bearing              | 10K in < 10 min on M1 Pro with Ollama + nomic-embed-text; shadow-query degrades gracefully    | DoD gate for v0.1                                                           |
@@ -55,7 +55,7 @@ docs/benchmarks/
 │   ├── dataset/
 │   └── results/<timestamp>/result.json
 ├── B-RET-2-recall-latency/
-├── B-RET-3-assume-identity/
+├── B-RET-3-cross-facet-coherence/
 ├── B-WRITE-1-concurrent-capture/
 ├── B-EMB-1-async-embed/
 ├── B-REEMBED-1-embedder-swap/

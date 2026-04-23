@@ -17,18 +17,18 @@ This is **working specification, not the final dissertation chapter.** The algor
 
 Given:
 
-- A set of identity facets $F = \{f_1, \dots, f_n\}$ in a vault, each with a type $\tau(f) \in \{\text{episodic}, \text{semantic}, \text{style}, \text{skill}, \text{relationship}, \text{goal}, \text{judgment}\}$.
-- A query $q$ (free text) or an identity-bundle request $Q$ (a structured request for an `assume_identity` bundle).
-- A token budget $B$.
+- A set of user-context facets $F = \{f_1, \dots, f_n\}$ in a vault, each with a type $\tau(f)$ drawn from the stable facet vocabulary: $\{\text{identity}, \text{preference}, \text{workflow}, \text{project}, \text{style}\}$ in v0.1, extended with $\{\text{person}, \text{skill}\}$ at v0.3 and $\{\text{compiled\_notebook}\}$ at v0.5 (per ADR 0010).
+- A query $q$ (free text) issued through the `recall` MCP tool, with an optional facet-type filter and a per-facet-type cap $k$. When the filter is omitted, `recall` operates **cross-facet by default** across every type the caller's token is scoped to read.
+- A token budget $B$, distributed proportionally across the facet types in scope.
 
-Return a ranked subset $R \subseteq F$ of size at most $k$ such that:
+Return a ranked bundle $R \subseteq F$ such that:
 
-1. **Relevance**: every $f \in R$ is topically aligned with $q$ or with the role it plays in $Q$.
-2. **Coherence**: the facets in $R$ cross-reinforce. Voice samples should match recent episodics; skills should match the entities and goals present; goals should match the trajectory implied by recent decisions.
-3. **Diversity per role**: within each facet type, $R$ covers the space of relevant facets rather than returning near-duplicates.
-4. **Budget**: serialized token count of $R$'s snippets is at most $B$.
+1. **Relevance**: every $f \in R$ is topically aligned with $q$.
+2. **Cross-facet coherence**: the facets in $R$ cross-reinforce across types. A style sample returned should match the register of the project facet also returned; a workflow returned should be the right shape for the project in scope; preferences returned should be applicable to the task implied by the query. This is the property classical retrieval does not model.
+3. **Diversity per type**: within each facet type, $R$ covers the relevant space rather than returning near-duplicates.
+4. **Budget**: serialized token count of $R$'s snippets is at most $B$, with each snippet ≤ 256 tokens.
 
-Classical retrieval (BM25, dense nearest-neighbor, RRF fusion, cross-encoder rerank) optimizes (1) and partially (3). It does not model (2) — coherence across types.
+Classical retrieval (BM25, dense nearest-neighbor, RRF fusion, cross-encoder rerank) optimizes (1) and partially (3). It does not model (2) — coherence across facet types — which is the load-bearing property for the T-shape cross-facet user-context bundle the product promises. SWCR is the stage that introduces (2) into an otherwise standard hybrid-retrieval pipeline.
 
 ## Algorithm
 
@@ -47,10 +47,10 @@ SWCR is **not** a replacement for rerank; it is a cross-facet reweighting on rer
 ### Notation
 
 - $s_r(f)$ — rerank score for facet $f$ (cross-encoder, already computed).
-- $\phi(f) \in \mathbb{R}^d$ — a "topology embedding" for $f$: in v0.1, the same dense embedding used for candidate generation. In v0.3+, augmented with entity presence vector.
-- $E(f) \subseteq \mathcal{E}$ — entities mentioned in $f$ (from metadata JSON in v0.1, from `entity_mentions` in v0.3+).
-- $\tau(f)$ — facet type.
-- $w_\tau$ — per-type base weight, set per tool (for `recall`, all types weighted equally by default; for `assume_identity`, roles are assigned per-type budgets).
+- $\phi(f) \in \mathbb{R}^d$ — a "topology embedding" for $f$: in v0.1, the same dense embedding used for candidate generation. In v0.3+, augmented with an entity-presence vector sourced from the `person_mentions` table.
+- $E(f) \subseteq \mathcal{E}$ — entities mentioned in $f$ (from metadata JSON in v0.1, from `person_mentions` in v0.3+).
+- $\tau(f)$ — facet type, drawn from the ADR-0010 vocabulary.
+- $w_\tau$ — per-type base weight. For v0.1 `recall`, all types in scope are weighted equally; the proportional per-facet-type token budget in `system-design.md §Retrieval pipeline` is the user-visible effect. v0.3+ may introduce per-query-shape weight hints (e.g., "draft" queries bias toward `style`), but v0.1 keeps weights uniform to avoid hand-tuned retrieval behavior before there is signal to tune against.
 
 ### Coherence graph
 
@@ -79,24 +79,23 @@ $$
 
 where $\lambda$ is the coherence weight (default 0.25).
 
-Intuition: a facet's SWCR score is its own relevance plus a boost proportional to how strongly it connects to other high-relevance candidates across the graph — especially across facet types. A voice sample that aligns with the entities appearing in recent episodics and with the active goal is boosted; a voice sample that is topically isolated from the rest of the candidate set is not.
+Intuition: a facet's SWCR score is its own relevance plus a boost proportional to how strongly it connects to other high-relevance candidates across the graph — especially across facet types. A style sample that aligns with the entities appearing in the project facets and with the workflow in scope is boosted; a style sample that is topically isolated from the rest of the candidate set is not.
 
-### Per-type budget enforcement (assume_identity only)
+### Per-facet-type budget enforcement (cross-facet `recall`)
 
-For `assume_identity` with budget $B$, SWCR is invoked with a role map:
+`recall` is cross-facet by default. For a call with all five v0.1 facet types in scope and a total budget $B$, SWCR runs per-facet-type over its candidate subset, using the full top-$M$ cross-type candidate graph for the coherence term. The per-type envelope is set by the system-design spec — the token budget is distributed proportionally across the facet types the caller's token granted and the query engaged.
+
+A representative v0.1 distribution with $B = 2000$ tokens and all five facets in scope:
 
 ```
-roles = {
-  "voice":         {type: "style",        budget_fraction: 0.25, k_min: 3, k_max: 8},
-  "recent_events": {type: "episodic",     budget_fraction: 0.30, k_min: 5, k_max: 15,
-                    time_window_hours: configurable},
-  "skills":        {type: "skill",        budget_fraction: 0.20, k_min: 2, k_max: 6},
-  "relationships": {type: "relationship", budget_fraction: 0.15, k_min: 2, k_max: 5},
-  "goals":         {type: "goal",         budget_fraction: 0.10, k_min: 1, k_max: 3},
-}
+per-facet envelope ≈ B / |types_in_scope|  ≈ 400 tokens per facet type
+snippet cap                                    = 256 tokens
+typical surfaced count                         = 1 snippet per facet type
 ```
 
-For each role, SWCR is run over the candidate subset of matching type, using the full top-$M$ cross-type candidate graph for the coherence term. This ensures the voice samples returned are specifically the ones coherent with the recent-events and skills also being returned.
+A `recall` scoped to a single facet type gets the full $B = 2000$; SWCR still runs, but the coherence term on a single-type candidate set is a diversity bonus rather than a cross-type coherence bonus.
+
+The prior `assume_identity` role-map (with hard per-role fractions for voice / recent-events / skills / relationships / goals) is retired with `assume_identity` itself in the April 2026 reframe. Coherence across facet types is delivered through the uniform cross-facet-default of `recall` plus the SWCR graph — not through a separate tool and separate code path.
 
 ### Complexity
 
@@ -117,63 +116,56 @@ At $M = 50$: total overhead < 5 ms on M1 Pro. Not on the latency critical path.
 | Edge sparsification threshold | τ_e    | 0.1     | [0.0, 0.3]    |
 | Candidate set size            | M      | 50      | [20, 200]     |
 
-All six are exposed via `config.yaml` under `retrieval.swcr`. A `retrieval_mode: rrf_only | rerank_only | swcr` switch disables SWCR entirely. Users can reproduce results from pre-SWCR baselines without recompiling.
+All six are exposed via `config.yaml` under `retrieval.swcr`. A `retrieval_mode: rrf_only | rerank_only | swcr` switch controls the pipeline shape. **Default is `swcr`** (per ADR 0011). The non-default modes remain wired for ablation work and for users who want to reproduce pre-SWCR behavior without recompiling.
 
 ## Operational definition of coherence
 
-Coherence in this specification means one testable property: **the cross-facet bonus term is the quantified expression of coherence.** There is no separate loss function, no constraint solver, no semantic validator. The claim is that facets that score well under $s_{\text{SWCR}}$ produce bundles that human raters rate higher on the question "does this hang together as one agent's identity?" than facets that score well under $s_r$ alone.
+Coherence in this specification means one testable property: **the cross-facet bonus term is the quantified expression of coherence.** There is no separate loss function, no constraint solver, no semantic validator. The claim is that facets that score well under $s_{\text{SWCR}}$ produce cross-facet bundles that human raters rate higher on the question "does this bundle hang together as one user's context across facet types?" than facets that score well under $s_r$ alone.
 
-That claim is falsifiable. The evidence lives in the ablation protocol.
+That claim is falsifiable. The primary evidence at v0.1 is the T-shape demo gate in `release-spec.md §v0.1 DoD`; the secondary quantitative evidence comes from the B-RET-1 ablation run on the harder v0.1.x dataset.
 
-## Ablation protocol
+## Evidence gates and the B-RET-1 ablation
 
-A SWCR claim without ablation is slideware. The following protocol is the minimum bar for shipping v0.1 with SWCR enabled by default.
+Per [ADR 0011](adr/0011-swcr-default-on-cross-facet-coherence.md), SWCR ships **default-on at v0.1**. Two distinct evidence artifacts track it:
 
-### Dataset
+### Primary gate — the T-shape demo (v0.1)
 
-- **Synthetic vault S1**: 10,000 facets, generated from 5 synthetic agent personas. Each persona has coherent voice, consistent entities, aligned goals. Content generated via a fixed pipeline (seed-controlled). Ground truth: for each `assume_identity` query, known-coherent facet subset.
-- **Real vault R1**: Tom's own vault at time of shipping, anonymized. Realistic entity noise and type mix.
+`release-spec.md §v0.1 DoD` names the T-shape cross-facet synthesis demo as the acceptance criterion for v0.1 ship:
 
-### Baselines
+> Fresh install → capture preference/workflow/project/style in one tool → open a different tool → `recall` returns a coherent cross-facet bundle → the second tool drafts in the user's voice using the right structure.
 
-1. **RRF-only**: candidate generation + RRF fusion. No rerank, no SWCR.
-2. **RRF + rerank**: add cross-encoder rerank. No SWCR.
-3. **RRF + rerank + SWCR**: the proposed pipeline.
-4. **RRF + rerank + Cohere rerank v3** (where permitted by licensing): strong off-the-shelf comparison point.
+SWCR clears this gate when the cross-facet bundle is coherent enough that the downstream tool produces a draft the user recognizes as theirs across voice, structure, details, and rules of engagement. At least one real user (not Tom) must complete the demo unaided and the outcome must be recorded. This is a **qualitative capability gate**, not a statistical comparison — the ADR-0011 rationale explains why single-facet statistical comparisons on a single-persona dataset do not probe the cross-facet coherence regime SWCR was built for.
 
-### Metrics
+### Secondary gate — B-RET-1 as regression guard
 
-| Metric                  | Definition                                                                  |
-| ----------------------- | --------------------------------------------------------------------------- |
-| **Retrieval MRR@k**     | Mean reciprocal rank of known-coherent facets in S1 ground truth            |
-| **Bundle nDCG@k**       | Normalized discounted cumulative gain on per-role bundles                   |
-| **Coherence-human**     | 3 blind raters × 50 bundles × 5-point scale on "does this hang together?"   |
-| **Coherence-synthetic** | Automated: fraction of bundles where top-K facets share at least one entity |
-| **Latency p50 / p95**   | Per-query end-to-end on M1 Pro                                              |
+The B-RET-1 ablation harness at `docs/benchmarks/B-RET-1-swcr-ablation/` retains its value as a **regression guard**:
 
-### Acceptance thresholds for v0.1 default-on
+- SWCR must not regress MRR@k vs. `rerank_only` at the 1% level on the S1 dataset. (The current B-RET-1 fake-adapter run at ‑2.0% MRR is attributed to saturation noise with the keyword-overlap reranker; a re-run on a harder dataset is expected to resolve this. The real-adapter run shows no MRR regression.)
+- SWCR must not regress p95 latency vs. `rerank_only` beyond 15% (absolute 100 ms). Current B-RET-1 real-adapter measurements show SWCR is 28 ms faster at p95 — comfortably inside the bound.
 
-SWCR ships enabled by default if and only if:
+### v0.1.x upgrade path — harder dataset, human raters
 
-- Coherence-human mean ≥ 4.0 / 5 (and ≥ 0.3 absolute improvement over RRF + rerank baseline).
-- Bundle nDCG@k improvement ≥ 10% vs. RRF + rerank on S1.
-- Latency p95 regression vs. RRF + rerank ≤ 15% (absolute ≤ 100 ms).
-- Zero regression on pure-relevance MRR@k (SWCR must not make individual-facet recall worse).
+A v0.1.x ablation run introduces:
 
-If any threshold fails, SWCR ships as opt-in with `retrieval_mode: rrf_rerank` as default, and the v0.1 moat claim is retracted pending further work.
+- **Harder S1′**: cross-persona entity overlap (two personas both use `python`, `github` as primary entities, not just ambient); near-duplicate content across facet types within a persona; queries that span two personas partially. This is the dataset that probes cross-facet coherence rather than disjoint-persona separability.
+- **Human raters**: 3 blind raters × 50 `recall(facet_types=all)` bundles × 5-point scale on "does this hang together as one user's operating model across facet types?"
+- **Target**: coherence-human mean ≥ 4.0 / 5 with ≥ +0.3 absolute improvement over `rerank_only` baseline.
+
+If the v0.1.x run clears that target, the retrieval-depth moat claim can be added to `system-overview.md` as a separately-evidenced secondary differentiator. If it does not clear, SWCR remains default-on per ADR 0011 (the primary gate is the T-shape demo, not this statistical target), but the secondary moat claim does not get made.
 
 ### Failure modes the ablation must catch
 
-- **Near-duplicate voice samples in bundle** (diversity failure).
-- **Voice sample about entity X but recent episodics are entirely about entity Y** (cross-role coherence failure).
-- **Skill whose preconditions are not present in the recent episodics** (activation failure).
+- **Near-duplicate style samples in bundle** (diversity failure).
+- **Style sample register mismatched to project facet register** (cross-facet coherence failure — this is the regime SWCR targets).
+- **Workflow returned whose procedural shape does not match the project in scope** (workflow-project coherence failure).
+- **Preference returned that contradicts the query's implied output type** (preference-query coherence failure).
 - **Latency tail > 2 s** (budget enforcement failure).
 
 ## Non-goals of this specification
 
 - SWCR is **not** a graph neural network. The reweighting is a closed-form matrix-vector operation, not a learned message-passing function.
 - SWCR is **not** a replacement for rerank. It augments.
-- SWCR does **not** attempt to be a multi-agent retrieval algorithm in the sense of federated search across remote vaults. Multi-agent in the Tessera sense means multiple facet types per agent, not multiple agents per query.
+- SWCR does **not** attempt to be a federated-search algorithm across remote vaults. "Cross-facet" in Tessera means coherence across the five v0.1 facet types within a single user's single vault, not federation across multiple users or machines.
 
 ## Open questions
 

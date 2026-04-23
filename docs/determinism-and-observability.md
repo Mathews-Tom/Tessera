@@ -58,7 +58,7 @@ Use cases for `deterministic: false` are advanced (explore-exploit tradeoffs, A/
 
 ### Audit log fields for replay
 
-Every `recall` and `assume_identity` entry in `audit_log` records enough to reproduce:
+Every `recall` entry in `audit_log` records enough to reproduce:
 
 ```json
 {
@@ -67,14 +67,15 @@ Every `recall` and `assume_identity` entry in `audit_log` records enough to repr
   "seed": "0x1a2b3c4d5e6f7890",
   "params": {
     "k": 5,
-    "facet_types": ["style", "episodic"],
+    "facet_types": ["identity", "preference", "workflow", "project", "style"],
     "deterministic": true
   },
   "active_embedding_model_id": 2,
   "retrieval_config_hash": "sha256(...)",
   "result_facet_ids": ["01H...Z", "01H...Y"],
   "duration_ms": 312,
-  "rerank_degraded": false
+  "rerank_degraded": false,
+  "source_tool": "chatgpt-devmode"
 }
 ```
 
