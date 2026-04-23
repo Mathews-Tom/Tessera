@@ -1,22 +1,25 @@
-"""B-SEC-1: encryption-at-rest overhead baseline against a 1K-facet vault.
+"""B-SEC-1: encryption-at-rest overhead against a populated vault.
 
-Writes a new timestamped JSON under ``results/`` per the benchmark contract
-(docs/benchmarks/README.md). Compares sqlcipher-encrypted vault performance
-against a plain sqlite3 baseline on the same schema for:
+Writes a new timestamped JSON under ``results/`` per the benchmark
+contract (docs/benchmarks/README.md). Compares sqlcipher-encrypted
+vault performance against a plain sqlite3 baseline on the same
+schema for:
 
-* **unlock** — wall clock from ``connect()`` through ``PRAGMA key`` to the
-  first successful ``SELECT``.
-* **write** — single-facet insert latency (p50 / p95) across 500 trials.
-* **read**  — single-facet lookup by ``external_id`` (p50 / p95) across 500
-  trials over a populated 1K-facet vault.
+* **unlock** — wall clock from ``connect()`` through ``PRAGMA key``
+  to the first successful ``SELECT``.
+* **write** — single-facet insert latency (p50 / p95) across TRIALS.
+* **read**  — single-facet lookup by ``external_id`` (p50 / p95)
+  across TRIALS trials over a populated ``--facets``-row vault.
 
-The full retrieval-ratio measurement called out in the v0.1 DoD is scoped
-for P12 after the retrieval pipeline lands; at P1 this harness establishes
-the measurement discipline and the first baseline number.
+``--facets`` defaults to 1_000 for the reproducible quick run; pass
+``--facets 10000`` for the v0.1 DoD finalisation. The post-reframe
+schema's ``project`` facet type and ``source_tool`` column name are
+used in the generated rows.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import platform
@@ -35,16 +38,21 @@ from ulid import ULID
 
 from tessera.migration import bootstrap
 from tessera.vault.connection import VaultConnection
-from tessera.vault.encryption import derive_key, new_salt
+from tessera.vault.encryption import derive_key, new_salt, save_salt
 from tessera.vault.schema import all_statements
 
 BENCHMARK_ID = "B-SEC-1"
-FACETS = 1000
-TRIALS = 500
+DEFAULT_FACETS = 1000
+DEFAULT_TRIALS = 500
 PASSPHRASE = b"b-sec-1 baseline harness"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="b-sec-1")
+    parser.add_argument("--facets", type=int, default=DEFAULT_FACETS)
+    parser.add_argument("--trials", type=int, default=DEFAULT_TRIALS)
+    args = parser.parse_args(argv)
+
     bench_dir = Path(__file__).parent
     enc_fd, encrypted_path = tempfile.mkstemp(suffix=".encrypted.db")
     plain_fd, plain_path = tempfile.mkstemp(suffix=".plain.db")
@@ -58,8 +66,8 @@ def main() -> int:
     plain_vault.unlink(missing_ok=True)
 
     try:
-        enc_metrics = _measure_encrypted(encrypted_vault)
-        plain_metrics = _measure_plain(plain_vault)
+        enc_metrics = _measure_encrypted(encrypted_vault, facets=args.facets, trials=args.trials)
+        plain_metrics = _measure_plain(plain_vault, facets=args.facets, trials=args.trials)
     finally:
         encrypted_vault.unlink(missing_ok=True)
         plain_vault.unlink(missing_ok=True)
@@ -68,7 +76,11 @@ def main() -> int:
         "benchmark_id": BENCHMARK_ID,
         "timestamp": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "env": _environment(),
-        "inputs": {"facets": FACETS, "trials": TRIALS, "passphrase_bytes": len(PASSPHRASE)},
+        "inputs": {
+            "facets": args.facets,
+            "trials": args.trials,
+            "passphrase_bytes": len(PASSPHRASE),
+        },
         "metrics": {
             "encrypted": enc_metrics,
             "plain": plain_metrics,
@@ -86,8 +98,9 @@ def main() -> int:
     return 0
 
 
-def _measure_encrypted(path: Path) -> dict[str, Any]:
+def _measure_encrypted(path: Path, *, facets: int, trials: int) -> dict[str, Any]:
     salt = new_salt()
+    save_salt(path, salt)
     k = derive_key(bytearray(PASSPHRASE), salt)
     t0 = time.perf_counter()
     bootstrap(path, k)
@@ -111,8 +124,8 @@ def _measure_encrypted(path: Path) -> dict[str, Any]:
             ("01BENCHAGENT", "bench", 1),
         )
         agent_id = conn.execute("SELECT id FROM agents").fetchone()[0]
-        ids = _populate(conn, agent_id, FACETS)
-        write_ms, read_ms = _timed_crud(conn, agent_id, ids, TRIALS)
+        ids = _populate(conn, agent_id, facets)
+        write_ms, read_ms = _timed_crud(conn, agent_id, ids, trials)
     k3.wipe()
 
     return {
@@ -126,7 +139,7 @@ def _measure_encrypted(path: Path) -> dict[str, Any]:
     }
 
 
-def _measure_plain(path: Path) -> dict[str, Any]:
+def _measure_plain(path: Path, *, facets: int, trials: int) -> dict[str, Any]:
     conn = sqlite3.connect(str(path), isolation_level=None)
     for stmt in all_statements():
         conn.execute(stmt)
@@ -135,8 +148,8 @@ def _measure_plain(path: Path) -> dict[str, Any]:
         ("01BENCHAGENT", "bench", 1),
     )
     agent_id = conn.execute("SELECT id FROM agents").fetchone()[0]
-    ids = _populate(conn, agent_id, FACETS)
-    write_ms, read_ms = _timed_crud(conn, agent_id, ids, TRIALS)
+    ids = _populate(conn, agent_id, facets)
+    write_ms, read_ms = _timed_crud(conn, agent_id, ids, trials)
     conn.close()
 
     return {
@@ -158,8 +171,8 @@ def _populate(
             """
             INSERT INTO facets(
                 external_id, agent_id, facet_type, content, content_hash,
-                source_client, captured_at
-            ) VALUES (?, ?, 'semantic', ?, ?, 'bench', ?)
+                source_tool, captured_at
+            ) VALUES (?, ?, 'project', ?, ?, 'bench', ?)
             """,
             (external_id, agent_id, f"content-{i}", f"hash-{i}", i),
         )
@@ -180,8 +193,8 @@ def _timed_crud(
             """
             INSERT INTO facets(
                 external_id, agent_id, facet_type, content, content_hash,
-                source_client, captured_at
-            ) VALUES (?, ?, 'semantic', ?, ?, 'bench-trial', ?)
+                source_tool, captured_at
+            ) VALUES (?, ?, 'project', ?, ?, 'bench-trial', ?)
             """,
             (external_id, agent_id, f"timed-{i}", f"th-{i}", i + 10_000),
         )

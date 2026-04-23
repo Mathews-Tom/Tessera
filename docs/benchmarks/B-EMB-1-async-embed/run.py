@@ -113,9 +113,9 @@ async def _run() -> int:
                     capture.capture(
                         vc.connection,
                         agent_id=agent_id,
-                        facet_type="episodic",
+                        facet_type="project",
                         content=f"content-{i}",
-                        source_client="bench",
+                        source_tool="bench",
                     )
                 capture_elapsed = time.perf_counter() - capture_start
 
