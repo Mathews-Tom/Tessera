@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — v0.1.0-pre
 
+### Client connectors
+
+- Five MCP client connectors: Claude Desktop, Claude Code, Cursor,
+  Codex (TOML), and ChatGPT Developer Mode. `tessera connect <client>`
+  mints a capability token, resolves the client's platform-specific
+  default config path, and writes the Tessera MCP-server entry with a
+  pre-write backup and atomic replace.
+- `tessera disconnect <client>` removes the Tessera entry without
+  stomping sibling keys the user authored. Missing-file and
+  already-absent paths are no-ops.
+- ChatGPT Dev Mode ships with an in-daemon one-time-use nonce store
+  and `POST /mcp/exchange` endpoint. The CLI mints a session token,
+  asks the daemon to stash it under a 192-bit nonce with a 30-second
+  TTL, and prints the bootstrap URL the user pastes into ChatGPT. The
+  raw token never appears in the URL per ADR 0007.
+- New CLI flags: `tessera connect <client> --vault <path> --agent-id N`
+  with optional `--url`, `--token-class`, `--path`, `--socket`,
+  `--passphrase`. `tessera disconnect <client>` takes `--path` to
+  override the default.
+
 ### Reframe reconciliation
 
 The April 2026 product reframe shifted Tessera from an agent-identity

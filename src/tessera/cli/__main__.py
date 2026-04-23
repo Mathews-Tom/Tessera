@@ -18,7 +18,15 @@ import argparse
 import sys
 from collections.abc import Callable
 
-from tessera.cli import agents_cmd, daemon_cmd, doctor_cmd, init_cmd, tokens_cmd, tools_cmd
+from tessera.cli import (
+    agents_cmd,
+    connect_cmd,
+    daemon_cmd,
+    doctor_cmd,
+    init_cmd,
+    tokens_cmd,
+    tools_cmd,
+)
 from tessera.cli import models as models_cli
 from tessera.cli import vault as vault_cli
 
@@ -49,6 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tokens_cmd.register(subparsers)
     tools_cmd.register(subparsers)
     doctor_cmd.register(subparsers)
+    connect_cmd.register(subparsers)
 
     # Existing stubs from earlier phases.
     models_parser = subparsers.add_parser(

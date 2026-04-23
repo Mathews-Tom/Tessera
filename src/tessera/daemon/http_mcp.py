@@ -26,6 +26,7 @@ from typing import Any, Final
 import sqlcipher3
 
 from tessera.auth.tokens import AuthDenied, VerifiedCapability, verify_and_touch
+from tessera.daemon.exchange import NonceStore, UnknownNonceError
 
 _MAX_HEADER_BYTES: Final[int] = 16 * 1024
 _MAX_BODY_BYTES: Final[int] = 1 << 20  # 1 MiB
@@ -59,6 +60,7 @@ async def serve_http_mcp(
     conn: sqlcipher3.Connection,
     dispatch: Dispatcher,
     now_epoch_fn: Callable[[], int],
+    nonce_store: NonceStore | None = None,
     ready: asyncio.Event | None = None,
 ) -> asyncio.AbstractServer:
     """Bind ``host:port`` and start serving until closed.
@@ -67,6 +69,10 @@ async def serve_http_mcp(
     header; requests without an Origin header are allowed (native
     clients do not set one), matching MCP spec expectations for local
     agent runtimes.
+
+    ``nonce_store`` wires the ChatGPT Developer Mode bootstrap-exchange
+    endpoint at ``POST /mcp/exchange``. When absent, the route returns
+    404 and the daemon cannot broker ChatGPT handshakes.
     """
 
     async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -84,6 +90,9 @@ async def serve_http_mcp(
         method, target, _ = request_line.split(" ", 2)
         if method != "POST":
             await _write_response(writer, 405, {"error": "POST only"})
+            return
+        if target == "/mcp/exchange":
+            await _route_exchange(writer, headers, body, nonce_store, now_epoch_fn)
             return
         if target != "/mcp":
             await _write_response(writer, 404, {"error": "unknown route"})
@@ -131,6 +140,60 @@ async def serve_http_mcp(
     if ready is not None:
         ready.set()
     return server
+
+
+async def _route_exchange(
+    writer: asyncio.StreamWriter,
+    headers: dict[str, str],
+    body: bytes,
+    nonce_store: NonceStore | None,
+    now_epoch_fn: Callable[[], int],
+) -> None:
+    """Handle POST /mcp/exchange — ChatGPT Dev Mode bootstrap.
+
+    The endpoint is intentionally unauthenticated at the bearer-token
+    level (the nonce itself is the single-use credential). It still
+    enforces the Origin allowlist so a browser cannot drive the call
+    from a page the user opens in a compromised context. The body
+    shape is ``{"nonce": "..."}``; success returns
+    ``{"ok": True, "token": "tessera_session_..."}``; every failure
+    shape is indistinguishable to prevent nonce-probing.
+    """
+
+    if nonce_store is None:
+        await _write_response(writer, 404, {"error": "unknown route"})
+        return
+    # The exchange endpoint uses a narrower Origin allowlist than
+    # /mcp: only the null origin (native clients, curl from the
+    # CLI) is accepted. A browser-driven request would carry an
+    # ``Origin`` header pointing at a real page, which the client
+    # could not control — so any non-null Origin is rejected here
+    # even if ``allowed_origins`` would accept it on /mcp.
+    origin = headers.get("origin")
+    if origin not in (None, "null"):
+        await _write_response(writer, 403, {"error": "origin not allowed"})
+        return
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        await _write_response(writer, 400, {"error": "invalid json body"})
+        return
+    if not isinstance(payload, dict):
+        await _write_response(writer, 400, {"error": "body must be a JSON object"})
+        return
+    nonce = payload.get("nonce")
+    if not isinstance(nonce, str) or not nonce:
+        await _write_response(writer, 400, {"error": "nonce required"})
+        return
+    try:
+        raw_token = nonce_store.consume(nonce=nonce, now_epoch=now_epoch_fn())
+    except UnknownNonceError:
+        # One error shape for every failure so callers cannot
+        # distinguish "never issued" from "expired" from "already
+        # consumed" via response timing or content.
+        await _write_response(writer, 401, {"error": "nonce rejected"})
+        return
+    await _write_response(writer, 200, {"ok": True, "token": raw_token})
 
 
 async def _read_request(

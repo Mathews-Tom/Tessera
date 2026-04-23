@@ -34,6 +34,7 @@ dependencies = [
     "sqlcipher3-binary>=0.5.4 ; sys_platform == 'linux'",
     "sqlite-vec>=0.1.6",
     "tiktoken>=0.8.0",
+    "tomli-w>=1.2.0",
 ]
 
 # The SQLCipher pin is split by sys_platform: sqlcipher3-binary ships manylinux

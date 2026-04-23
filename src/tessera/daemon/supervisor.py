@@ -24,6 +24,7 @@ from tessera.auth.tokens import VerifiedCapability
 from tessera.daemon.config import DaemonConfig
 from tessera.daemon.control import ControlError, ControlRequest, serve_control_socket
 from tessera.daemon.dispatch import UnknownMethodError, dispatch_tool_call
+from tessera.daemon.exchange import NonceStore
 from tessera.daemon.http_mcp import serve_http_mcp
 from tessera.daemon.state import DaemonState, open_vault_for_daemon, resolve_embedder
 from tessera.retrieval import embed_worker
@@ -75,6 +76,7 @@ async def run_daemon(
             )
             stop = stop_event or asyncio.Event()
             _install_signal_handlers(stop)
+            nonce_store = NonceStore()
             http_server = await serve_http_mcp(
                 host=config.http_host,
                 port=config.http_port,
@@ -82,10 +84,11 @@ async def run_daemon(
                 conn=vault.connection,
                 dispatch=_make_tool_dispatcher(state),
                 now_epoch_fn=_now_epoch,
+                nonce_store=nonce_store,
             )
             control_server = await serve_control_socket(
                 socket_path=config.socket_path,
-                dispatch=_make_control_dispatcher(state, stop),
+                dispatch=_make_control_dispatcher(state, stop, nonce_store),
             )
             embed_task = asyncio.create_task(
                 _embed_worker_loop(state, stop), name="tessera.embed_worker"
@@ -172,7 +175,7 @@ def _make_tool_dispatcher(
 
 
 def _make_control_dispatcher(
-    state: DaemonState, stop: asyncio.Event
+    state: DaemonState, stop: asyncio.Event, nonce_store: NonceStore
 ) -> Callable[[ControlRequest], Awaitable[dict[str, Any]]]:
     async def _dispatch(req: ControlRequest) -> dict[str, Any]:
         if req.method == "status":
@@ -188,9 +191,31 @@ def _make_control_dispatcher(
             return {"stopping": True}
         if req.method == "ping":
             return {"pong": True}
+        if req.method == "stash_bootstrap_nonce":
+            return _stash_bootstrap_nonce(nonce_store, req.args)
+        if req.method == "exchange_status":
+            return {"pending": nonce_store.pending_count()}
         raise ControlError(f"unknown control method {req.method!r}")
 
     return _dispatch
+
+
+def _stash_bootstrap_nonce(nonce_store: NonceStore, args: dict[str, Any]) -> dict[str, Any]:
+    """Store a raw token under a fresh nonce; return the nonce to the CLI.
+
+    The CLI mints the capability-token row itself (via direct vault
+    access) and then calls this method so the running daemon can
+    broker the ChatGPT URL-exchange handshake. The daemon never
+    persists the raw token — it lives only in the in-memory nonce
+    store until ChatGPT consumes the nonce or its 30-second TTL
+    elapses.
+    """
+
+    raw_token = args.get("raw_token")
+    if not isinstance(raw_token, str) or not raw_token:
+        raise ControlError("raw_token required")
+    entry = nonce_store.create(raw_token=raw_token, now_epoch=_now_epoch())
+    return {"nonce": entry.nonce, "expires_at": entry.expires_at}
 
 
 async def _shutdown(handles: DaemonHandles, *, socket_path: Path, pid_path: Path) -> None:
