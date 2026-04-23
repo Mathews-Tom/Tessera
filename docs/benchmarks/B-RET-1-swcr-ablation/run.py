@@ -242,7 +242,7 @@ async def _populate_vault(
             agent_id=agent_id,
             facet_type=facet["facet_type"],
             content=facet["content"],
-            source_client="b-ret-1",
+            source_tool="b-ret-1",
             metadata=metadata,
             captured_at=facet["captured_at"],
         )
@@ -418,7 +418,7 @@ async def _run(adapters: str) -> int:
                         ),
                         tool_budget_tokens=4000,
                         k=K,
-                        facet_types=("episodic", "semantic", "style"),
+                        facet_types=("identity", "preference", "workflow", "project", "style"),
                     )
 
                 arms = [

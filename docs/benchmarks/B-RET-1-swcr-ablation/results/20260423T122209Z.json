@@ -1,0 +1,65 @@
+{
+  "arms": {
+    "A_rrf_only": {
+      "latency_p50_ms": 41.570665780454874,
+      "latency_p95_ms": 45.16962496563792,
+      "latency_p99_ms": 45.42650002986193,
+      "mean_latency_ms": 39.290975825861096,
+      "mrr_at_k": 0.37200000000000005,
+      "ndcg_at_k": 0.2135664036313456,
+      "persona_purity_at_k": 0.22400000000000003
+    },
+    "B_rrf_rerank": {
+      "latency_p50_ms": 41.68479098007083,
+      "latency_p95_ms": 44.90375006571412,
+      "latency_p99_ms": 49.814625177532434,
+      "mean_latency_ms": 39.26110832486302,
+      "mrr_at_k": 1.0,
+      "ndcg_at_k": 0.8050946629607464,
+      "persona_purity_at_k": 0.764
+    },
+    "C_rrf_rerank_swcr": {
+      "latency_p50_ms": 43.498000130057335,
+      "latency_p95_ms": 47.36241581849754,
+      "latency_p99_ms": 47.556916950270534,
+      "mean_latency_ms": 41.27059493679553,
+      "mrr_at_k": 1.0,
+      "ndcg_at_k": 0.7928269245616925,
+      "persona_purity_at_k": 0.74
+    }
+  },
+  "benchmark_id": "B-RET-1",
+  "decision": {
+    "latency_p95_delta_ms_C_minus_B": 2.4586657527834177,
+    "latency_p95_pct_regression": 5.475412964808726,
+    "mrr_regression_C_vs_B": false,
+    "ndcg_pct_improvement_C_over_B": -1.5237634732217895,
+    "thresholds": {
+      "coherence_human_deferred": true,
+      "latency_p95_regression_lte_15pct_or_100ms": true,
+      "mrr_no_regression": true,
+      "ndcg_improvement_gte_10pct": false
+    },
+    "verdict": "opt_in_recommended",
+    "verdict_notes": "coherence_human gate requires 3 blind raters by 50 bundles and is deferred outside this single-session run. Final default-on ship decision blocks on that evidence per swcr-spec.md \u00a7Acceptance thresholds."
+  },
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.3.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "86ca170f25eb7936a4a7c95186fcbe4d98697d75"
+  },
+  "inputs": {
+    "adapters": "fake",
+    "cohere_arm": "skipped \u2014 no licensed key in session",
+    "dataset": "benchmarks/B-RET-1-swcr-ablation/dataset/s1.json",
+    "dim": 16,
+    "embedder": "hash-fake",
+    "human_raters": "deferred \u2014 requires 3 raters by 50 bundles",
+    "k": 5,
+    "n_facets": 2000,
+    "n_queries": 50,
+    "reranker": "keyword-overlap-fake"
+  },
+  "timestamp": "2026-04-23T12:22:09Z"
+}

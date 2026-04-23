@@ -2,22 +2,23 @@
 
 Produces a seed-controlled corpus of N facets across 5 personas, each
 with a distinct voice, a consistent entity vocabulary, and a set of
-goal themes. The output is a JSON file suitable for loading into a
-fresh encrypted vault and running the ablation harness against.
+project themes. The output is a JSON file suitable for loading into
+a fresh encrypted vault and running the ablation harness against.
 
 Design:
-    5 personas times 3 facet types times ~N/15 facets = N total.
+    5 personas times 5 facet types times ~N/25 facets = N total.
     Each persona owns a set of entities (people, projects, tools).
     Facets are generated from templates that draw on persona-scoped
-    entities and goal themes.
-    Ground-truth queries pair an assume-identity-style prompt with the
-    set of facets that belong to the target persona.
+    entities and project themes.
+    Ground-truth queries pair a cross-facet ``recall`` prompt with
+    the set of facets that belong to the target persona.
 
-v0.1 facet types: episodic, semantic, style. Skills / relationships /
-goals land in v0.3+ and are not generated here. The spec's 10K scale is
-the P12 target; 2K is the P5 first-pass default because an in-session
-ablation across four arms + 100 queries must complete in minutes, not
-hours.
+v0.1 facet types: identity, preference, workflow, project, style. The
+reserved v0.3+ types (person, skill, compiled_notebook) land in later
+versions and are not generated here. The 10K scale is the bench
+finalisation target; 2_000 is the default because an in-session
+ablation across three arms and 50 queries must complete in minutes,
+not hours.
 """
 
 from __future__ import annotations
@@ -37,71 +38,88 @@ from pathlib import Path
 class _Persona:
     id: str
     voice: str
+    role: str
     entities: tuple[str, ...]
-    goals: tuple[str, ...]
+    projects: tuple[str, ...]
 
 
 _PERSONAS: list[_Persona] = [
     _Persona(
         id="tom_dev",
         voice="terse, imperative, code over prose",
+        role="backend engineer shipping an AI-tools portable context layer",
         entities=("tessera", "sqlite", "ollama", "mcp", "rust"),
-        goals=("ship v0.1", "reduce CI time", "document threat model"),
+        projects=("ship v0.1", "reduce CI time", "document threat model"),
     ),
     _Persona(
         id="sarah_writer",
         voice="literary, first-person, reflective",
+        role="novelist drafting and editing long-form fiction",
         entities=("manuscript", "editor_kim", "galley", "cover_design"),
-        goals=("finish chapter seven", "respond to beta readers"),
+        projects=("finish chapter seven", "respond to beta readers"),
     ),
     _Persona(
         id="alex_scientist",
         voice="precise, passive, citation-heavy",
+        role="research scientist running a wet lab",
         entities=("reagent_x", "lab_4", "prof_patel", "grant_nsf"),
-        goals=("replicate 2025 result", "submit grant renewal"),
+        projects=("replicate 2025 result", "submit grant renewal"),
     ),
     _Persona(
         id="jordan_designer",
         voice="visual, second-person, action-oriented",
+        role="product designer handling client rebrands",
         entities=("figma_doc", "brand_palette", "client_atlas", "revision_7"),
-        goals=("finalize rebrand", "prep presentation for atlas"),
+        projects=("finalize rebrand", "prep presentation for atlas"),
     ),
     _Persona(
         id="morgan_analyst",
         voice="structured, data-first, sparse",
+        role="financial analyst owning the quarterly forecast",
         entities=("q3_report", "ticker_acme", "spreadsheet_14", "cfo_chen"),
-        goals=("close q3 memo", "update forecast model"),
+        projects=("close q3 memo", "update forecast model"),
     ),
 ]
 
 _AMBIENT_ENTITIES: list[str] = ["python", "2026", "slack", "github"]
 
-_EPISODIC_TEMPLATES = [
-    "{persona_id} talked with {entity} about {goal} yesterday",
-    "meeting notes on {goal} with {entity} at the standup",
-    "decided to push {goal} after reviewing {entity}",
-    "shipped work on {goal}, blocker cleared via {entity}",
-    "chatted with {entity} re {goal} — captured action items",
+_IDENTITY_TEMPLATES = [
+    "{persona_id} is a {role}",
+    "{persona_id} works primarily out of {entity} and identifies as a {role}",
+    "stable fact about {persona_id}: role = {role}",
 ]
 
-_SEMANTIC_TEMPLATES = [
-    "{entity} is the primary owner for {goal}",
-    "{persona_id} prefers {entity} tooling when tackling {goal}",
-    "fact: {entity} ties directly to {goal}",
-    "the canonical path for {goal} routes through {entity}",
-    "lesson learned: {goal} depends on {entity} staying healthy",
+_PREFERENCE_TEMPLATES = [
+    "{persona_id} prefers {entity} over alternatives when tackling {project}",
+    "{persona_id} always uses {entity} for {project}",
+    "rule: when shipping {project}, use {entity} first",
+    "behavioural rule — {persona_id} keeps {entity} as the default for {project}",
+]
+
+_WORKFLOW_TEMPLATES = [
+    "workflow: for {project}, {persona_id} starts with {entity} then iterates",
+    "procedure — break {project} into five beats, anchored on {entity}",
+    "standard flow for {project}: gather {entity}, draft, review, ship",
+    "{persona_id}'s repeatable shape for {project} routes through {entity}",
+]
+
+_PROJECT_TEMPLATES = [
+    "active work on {project}: unblocked via {entity}",
+    "project note — {project} is the current focus, touched {entity} today",
+    "what {persona_id} is building: {project}, blocker tracked under {entity}",
+    "in-flight: {project}, owner {persona_id}, adjacent to {entity}",
 ]
 
 _STYLE_TEMPLATES = [
-    "voice sample ({voice}): {persona_id} writes about {goal} and {entity}",
-    "style note ({voice}): draft paragraph on {goal} mentioning {entity}",
-    "writing sample, tone = {voice}: {entity} shows up as {goal}",
+    "voice sample ({voice}): {persona_id} writes about {project} and {entity}",
+    "style note ({voice}): draft paragraph on {project} mentioning {entity}",
+    "writing sample, tone = {voice}: {entity} shows up as {project}",
 ]
 
 _QUERY_TEMPLATES = [
-    "assume identity for {persona_id} working on {goal}",
-    "recall {persona_id} notes about {goal}",
-    "retrieve {persona_id} style and recent events for {goal}",
+    "draft an update for {persona_id} working on {project}",
+    "recall {persona_id} context about {project}",
+    "retrieve {persona_id} voice, workflow, and current state on {project}",
 ]
 
 
@@ -122,6 +140,19 @@ class Query:
     relevant_facet_ids: list[int]
 
 
+# Per-persona facet-type mix. Identity is the rarest (stable-for-years
+# facts, one or two per persona); style is the largest (voice samples);
+# preference / workflow / project fill out the middle. Fractions sum to
+# 1.0 and are applied to each persona's share of ``n_facets``.
+_FACET_MIX: tuple[tuple[str, float, list[str]], ...] = (
+    ("identity", 0.05, _IDENTITY_TEMPLATES),
+    ("preference", 0.15, _PREFERENCE_TEMPLATES),
+    ("workflow", 0.15, _WORKFLOW_TEMPLATES),
+    ("project", 0.30, _PROJECT_TEMPLATES),
+    ("style", 0.35, _STYLE_TEMPLATES),
+)
+
+
 def generate(
     *,
     n_facets: int,
@@ -133,14 +164,15 @@ def generate(
     facet_id = 1
     per_persona = n_facets // len(_PERSONAS)
     for persona in _PERSONAS:
-        episodic_count = int(per_persona * 0.4)
-        semantic_count = int(per_persona * 0.4)
-        style_count = per_persona - episodic_count - semantic_count
-        for facet_type, count, templates in (
-            ("episodic", episodic_count, _EPISODIC_TEMPLATES),
-            ("semantic", semantic_count, _SEMANTIC_TEMPLATES),
-            ("style", style_count, _STYLE_TEMPLATES),
-        ):
+        allocated = 0
+        # All but the last entry get their integer share; the last
+        # absorbs the remainder so per_persona is hit exactly.
+        for index, (facet_type, fraction, templates) in enumerate(_FACET_MIX):
+            if index == len(_FACET_MIX) - 1:
+                count = per_persona - allocated
+            else:
+                count = max(1, int(per_persona * fraction))
+                allocated += count
             facet_id = _emit_batch(
                 facets,
                 facet_id=facet_id,
@@ -167,8 +199,14 @@ def _emit_batch(
     for _ in range(count):
         tpl = rng.choice(templates)
         entity = rng.choice(persona.entities)
-        goal = rng.choice(persona.goals)
-        content = tpl.format(persona_id=persona.id, entity=entity, goal=goal, voice=persona.voice)
+        project = rng.choice(persona.projects)
+        content = tpl.format(
+            persona_id=persona.id,
+            entity=entity,
+            project=project,
+            voice=persona.voice,
+            role=persona.role,
+        )
         ambient = [rng.choice(_AMBIENT_ENTITIES)] if rng.random() < 0.3 else []
         out.append(
             Facet(
@@ -192,11 +230,11 @@ def _build_queries(facets: list[Facet], *, n_queries: int, rng: random.Random) -
     queries: list[Query] = []
     for persona in _PERSONAS:
         for _ in range(per_persona):
-            goal = rng.choice(persona.goals)
+            project = rng.choice(persona.projects)
             tpl = rng.choice(_QUERY_TEMPLATES)
             queries.append(
                 Query(
-                    query_text=tpl.format(persona_id=persona.id, goal=goal),
+                    query_text=tpl.format(persona_id=persona.id, project=project),
                     persona=persona.id,
                     relevant_facet_ids=list(per_persona_facets[persona.id]),
                 )
