@@ -1,7 +1,12 @@
 [project]
-name = "tessera"
+# PyPI name; the CLI binary and Python import path remain `tessera`.
+# The short name `tessera` on PyPI is owned by an abandoned Graphite
+# dashboard project (last upload 2017-02-03). PEP 541 reclaim is being
+# pursued in parallel for a future release; v0.1.0 ships as
+# `tessera-context` per `docs/release-spec.md §v0.1 launch`.
+name = "tessera-context"
 version = "0.0.1.dev0"
-description = "Substrate-independent identity layer for AI agents. Single-file encrypted SQLite vault served over MCP."
+description = "Portable context layer for T-shaped AI-native users. Single-file encrypted SQLite vault served over MCP."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [

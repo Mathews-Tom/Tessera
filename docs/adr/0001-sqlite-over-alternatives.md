@@ -24,7 +24,7 @@ Candidate engines evaluated:
 ## Rationale
 
 1. **Portability is the ideology.** Single-file SQLite means `cp vault.db ~/anywhere/` works. DuckDB shares this. LMDB, Postgres do not.
-2. **Zero external services.** No daemon, no network port, no version-mismatch between library and server. `pip install tessera` cannot install Postgres.
+2. **Zero external services.** No daemon, no network port, no version-mismatch between library and server. `pip install tessera-context` cannot install Postgres.
 3. **Reader/writer model fits the workload.** Tessera is write-light (one agent capturing per session) and read-heavy (retrieval on every recall). SQLite's serialized-writer/concurrent-reader model is correct. DuckDB's OLAP model is wrong for the high-selectivity point queries retrieval runs.
 4. **FTS5 is first-party.** No separate index service to synchronize. LMDB has no FTS — we would have to layer Tantivy or Whoosh, breaking the single-file claim.
 5. **Mature ecosystem.** Every language has a mature binding. Every engineer can open the vault with `sqlite3` at a shell. Forensic and debugging friction is near-zero.
@@ -45,7 +45,7 @@ Candidate engines evaluated:
 
 - **DuckDB**: Strong on analytics, weak on OLTP. Vector support via VSS extension is newer than sqlite-vec and less proven. Would require separate FTS layer. Net: comparable portability, worse fit.
 - **LMDB**: Excellent concurrency and latency. No FTS, no vector. Would require 3 separate indexes bolted on. Net: breaks the single-file invariant.
-- **Postgres + pgvector**: Best vector and FTS story, but requires a daemon. Kills the `pip install tessera` story. Net: correct for a hosted service, wrong for local-first.
+- **Postgres + pgvector**: Best vector and FTS story, but requires a daemon. Kills the `pip install tessera-context` story. Net: correct for a hosted service, wrong for local-first.
 
 ## Revisit triggers
 

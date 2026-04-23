@@ -22,15 +22,21 @@ Tessera v0.1.0 ships the **T-shape cross-facet synthesis demo** end-to-end: capt
 ### Install (all-local mode, the v0.1 default)
 
 ```bash
-# from source until PyPI publish follows the v0.1.0 tag
+# PyPI (after v0.1.0 tag). Package name is `tessera-context` because
+# the short `tessera` PyPI name is held by an abandoned Graphite
+# dashboard project (last upload 2017); PEP 541 reclaim is being
+# pursued in parallel for a future release. CLI binary and Python
+# import path remain `tessera`.
+pip install tessera-context
+# or from source:
 git clone https://github.com/Mathews-Tom/Tessera.git
 cd Tessera && uv sync
 
 ollama pull nomic-embed-text
 
-uv run tessera init --vault ~/.tessera/vault.db
-uv run tessera daemon start --vault ~/.tessera/vault.db
-uv run tessera connect claude-desktop --vault ~/.tessera/vault.db
+tessera init --vault ~/.tessera/vault.db
+tessera daemon start --vault ~/.tessera/vault.db
+tessera connect claude-desktop --vault ~/.tessera/vault.db
 ```
 
 Full T-shape demo walkthrough: `docs/pitch.md` and `docs/release-spec.md §v0.1 DoD`. Architecture deep-dive: `docs/system-design.md`.

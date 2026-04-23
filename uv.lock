@@ -1428,7 +1428,7 @@ wheels = [
 ]
 
 [[package]]
-name = "tessera"
+name = "tessera-context"
 version = "0.0.1.dev0"
 source = { editable = "." }
 dependencies = [
