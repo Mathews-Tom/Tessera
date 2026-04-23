@@ -12,8 +12,10 @@ stuck worker cannot block a graceful shutdown.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 import sqlcipher3
 
@@ -91,12 +93,22 @@ def build_pipeline_context(
     )
 
 
+DEFAULT_OLLAMA_MODEL: Final[str] = "nomic-embed-text"
+
+
 def resolve_embedder(conn: sqlcipher3.Connection, *, ollama_host: str) -> tuple[Embedder, int, str]:
     """Return (embedder, active_model_id, vec_table) for the active model.
 
     Raises :class:`~tessera.adapters.models_registry.NoActiveModelError`
     when the vault has no row with ``is_active=1``; the daemon cannot
     serve ``recall`` without one and refuses to start.
+
+    ``embedding_models.name`` at v0.1 stores the adapter name (``ollama``)
+    rather than the provider model name (``nomic-embed-text``). The
+    provider model name the daemon calls against is taken from the
+    ``TESSERA_OLLAMA_MODEL`` environment variable, defaulting to
+    ``nomic-embed-text``. A proper split across two columns is a v0.3
+    schema migration; for v0.1 the env var is the pragmatic seam.
     """
 
     model = models_registry.active_model(conn)
@@ -104,7 +116,8 @@ def resolve_embedder(conn: sqlcipher3.Connection, *, ollama_host: str) -> tuple[
     # here as they come online.
     if model.name != "ollama":
         raise ValueError(f"active embedding model {model.name!r} has no daemon-side adapter")
-    embedder = OllamaEmbedder(model_name=model.name, dim=model.dim, host=ollama_host)
+    provider_model = os.environ.get("TESSERA_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    embedder = OllamaEmbedder(model_name=provider_model, dim=model.dim, host=ollama_host)
     return embedder, model.id, models_registry.vec_table_name(model.id)
 
 

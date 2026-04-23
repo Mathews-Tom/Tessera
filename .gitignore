@@ -214,3 +214,6 @@ __marimo__/
 
 # Internal working docs
 .docs/
+
+# Tester session notes — may contain PII, keep local
+docs/user-demo/sessions/
