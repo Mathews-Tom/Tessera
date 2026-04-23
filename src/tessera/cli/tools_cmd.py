@@ -1,10 +1,10 @@
-"""``tessera {capture,recall,show,stats}`` — MCP tool passthrough.
+"""``tessera {capture,recall,show,list,stats,forget}`` — MCP tool passthrough.
 
 Each command opens an HTTP MCP request to the running daemon using an
 ``Authorization: Bearer <token>`` header supplied via --token or the
-``TESSERA_TOKEN`` env var. Responses are rendered as plain text for
-readability; JSON output is an intentional v0.1.x followup rather
-than a v0.1 exit-gate requirement.
+``TESSERA_TOKEN`` env var. Responses are rendered as indented JSON
+(``json.dumps(..., indent=2)``); a tabular / plain-text renderer for
+``list`` and ``stats`` is deferred to v0.1.x.
 """
 
 from __future__ import annotations

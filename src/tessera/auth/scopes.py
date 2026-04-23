@@ -62,7 +62,14 @@ class MalformedScopeError(ScopeError):
 
 
 class UnknownFacetTypeError(ScopeError):
-    """Scope references a facet type outside the v0.1 vocabulary."""
+    """Scope references a facet type outside the ADR-0010 vocabulary.
+
+    The allowlist is the five v0.1 writable types plus the v0.3
+    (``person``, ``skill``) and v0.5 (``compiled_notebook``)
+    reservations. An entry outside that set raises; whether the target
+    type is *active* (writable at the current version) is a separate
+    concern enforced at the capture boundary.
+    """
 
 
 @dataclass(frozen=True, slots=True)

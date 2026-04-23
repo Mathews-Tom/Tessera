@@ -2,8 +2,9 @@
 
 The runner handles three flows:
 
-* **Bootstrap** — a fresh vault file gets schema v1, a new ``vault_id``, and
-  ``kdf_version``. No backup is needed because there is nothing to protect.
+* **Bootstrap** — a fresh vault file gets schema ``SCHEMA_VERSION`` (the
+  current post-reframe shape), a new ``vault_id``, and ``kdf_version``.
+  No backup is needed because there is nothing to protect.
 * **Upgrade** — a vault at schema ``N`` is advanced to ``M > N`` by applying
   the registered steps for targets ``N+1 .. M`` in order. Each target takes
   a pre-migration backup and flags ``_meta.schema_target`` before the first
@@ -12,9 +13,9 @@ The runner handles three flows:
   ``schema_target``. Every step is idempotent and checks ``_migration_steps``
   before re-applying; rollback is the other (user-invoked) option.
 
-For v0.1 only the bootstrap path is exercised in production because the
-vault schema is at version 1. The framework is shaped so future versions
-plug in by registering a new step list against their target.
+The active upgrade target is v1 → v2 (post-reframe five-facet schema per
+ADR 0010). Future versions plug in by registering a new step list against
+their target in ``_STEPS_BY_TARGET``.
 """
 
 from __future__ import annotations
@@ -314,7 +315,7 @@ _STEPS_BY_TARGET: Final[dict[int, Sequence[MigrationStep]]] = {
 
 
 def bootstrap(path: Path, key: ProtectedKey) -> VaultState:
-    """Initialize a fresh vault at ``path`` with schema v1.
+    """Initialize a fresh vault at ``path`` at the current ``SCHEMA_VERSION``.
 
     Raises :class:`VaultAlreadyInitializedError` if ``_meta.schema_version``
     already exists; callers upgrading an existing vault use :func:`upgrade`.
