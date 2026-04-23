@@ -85,6 +85,7 @@ async def run_all(
         results.append(_check_active_model(conn))
         results.append(_check_schema_match(conn))
         results.append(_check_token_expiry(conn))
+        results.append(_check_facet_types(conn))
     results.append(_check_keyring())
     return DoctorReport(results=tuple(results))
 
@@ -240,6 +241,46 @@ def _check_token_expiry(conn: sqlcipher3.Connection) -> DoctorResult:
         name="tokens",
         status=DoctorStatus.OK,
         detail=f"{active} non-revoked capability token(s)",
+    )
+
+
+def _check_facet_types(conn: sqlcipher3.Connection) -> DoctorResult:
+    """WARN when a v0.1 facet type has no live (non-deleted) rows.
+
+    The T-shape demo calls `recall(facet_types=all)` and draws a coherent
+    bundle across every type. A vault missing one or more types produces
+    a partial bundle that confuses first-run users, so the doctor surfaces
+    the empty buckets as early as possible. Per docs/release-spec.md
+    §v0.1 DoD (item 3).
+    """
+
+    v01_types = ("identity", "preference", "workflow", "project", "style")
+    rows = conn.execute(
+        f"""
+        SELECT facet_type, COUNT(*)
+        FROM facets
+        WHERE is_deleted = 0 AND facet_type IN ({",".join("?" * len(v01_types))})
+        GROUP BY facet_type
+        """,
+        v01_types,
+    ).fetchall()
+    counts = {row[0]: int(row[1]) for row in rows}
+    empty = [t for t in v01_types if counts.get(t, 0) == 0]
+    populated = {t: counts.get(t, 0) for t in v01_types}
+    if not empty:
+        detail_parts = [f"{t}={populated[t]}" for t in v01_types]
+        return DoctorResult(
+            name="facet_types",
+            status=DoctorStatus.OK,
+            detail="all v0.1 facet types populated: " + ", ".join(detail_parts),
+        )
+    return DoctorResult(
+        name="facet_types",
+        status=DoctorStatus.WARN,
+        detail=(
+            f"empty v0.1 facet type(s): {', '.join(empty)} — "
+            "capture facets via an MCP client before running the T-shape demo"
+        ),
     )
 
 
