@@ -20,6 +20,7 @@ import sqlcipher3
 from tessera.adapters import models_registry
 from tessera.adapters.ollama_embedder import OllamaEmbedder
 from tessera.adapters.protocol import Embedder, Reranker
+from tessera.observability.events import EventLog
 from tessera.retrieval.pipeline import PipelineContext
 from tessera.retrieval.seed import DEFAULT_RETRIEVAL_MODE, RetrievalConfig
 from tessera.vault.connection import VaultConnection
@@ -37,6 +38,7 @@ class DaemonState:
     active_model_id: int
     vec_table: str
     vault_id: str
+    event_log: EventLog | None = None
 
 
 def open_vault_for_daemon(path: Path, key: ProtectedKey) -> VaultConnection:
@@ -79,6 +81,7 @@ def build_pipeline_context(
         tool_budget_tokens=tool_budget_tokens,
         k=k,
         facet_types=facet_types,
+        event_log=state.event_log,
     )
 
 

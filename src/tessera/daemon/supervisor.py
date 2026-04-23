@@ -27,11 +27,17 @@ from tessera.daemon.dispatch import UnknownMethodError, dispatch_tool_call
 from tessera.daemon.exchange import NonceStore
 from tessera.daemon.http_mcp import serve_http_mcp
 from tessera.daemon.state import DaemonState, open_vault_for_daemon, resolve_embedder
+from tessera.observability.events import EventLog
 from tessera.retrieval import embed_worker
 from tessera.vault.encryption import ProtectedKey, derive_key, load_salt
 
 _EMBED_WORKER_BATCH = 128
 _EMBED_WORKER_IDLE_SECONDS = 5.0
+# Sweep events.db once per hour. The retention is 7 days so the sweep
+# is latency-tolerant, but running hourly keeps the file small on
+# dogfooding vaults without waking the CPU more than once per 3600
+# iterations of the embed loop.
+_EVENTS_SWEEP_SECONDS = 3600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +48,8 @@ class DaemonHandles:
     http_server: asyncio.AbstractServer
     control_server: asyncio.AbstractServer
     embed_task: asyncio.Task[None]
+    events_task: asyncio.Task[None]
+    event_log: EventLog
 
 
 async def run_daemon(
@@ -65,6 +73,7 @@ async def run_daemon(
                 vault.connection, ollama_host=config.ollama_host
             )
             reranker = SentenceTransformersReranker(model_name=config.reranker_model)
+            event_log = EventLog.open(config.events_db_path)
             state = DaemonState(
                 vault_path=config.vault_path,
                 vault=vault,
@@ -73,6 +82,7 @@ async def run_daemon(
                 active_model_id=active_model_id,
                 vec_table=vec_table,
                 vault_id=vault.state.vault_id,
+                event_log=event_log,
             )
             stop = stop_event or asyncio.Event()
             _install_signal_handlers(stop)
@@ -93,6 +103,9 @@ async def run_daemon(
             embed_task = asyncio.create_task(
                 _embed_worker_loop(state, stop), name="tessera.embed_worker"
             )
+            events_task = asyncio.create_task(
+                _events_sweep_loop(event_log, stop), name="tessera.events_sweep"
+            )
             _write_pid_file(config.pid_path)
             if ready is not None:
                 ready.set()
@@ -105,6 +118,8 @@ async def run_daemon(
                         http_server=http_server,
                         control_server=control_server,
                         embed_task=embed_task,
+                        events_task=events_task,
+                        event_log=event_log,
                     ),
                     socket_path=config.socket_path,
                     pid_path=config.pid_path,
@@ -130,6 +145,29 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
             loop.add_signal_handler(sig, stop.set)
 
 
+async def _events_sweep_loop(event_log: EventLog, stop: asyncio.Event) -> None:
+    """Drop events past the retention window on a slow cadence.
+
+    Runs hourly per :data:`_EVENTS_SWEEP_SECONDS`; the retention is
+    7 days by default so the sweep is latency-tolerant. A failing
+    sweep logs to stderr and retries on the next interval — the
+    retention policy is best-effort, not a correctness invariant.
+    """
+
+    while not stop.is_set():
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=_EVENTS_SWEEP_SECONDS)
+        if stop.is_set():
+            return
+        try:
+            event_log.sweep()
+        except Exception as exc:
+            print(
+                f"[tesserad] events sweep failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+
+
 async def _embed_worker_loop(state: DaemonState, stop: asyncio.Event) -> None:
     """Periodically drain the embed queue until the daemon stops.
 
@@ -147,6 +185,7 @@ async def _embed_worker_loop(state: DaemonState, stop: asyncio.Event) -> None:
                 state.embedder,
                 active_model_id=state.active_model_id,
                 batch_size=_EMBED_WORKER_BATCH,
+                event_log=state.event_log,
             )
             if stats.embedded == 0:
                 with contextlib.suppress(TimeoutError):
@@ -224,8 +263,13 @@ async def _shutdown(handles: DaemonHandles, *, socket_path: Path, pid_path: Path
     await handles.http_server.wait_closed()
     await handles.control_server.wait_closed()
     handles.embed_task.cancel()
+    handles.events_task.cancel()
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await handles.embed_task
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await handles.events_task
+    with contextlib.suppress(Exception):
+        handles.event_log.close()
     with contextlib.suppress(FileNotFoundError):
         socket_path.unlink()
     with contextlib.suppress(FileNotFoundError):

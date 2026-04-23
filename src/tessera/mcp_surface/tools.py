@@ -41,6 +41,7 @@ import sqlcipher3
 from tessera.adapters import models_registry
 from tessera.auth.scopes import Scope, ScopeOp
 from tessera.auth.tokens import VerifiedCapability, record_scope_denial
+from tessera.observability.events import EventLog
 from tessera.retrieval.budget import BudgetedItem, apply_budget, count_tokens, truncate_snippet
 from tessera.retrieval.pipeline import PipelineContext, RecallResult
 from tessera.retrieval.pipeline import recall as _pipeline_recall
@@ -158,6 +159,7 @@ class ToolContext:
     vault_path: Path
     clock: Callable[[], int] = field(default_factory=lambda: _now_epoch)
     pipeline: PipelineContext | None = None
+    event_log: EventLog | None = None
 
 
 # ---- Response dataclasses -----------------------------------------------
@@ -497,14 +499,32 @@ def _require_scope(tctx: ToolContext, *, op: ScopeOp, facet_type: str) -> None:
     scope: Scope = tctx.verified.scope
     if scope.allows(op=op, facet_type=facet_type):
         return
+    now = tctx.clock()
     record_scope_denial(
         tctx.conn,
         token_id=tctx.verified.token_id,
         client_name=tctx.verified.client_name,
         required_op=op,
         required_facet_type=facet_type,
-        now_epoch=tctx.clock(),
+        now_epoch=now,
     )
+    if tctx.event_log is not None:
+        # Events.db mirror of the audit row. Audit is the forensic
+        # record of record; events.db is the operational surface the
+        # diagnostic bundle scrapes. Both fire on every denial so the
+        # two records stay aligned under `tessera doctor --collect`.
+        tctx.event_log.emit(
+            level="warn",
+            category="auth",
+            event="scope_denied",
+            attrs={
+                "token_id": tctx.verified.token_id,
+                "client_name": tctx.verified.client_name,
+                "required_op": op,
+                "required_facet_type": facet_type,
+            },
+            at=now,
+        )
     raise ScopeDenied(op, facet_type)
 
 
