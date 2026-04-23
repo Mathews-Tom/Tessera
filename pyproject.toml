@@ -52,6 +52,14 @@ Homepage = "https://github.com/Mathews-Tom/Tessera"
 Repository = "https://github.com/Mathews-Tom/Tessera"
 Issues = "https://github.com/Mathews-Tom/Tessera/issues"
 
+# CLI entrypoint. After `pip install tessera-context` the user can type
+# `tessera init`, `tessera daemon start`, etc. directly rather than the
+# long-form `python -m tessera.cli ...`. The launchd/systemd units in
+# `src/tessera/daemon/units.py` continue to invoke `python -m tessera.cli`
+# because they want to pin the Python interpreter explicitly.
+[project.scripts]
+tessera = "tessera.cli.__main__:main"
+
 [dependency-groups]
 dev = [
     "coverage[toml]>=7.6.0",

@@ -214,3 +214,11 @@ __marimo__/
 
 # Internal working docs
 .docs/
+
+# Tester session notes — may contain PII, keep local
+docs/user-demo/sessions/
+
+# Manim render scratch under assets/ — keep the .py source and the final .mp4 only
+assets/media/
+assets/__pycache__/
+assets/*_preview.*

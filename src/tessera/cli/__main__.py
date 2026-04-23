@@ -61,12 +61,18 @@ def _build_parser() -> argparse.ArgumentParser:
     connect_cmd.register(subparsers)
     export_cmd.register(subparsers)
 
-    # Existing stubs from earlier phases.
+    # Existing stubs from earlier phases. Each of these delegates its
+    # argv slice to a submodule's own argparse parser; argparse.REMAINDER
+    # lets the outer parser accept arbitrary trailing arguments instead
+    # of rejecting them. Without this, `tessera models set ...` would
+    # fail at the outer parser before reaching the delegate.
     models_parser = subparsers.add_parser(
         "models", help="embedding / reranker adapters", add_help=False
     )
+    models_parser.add_argument("rest", nargs=argparse.REMAINDER)
     models_parser.set_defaults(handler=_delegate(models_cli.run))
     vault_parser = subparsers.add_parser("vault", help="vault maintenance", add_help=False)
+    vault_parser.add_argument("rest", nargs=argparse.REMAINDER)
     vault_parser.set_defaults(handler=_delegate(vault_cli.run))
 
     stdio_parser = subparsers.add_parser(
