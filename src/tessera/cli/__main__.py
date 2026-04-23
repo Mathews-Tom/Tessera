@@ -23,6 +23,7 @@ from tessera.cli import (
     connect_cmd,
     daemon_cmd,
     doctor_cmd,
+    export_cmd,
     init_cmd,
     tokens_cmd,
     tools_cmd,
@@ -58,6 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tools_cmd.register(subparsers)
     doctor_cmd.register(subparsers)
     connect_cmd.register(subparsers)
+    export_cmd.register(subparsers)
 
     # Existing stubs from earlier phases.
     models_parser = subparsers.add_parser(
