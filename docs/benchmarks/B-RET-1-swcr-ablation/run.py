@@ -385,7 +385,7 @@ def _dataset_label(path: Path) -> str:
         return path.name
 
 
-async def _run(adapters: str, dataset_path: Path) -> int:
+async def _run(adapters: str, dataset_path: Path, rerank_k: int | None) -> int:
     if not dataset_path.is_file():
         print(
             f"missing dataset: {dataset_path}. Run dataset/generate.py first.",
@@ -434,6 +434,7 @@ async def _run(adapters: str, dataset_path: Path) -> int:
                         tool_budget_tokens=4000,
                         k=K,
                         facet_types=("identity", "preference", "workflow", "project", "style"),
+                        rerank_candidate_limit=rerank_k,
                     )
 
                 arms = [
@@ -470,6 +471,7 @@ async def _run(adapters: str, dataset_path: Path) -> int:
             "adapters": adapters,
             "embedder": embedder_id,
             "reranker": reranker_id,
+            "rerank_k": rerank_k,
             "cohere_arm": "skipped — no licensed key in session",
             "human_raters": "deferred — requires 3 raters by 50 bundles",
         },
@@ -517,8 +519,18 @@ def _cli(argv: list[str] | None = None) -> int:
         default=DATASET_PATH,
         help="path to the S1 dataset JSON; defaults to the 2K dataset beside this script",
     )
+    parser.add_argument(
+        "--rerank-k",
+        type=int,
+        default=None,
+        help=(
+            "cap the number of RRF-ranked candidates sent into the "
+            "cross-encoder; omit to rerank the full fused list. "
+            "Production default per docs/release-spec.md §v0.1 DoD is 20."
+        ),
+    )
     args = parser.parse_args(argv)
-    return asyncio.run(_run(args.adapters, args.dataset))
+    return asyncio.run(_run(args.adapters, args.dataset, args.rerank_k))
 
 
 if __name__ == "__main__":
