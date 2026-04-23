@@ -17,38 +17,38 @@ from __future__ import annotations
 from manim import (
     BLUE_D,
     DOWN,
-    FadeIn,
-    FadeOut,
     GREEN,
     GREY,
     LEFT,
-    LaggedStart,
     ORIGIN,
     PURPLE_B,
     RED_E,
     RIGHT,
-    RoundedRectangle,
-    Scene,
-    Text,
     UP,
-    VGroup,
-    Write,
+    WHITE,
     YELLOW,
     Arrow,
     Circle,
-    Rectangle,
     Create,
+    FadeIn,
+    FadeOut,
     Indicate,
-    WHITE,
+    LaggedStart,
+    Rectangle,
+    RoundedRectangle,
+    Scene,
+    Text,
+    VGroup,
+    Write,
 )
 
 # Intentional palette — each color encodes meaning.
-C_TESSERA = BLUE_D     # the vault itself
-C_CAPTURE = GREEN      # capture / write path
-C_RECALL = PURPLE_B    # recall / read path
-C_CLIENT = GREY        # MCP clients
-C_SILO = RED_E         # the problem: siloed memory
-C_PRINCIPLE = YELLOW   # differentiating principles
+C_TESSERA = BLUE_D  # the vault itself
+C_CAPTURE = GREEN  # capture / write path
+C_RECALL = PURPLE_B  # recall / read path
+C_CLIENT = GREY  # MCP clients
+C_SILO = RED_E  # the problem: siloed memory
+C_PRINCIPLE = YELLOW  # differentiating principles
 
 
 class TesseraExplainer(Scene):
@@ -72,9 +72,7 @@ class TesseraExplainer(Scene):
 
         # Four tool tiles arranged horizontally.
         tool_names = ("Claude", "ChatGPT", "Cursor", "Codex")
-        tools = VGroup(*[
-            self._tool_tile(name) for name in tool_names
-        ])
+        tools = VGroup(*[self._tool_tile(name) for name in tool_names])
         tools.arrange(RIGHT, buff=0.5)
         tools.move_to(ORIGIN + UP * 0.3)
         self.play(
@@ -84,9 +82,7 @@ class TesseraExplainer(Scene):
         self.wait(0.5)
 
         # Each tool gets its own little silo box underneath it.
-        silos = VGroup(*[
-            self._silo_block() for _ in tool_names
-        ])
+        silos = VGroup(*[self._silo_block() for _ in tool_names])
         for silo, tool in zip(silos, tools, strict=True):
             silo.next_to(tool, DOWN, buff=0.3)
         self.play(
@@ -96,7 +92,7 @@ class TesseraExplainer(Scene):
         self.wait(0.5)
 
         pain_label = Text(
-            'You repeat yourself. Every tool. Every session.',
+            "You repeat yourself. Every tool. Every session.",
             font_size=28,
             color=C_SILO,
         )
@@ -106,7 +102,9 @@ class TesseraExplainer(Scene):
 
         # Pulse the silos red to reinforce the fragmentation.
         self.play(
-            LaggedStart(*[Indicate(s, color=C_SILO, scale_factor=1.15) for s in silos], lag_ratio=0.25),
+            LaggedStart(
+                *[Indicate(s, color=C_SILO, scale_factor=1.15) for s in silos], lag_ratio=0.25
+            ),
             run_time=2.0,
         )
         self.wait(2.2)
@@ -188,9 +186,7 @@ class TesseraExplainer(Scene):
 
         # Five facet-type chips flowing into the vault.
         facet_types = ("identity", "preference", "workflow", "project", "style")
-        chips = VGroup(*[
-            self._facet_chip(ft) for ft in facet_types
-        ])
+        chips = VGroup(*[self._facet_chip(ft) for ft in facet_types])
         chips.arrange(RIGHT, buff=0.25)
         chips.to_edge(DOWN, buff=0.4)
         self.play(
@@ -287,7 +283,7 @@ class TesseraExplainer(Scene):
 
         # Outcome line.
         outcome = Text(
-            'cross-facet bundle → draft in the user\'s voice',
+            "cross-facet bundle → draft in the user's voice",
             font_size=24,
             color=C_PRINCIPLE,
         )
