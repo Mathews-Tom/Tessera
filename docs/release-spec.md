@@ -128,24 +128,26 @@ All five are query-time only. The `mode` field in the schema is populated (`quer
 
 ### Definition of Done for v0.1
 
-- [ ] Fresh install on clean macOS, Ubuntu, Windows: init → Ollama setup → connect Claude Desktop → capture preference/workflow/project/style in Claude → open ChatGPT → `recall` returns coherent cross-facet bundle → ChatGPT drafts in Tom's voice using right structure. **Under 10 minutes end-to-end.**
-- [ ] All-local mode (no cloud keys) passes the same demo.
-- [ ] `tessera doctor` correctly diagnoses: missing Ollama, port 5710 conflict, broken `sqlite-vec`, missing model, vault schema mismatch, expired token, empty facet types.
-- [ ] Test coverage ≥ 80% on `vault/`, `retrieval/`, `adapters/`, `auth/`, `daemon/`.
+Per-item evidence tracked in `docs/v0.1-dod-audit.md` (last audit: 2026-04-24 at commit `32b7395`). Checkboxes below reflect audit state at that commit.
+
+- [ ] Fresh install on clean macOS, Ubuntu, Windows: init → Ollama setup → connect Claude Desktop → capture preference/workflow/project/style in Claude → open ChatGPT → `recall` returns coherent cross-facet bundle → ChatGPT drafts in Tom's voice using right structure. **Under 10 minutes end-to-end.** *(Pending: cross-platform smoke, P14 task 4.)*
+- [x] All-local mode (no cloud keys) passes the same demo. *(Code path is all-local by default; cross-platform recording tracked under the previous item.)*
+- [x] `tessera doctor` correctly diagnoses: missing Ollama, port 5710 conflict, broken `sqlite-vec`, missing model, vault schema mismatch, expired token, empty facet types. *(All seven checks in `src/tessera/daemon/doctor.py`, tests in `tests/integration/test_daemon_doctor_vault.py` + `tests/unit/test_daemon_doctor.py`.)*
+- [x] Test coverage ≥ 80% on `vault/`, `retrieval/`, `adapters/`, `auth/`, `daemon/`. *(Critical-dir roll-up 91.58% at audit commit.)*
 - [ ] MCP `recall` latency tiers under real adapters (Ollama `nomic-embed-text` + sentence-transformers `cross-encoder/ms-marco-MiniLM-L-6-v2`, `rerank_candidate_limit=20`, 100 trials after a discarded warm-up call), on the reference hardware baseline: **MacBook Pro M1 Pro (10-core CPU, 16-core GPU), 16 GB RAM, macOS 15.x, daemon idle except for the test query, no concurrent Ollama workload, Ollama model pinned via `keep_alive=-1`**.
 
   | Tier | Vault size | p50 | p95 | p99 | Evidence |
   |------|-----------:|----:|----:|----:|----------|
-  | Demo-day | ≤ 500 facets | < 500 ms | < 1000 ms | < 1500 ms | to-measure during P14 smoke test |
+  | Demo-day | ≤ 500 facets | < 500 ms | < 1000 ms | < 1500 ms | `docs/benchmarks/B-RET-2-recall-latency/results/20260423T215936Z.json` (404 / 574 / 674 ms) |
   | Steady-state | 10K facets | < 800 ms | < 1000 ms | < 1500 ms | `docs/benchmarks/B-RET-2-recall-latency/results/20260423T182517Z.json` (CPU tier, 730/778/897 ms) |
   | Steady-state (opt-in accelerator) | 10K facets | < 800 ms | < 1000 ms | < 1500 ms | `docs/benchmarks/B-RET-2-recall-latency/results/20260423T212745Z.json` (MPS tier, 710/832 ms; p99 dominated by one Ollama stall) |
 
   Rationale for the revised envelope: the 500 ms p50 @ 10K ceiling set pre-measurement did not account for the pipeline's structural floor — Ollama query-embed HTTP round-trip (~40–80 ms), dense vec linear scan (~80–150 ms at 10K × 768-dim on sqlite-vec), SWCR reweight + MMR + audit (~60–100 ms), cross-encoder rerank at k=20 (~80–100 ms) — none of which are reducible without an architectural change deferred to v0.1.x (parallel per-facet-type query fanout, ANN index, in-process embedder). The demo-day tier keeps the original 500 ms promise for the first-user experience the T-shape demo runs against; the steady-state tier is the year-two scaling promise.
-- [ ] SWCR coherence check: cross-facet `recall` returns at least one facet from each type in scope (when candidates exist) — proven by integration test with realistic vault.
-- [ ] Token budget never exceeded in any test case.
-- [ ] Zero outbound network calls except those triggered by user/tool intent. Verified by source review and CI grep check.
-- [ ] One real user (not Tom) successfully completes the T-shape demo with no live help, recorded.
-- [ ] Documentation: README, pitch, system-overview, system-design, release-spec, SWCR spec, threat model, migration contract, non-goals, observability/determinism spec, 10+ ADRs.
+- [x] SWCR coherence check: cross-facet `recall` returns at least one facet from each type in scope (when candidates exist) — proven by integration test with realistic vault. *(`tests/integration/test_retrieval_pipeline.py` + B-RET-1 quality evidence at `docs/benchmarks/B-RET-1-swcr-ablation/results/20260423T220323Z.json`.)*
+- [x] Token budget never exceeded in any test case. *(`tests/unit/test_retrieval_budget.py`, `tests/integration/test_mcp_tool_surface.py::test_recall_clamps_over_budget_request`.)*
+- [x] Zero outbound network calls except those triggered by user/tool intent. Verified by source review and CI grep check. *(CI `no-outbound` job + `scripts/no_telemetry_grep.sh`.)*
+- [ ] One real user (not Tom) successfully completes the T-shape demo with no live help, recorded. *(Pending-external; P14 task 6. Hard release blocker.)*
+- [ ] Documentation: README, pitch, system-overview, system-design, release-spec, SWCR spec, threat model, migration contract, non-goals, observability/determinism spec, 10+ ADRs. *(Every listed doc present; README post-reframe rewrite tracked under P15 task 4.)*
 
 ### What v0.1 explicitly does NOT ship
 

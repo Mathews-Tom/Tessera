@@ -93,6 +93,55 @@ async def test_doctor_reports_no_tokens_warning(
     assert tokens_check.status is DoctorStatus.WARN
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_doctor_reports_empty_facet_types_warning(
+    open_vault: VaultConnection, vault_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty vault → facet_types check is WARN listing every v0.1 type.
+
+    Closes DoD item 3 in docs/release-spec.md §v0.1 DoD: doctor must
+    diagnose "empty facet types".
+    """
+
+    monkeypatch.delenv("TESSERA_PASSPHRASE", raising=False)
+    config = resolve_config(vault_path=vault_path, http_port=_pick_port())
+    report = await run_all(config, conn=open_vault.connection)
+    facet_check = next(r for r in report.results if r.name == "facet_types")
+    assert facet_check.status is DoctorStatus.WARN
+    for facet_type in ("identity", "preference", "workflow", "project", "style"):
+        assert facet_type in facet_check.detail
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_doctor_facet_types_ok_when_all_populated(
+    open_vault: VaultConnection, vault_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vault with at least one row per v0.1 facet type → OK."""
+
+    from tessera.vault import capture as vault_capture
+
+    monkeypatch.delenv("TESSERA_PASSPHRASE", raising=False)
+    conn = open_vault.connection
+    conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('01F', 'a', 0)")
+    agent_id = int(conn.execute("SELECT id FROM agents WHERE external_id='01F'").fetchone()[0])
+    for ft in ("identity", "preference", "workflow", "project", "style"):
+        vault_capture.capture(
+            conn,
+            agent_id=agent_id,
+            facet_type=ft,
+            content=f"{ft} content",
+            source_tool="test",
+            captured_at=1_000_000,
+        )
+
+    config = resolve_config(vault_path=vault_path, http_port=_pick_port())
+    report = await run_all(config, conn=conn)
+    facet_check = next(r for r in report.results if r.name == "facet_types")
+    assert facet_check.status is DoctorStatus.OK
+
+
 def _pick_port() -> int:
     import socket
 
