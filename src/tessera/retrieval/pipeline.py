@@ -37,8 +37,16 @@ from typing import Any
 import sqlcipher3
 
 from tessera.adapters.protocol import Embedder, Reranker
+from tessera.observability.events import EventLog
 from tessera.retrieval import bm25, budget, dense, mmr, rerank, rrf, seed, swcr
 from tessera.vault import audit
+
+# Default slow-query threshold in milliseconds. The spec frames the
+# threshold as "p99 baseline + 50%"; until a persistent p99 baseline
+# lands in v0.1.x, a fixed ceiling of 1500 ms is the conservative
+# default — B-RET-2 at 1K facets records p95 around 100 ms on fake
+# adapters, so 1500 ms only fires on genuine outliers.
+DEFAULT_SLOW_RECALL_MS = 1500.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +92,9 @@ class PipelineContext:
     facet_types: tuple[str, ...]
     candidates_per_list: int = 50
     swcr_params: swcr.SWCRParams = swcr.DEFAULT_PARAMS
+    event_log: EventLog | None = None
+    slow_threshold_ms: float = DEFAULT_SLOW_RECALL_MS
+    source_tool: str | None = None
 
 
 async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
@@ -257,6 +268,13 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
             )
         except Exception as audit_exc:
             sys.stderr.write(f"retrieval_executed audit write failed: {type(audit_exc).__name__}\n")
+        _maybe_emit_slow(
+            ctx,
+            stage_ms=stage_ms,
+            matches=matches,
+            rerank_degraded=rerank_outcome.degraded,
+            truncated=truncated,
+        )
 
     total_found = len({r.facet_id for r in fused})
     warnings = _warnings(rerank_outcome.degraded, truncated)
@@ -458,3 +476,44 @@ def _warnings(rerank_degraded: bool, truncated: bool) -> tuple[str, ...]:
 
 def _elapsed_ms(start: float) -> float:
     return (time.perf_counter() - start) * 1000.0
+
+
+def _maybe_emit_slow(
+    ctx: PipelineContext,
+    *,
+    stage_ms: dict[str, float],
+    matches: tuple[RecallMatch, ...],
+    rerank_degraded: bool,
+    truncated: bool,
+) -> None:
+    """Emit a ``recall_slow`` event when the call exceeds the threshold.
+
+    Payload contract (``docs/determinism-and-observability.md §Slow-query
+    sampling``): seed, params, duration_ms, stage_breakdown_ms,
+    candidate_counts_per_stage, source_tool. No query text, no result
+    content — only what lets the operator reproduce against their own
+    vault.
+    """
+
+    if ctx.event_log is None:
+        return
+    duration_ms = sum(stage_ms.values())
+    if duration_ms < ctx.slow_threshold_ms:
+        return
+    ctx.event_log.emit(
+        level="warn",
+        category="retrieval",
+        event="recall_slow",
+        duration_ms=int(duration_ms),
+        attrs={
+            "facet_types": list(ctx.facet_types),
+            "k": ctx.k,
+            "retrieval_mode": ctx.config.retrieval_mode,
+            "stage_ms": {k: round(v, 2) for k, v in stage_ms.items()},
+            "result_count": len(matches),
+            "rerank_degraded": rerank_degraded,
+            "truncated": truncated,
+            "source_tool": ctx.source_tool,
+            "threshold_ms": ctx.slow_threshold_ms,
+        },
+    )

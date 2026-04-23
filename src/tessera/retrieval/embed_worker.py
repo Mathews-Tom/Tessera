@@ -37,6 +37,7 @@ import sqlcipher3
 
 from tessera.adapters.errors import AdapterError
 from tessera.adapters.protocol import Embedder
+from tessera.observability.events import EventLog
 from tessera.retrieval.retry_policy import BACKOFF_SECONDS, MAX_ATTEMPTS, decide
 from tessera.vault.connection import savepoint
 
@@ -62,8 +63,15 @@ async def run_pass(
     active_model_id: int,
     batch_size: int = DEFAULT_BATCH_SIZE,
     now_epoch: int | None = None,
+    event_log: EventLog | None = None,
 ) -> PassStats:
-    """Embed up to ``batch_size`` pending facets and record the result."""
+    """Embed up to ``batch_size`` pending facets and record the result.
+
+    ``event_log`` is optional; when supplied, the worker emits one
+    ``embed_succeeded`` / ``embed_failed`` / ``embed_retry_exhausted``
+    event per processed facet. No facet content, no embedding vector —
+    only the facet_id, the model_id, and the error class name.
+    """
 
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive; got {batch_size}")
@@ -96,8 +104,26 @@ async def run_pass(
             )
             if outcome == "retrying":
                 retrying += 1
+                _emit(
+                    event_log,
+                    level="warn",
+                    event="embed_failed",
+                    facet_id=facet_id,
+                    model_id=active_model_id,
+                    error_class=type(exc).__name__,
+                    at=now,
+                )
             else:
                 failed += 1
+                _emit(
+                    event_log,
+                    level="error",
+                    event="embed_retry_exhausted",
+                    facet_id=facet_id,
+                    model_id=active_model_id,
+                    error_class=type(exc).__name__,
+                    at=now,
+                )
             continue
         wrote = _record_success(
             conn,
@@ -109,6 +135,14 @@ async def run_pass(
         )
         if wrote:
             embedded += 1
+            _emit(
+                event_log,
+                level="info",
+                event="embed_succeeded",
+                facet_id=facet_id,
+                model_id=active_model_id,
+                at=now,
+            )
         else:
             skipped_deleted += 1
     return PassStats(
@@ -117,6 +151,30 @@ async def run_pass(
         failed=failed,
         skipped_backoff=skipped_backoff,
         skipped_deleted=skipped_deleted,
+    )
+
+
+def _emit(
+    event_log: EventLog | None,
+    *,
+    level: str,
+    event: str,
+    facet_id: int,
+    model_id: int,
+    at: int,
+    error_class: str | None = None,
+) -> None:
+    if event_log is None:
+        return
+    attrs: dict[str, object] = {"facet_id": facet_id, "model_id": model_id}
+    if error_class is not None:
+        attrs["error_class"] = error_class
+    event_log.emit(
+        level=level,  # type: ignore[arg-type]
+        category="embed",
+        event=event,
+        attrs=attrs,
+        at=at,
     )
 
 

@@ -65,6 +65,7 @@ def _tool_context(state: DaemonState, verified: VerifiedCapability) -> mcp.ToolC
             k=20,
             facet_types=scoped_types,
         ),
+        event_log=state.event_log,
     )
 
 

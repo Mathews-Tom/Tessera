@@ -20,6 +20,7 @@ _DEFAULT_VAULT_DIR: Final[str] = "~/.tessera"
 _SOCKET_FILENAME: Final[str] = "tessera.sock"
 _LOG_FILENAME: Final[str] = "tesserad.log"
 _PID_FILENAME: Final[str] = "tesserad.pid"
+_EVENTS_DB_FILENAME: Final[str] = "events.db"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,7 @@ class DaemonConfig:
     socket_path: Path
     log_path: Path
     pid_path: Path
+    events_db_path: Path
     allowed_origins: frozenset[str]
     ollama_host: str
     reranker_model: str
@@ -73,6 +75,7 @@ def resolve_config(
         socket_path=sock,
         log_path=runtime_dir / _LOG_FILENAME,
         pid_path=runtime_dir / _PID_FILENAME,
+        events_db_path=Path(_DEFAULT_VAULT_DIR).expanduser() / _EVENTS_DB_FILENAME,
         # Localhost-only bind already blocks public access; the Origin
         # allowlist further rejects browser-driven requests that
         # hijack ambient-authority DNS rebind vectors.

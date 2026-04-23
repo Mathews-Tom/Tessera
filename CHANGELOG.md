@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — v0.1.0-pre
 
+### Observability + diagnostic bundles
+
+- `~/.tessera/events.db` structured event log per
+  `docs/determinism-and-observability.md §Structured event log`.
+  Plain SQLite (not sqlcipher — no facet content), WAL-mode, 7-day
+  rolling retention swept hourly by the daemon.
+- `recall_slow` events fired when a `recall` call exceeds the
+  configured threshold (default 1500 ms). Payload: retrieval mode,
+  facet_types, k, stage breakdown, result count, rerank-degraded and
+  truncated flags, source_tool. No query text, no result content.
+- Embed-pipeline events (`embed_succeeded`, `embed_failed`,
+  `embed_retry_exhausted`) emit on every processed facet. Payload:
+  facet_id, model_id, error class name (no error message body).
+- `scope_denied` event emitted alongside the audit row whenever an MCP
+  call is refused for missing scope.
+- `tessera doctor --collect <name>` builds a `.tar.gz` diagnostic
+  bundle under the working directory (or `--out-dir`). Contents:
+  env.json, config.json, schema.sql, stats.json, recent_events.jsonl,
+  retrieval_samples.jsonl, audit_summary.jsonl. Every file passes
+  through the scrubber before the tarball is written.
+- Scrubber rejects forbidden key names (`*token*`, `*key*`,
+  `*passphrase*`, `*secret*`, `*api_*`, `*bearer*`, `*authorization*`),
+  strings over 256 characters, and known credential patterns (AWS,
+  OpenAI, Anthropic, GitHub PAT, Google API, Slack, Tessera tokens,
+  PEM private keys). A scrubber hit aborts bundle creation — the
+  tarball is not written.
+
 ### Client connectors
 
 - Five MCP client connectors: Claude Desktop, Claude Code, Cursor,

@@ -137,7 +137,7 @@ async def test_supervisor_starts_serves_and_stops(
         socket_path=short_run_dir / "t.sock",
         passphrase=passphrase,
     )
-    # Override pid/log paths so they live in the short tmp dir.
+    # Override pid/log/events paths so they live in the short tmp dir.
     config = config.__class__(
         vault_path=config.vault_path,
         http_host=config.http_host,
@@ -145,6 +145,7 @@ async def test_supervisor_starts_serves_and_stops(
         socket_path=config.socket_path,
         log_path=short_run_dir / "log",
         pid_path=short_run_dir / "pid",
+        events_db_path=short_run_dir / "events.db",
         allowed_origins=config.allowed_origins,
         ollama_host=config.ollama_host,
         reranker_model=config.reranker_model,
