@@ -15,11 +15,11 @@ from tessera.auth.scopes import (
 
 @pytest.mark.unit
 def test_build_scope_accepts_v0_1_facet_types() -> None:
-    scope = build_scope(read=["style", "episodic"], write=["style"])
+    scope = build_scope(read=["style", "project"], write=["style"])
     assert scope.allows(op="read", facet_type="style")
-    assert scope.allows(op="read", facet_type="episodic")
+    assert scope.allows(op="read", facet_type="project")
     assert scope.allows(op="write", facet_type="style")
-    assert not scope.allows(op="write", facet_type="episodic")
+    assert not scope.allows(op="write", facet_type="project")
 
 
 @pytest.mark.unit
@@ -32,8 +32,8 @@ def test_build_scope_rejects_unknown_facet_type() -> None:
 def test_build_scope_allows_wildcard() -> None:
     scope = build_scope(read=["*"], write=["*"])
     assert scope.allows(op="read", facet_type="style")
-    assert scope.allows(op="read", facet_type="relationship")
-    assert scope.allows(op="write", facet_type="judgment")
+    assert scope.allows(op="read", facet_type="person")
+    assert scope.allows(op="write", facet_type="skill")
 
 
 @pytest.mark.unit
@@ -45,7 +45,7 @@ def test_empty_scope_denies_everything() -> None:
 
 @pytest.mark.unit
 def test_to_json_round_trip_preserves_sets() -> None:
-    original = build_scope(read=["style", "episodic"], write=["style"])
+    original = build_scope(read=["style", "project"], write=["style"])
     restored = parse_scope(original.to_json())
     assert restored == original
 
@@ -54,8 +54,8 @@ def test_to_json_round_trip_preserves_sets() -> None:
 def test_to_json_is_canonical() -> None:
     # Sorted keys and sorted lists so two scopes with the same content
     # produce the same JSON string regardless of input order.
-    a = build_scope(read=["episodic", "style"], write=[])
-    b = build_scope(read=["style", "episodic"], write=[])
+    a = build_scope(read=["project", "style"], write=[])
+    b = build_scope(read=["style", "project"], write=[])
     assert a.to_json() == b.to_json()
 
 
@@ -100,4 +100,4 @@ def test_allows_returns_false_for_unknown_facet_type_without_wildcard() -> None:
 def test_scope_is_frozen() -> None:
     scope = Scope(read=frozenset({"style"}), write=frozenset())
     with pytest.raises(AttributeError):
-        scope.read = frozenset({"episodic"})  # type: ignore[misc]
+        scope.read = frozenset({"project"})  # type: ignore[misc]

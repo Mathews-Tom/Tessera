@@ -2,16 +2,24 @@
 
 A scope is a pair of facet-type allowlists — one for reads, one for
 writes — stored as JSON text in the ``capabilities.scopes`` column. The
-allowlists are closed: entries must match either the v0.1 facet-type
-vocabulary (``docs/adr/0004-seven-facet-identity-model.md``) or the
-wildcard ``"*"``. An empty list means "no access in this direction",
-which is different from "wildcard".
+allowlists are closed: entries must match either the post-reframe
+facet-type vocabulary (``docs/adr/0010-five-facet-user-context-model.md``)
+or the wildcard ``"*"``. An empty list means "no access in this
+direction", which is different from "wildcard".
+
+The allowlist contains every facet type reserved by the schema CHECK —
+the five writable v0.1 types plus the v0.3 (``person``, ``skill``) and
+v0.5 (``compiled_notebook``) reservations. A token may be scoped to
+read a reserved type today; the write surface separately rejects
+captures for types not yet activated. This lets tokens issued at v0.1
+keep working after v0.3 and v0.5 activate their facets without a
+rotation.
 
 The separation between ``read`` and ``write`` maps directly onto the
-MCP tool surface: ``capture`` consults ``write``; ``recall``,
-``assume_identity``, ``show``, ``list_facets`` consult ``read``. Future
-admin-only ops (``stats``) are gated by client class, not by facet
-scope.
+MCP tool surface: ``capture`` consults ``write``; ``recall``, ``show``,
+``list_facets``, ``forget`` consult ``read`` (``forget`` additionally
+consults ``write`` for the target facet's type). Admin-only ops
+(``stats``) are gated by client class, not by facet scope.
 """
 
 from __future__ import annotations
@@ -21,12 +29,24 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
-# The v0.1 facet vocabulary. Kept local to this module rather than
-# imported from ``tessera.vault.facets`` so the auth layer has no reverse
-# dependency on the storage layer — scope validation must work even when
-# the capabilities row is being constructed before any facet exists.
-_V0_1_FACET_TYPES: Final[frozenset[str]] = frozenset(
-    {"episodic", "semantic", "style", "skill", "relationship", "goal", "judgment"}
+# Allowlist of facet types accepted in stored scopes. Covers the five
+# v0.1 types plus the reserved v0.3/v0.5 types so tokens granted under
+# v0.1 can carry a read scope that survives into later versions without
+# a rotation. Kept local to this module rather than imported from
+# ``tessera.vault.facets`` so the auth layer has no reverse dependency
+# on the storage layer — scope validation must work even when the
+# capabilities row is being constructed before any facet exists.
+_ALLOWED_FACET_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "identity",
+        "preference",
+        "workflow",
+        "project",
+        "style",
+        "person",
+        "skill",
+        "compiled_notebook",
+    }
 )
 
 ScopeOp = Literal["read", "write"]
@@ -42,7 +62,14 @@ class MalformedScopeError(ScopeError):
 
 
 class UnknownFacetTypeError(ScopeError):
-    """Scope references a facet type outside the v0.1 vocabulary."""
+    """Scope references a facet type outside the ADR-0010 vocabulary.
+
+    The allowlist is the five v0.1 writable types plus the v0.3
+    (``person``, ``skill``) and v0.5 (``compiled_notebook``)
+    reservations. An entry outside that set raises; whether the target
+    type is *active* (writable at the current version) is a separate
+    concern enforced at the capture boundary.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +161,7 @@ def _normalise(items: Sequence[object], *, key: str) -> frozenset[str]:
         if entry == _WILDCARD:
             out.add(entry)
             continue
-        if entry not in _V0_1_FACET_TYPES:
+        if entry not in _ALLOWED_FACET_TYPES:
             raise UnknownFacetTypeError(f"scopes['{key}'] references unknown facet type {entry!r}")
         out.add(entry)
     return frozenset(out)

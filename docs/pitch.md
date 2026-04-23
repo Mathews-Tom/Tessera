@@ -1,72 +1,77 @@
 # Tessera
 
-## _The soul that outlives the substrate._
+## *Teach it once. Use it anywhere.*
 
 ---
 
-Every six weeks a new model ships. Opus 4.6 → 4.7. GPT-5.3 → 5.4. Each version shifts capabilities, prompt sensitivities, judgment patterns. If you've built or run any agent that depends on LLM behavior, you've felt it: the agent you tuned last quarter behaves like a stranger this quarter. Same name, different agent.
+You've explained your preferences to Claude. You've written a CLAUDE.md. You've trained ChatGPT's custom instructions. You've configured Cursor's rules. You've told Gemini how you write. You've done this twelve times this year and you'll do it again in six weeks when something new ships.
 
-Now multiply that by the substrate-change problem. You move an agent from Claude to GPT. From cloud to local Qwen. From one harness to another. Whatever you'd taught it — your conventions, your voice, the relationships it had with you and your team — gone. The body changed. The soul didn't survive.
+Every AI tool you use is an amnesiac you re-onboard from scratch. Your preferences, your workflows, the projects you're in the middle of, the voice you write in — they live in your head and in a different config file for every tool you touch. There is no layer between you and the models. The moment you switch tools, you start over.
 
-The autonomous-agent community has a phrase for this: _new body, new soul._ Today, that's the default. **Tessera makes it new body, same soul.**
+Tessera is that layer.
 
 ## What Tessera is
 
-Tessera is a substrate-independent identity layer for AI agents. A small daemon runs locally, owning a single SQLite file that holds the agent's identity — segmented into facets: episodic memory, semantic knowledge, voice and writing style, learned skills, working relationships. Any MCP-capable agent connects with a scoped capability token and reads or writes its identity. When the underlying model changes, the new substrate calls `assume_identity()`, gets back a curated bundle of who-this-agent-is, and behaves continuously with the prior one.
+A local daemon owns a single file on your disk. That file contains your *context*: who you are, how you prefer to work, the workflows you follow, the projects you're in, the voice you write in. Any AI tool that speaks MCP can read and write that context with a scoped capability token. You teach it once. Every tool uses it.
 
-The lead user is the agent. The human is one of the agents.
+When Claude learns you prefer `uv` over `pip`, Cursor inherits that. When ChatGPT drafts a LinkedIn post, it uses the 5-act structure you taught Claude. When a new model ships next month and you swap, nothing is lost — your context isn't locked to a model. It's yours, on your disk, portable.
 
-## Why now
+The name is deliberate: a *tessera* was the Roman token of identity you carried to prove who you were. One tile is small; the assembled mosaic is your full picture. That's the shape of the thing.
 
-Three things are true simultaneously in early 2026:
+## Who it's for
 
-1. **Model versions ship faster than agents can stabilize.** Six-week release cycles. Material capability shifts within the same provider's ecosystem. The substrate-change problem is getting worse, not better.
+The archetypal Tessera user is the **T-shaped AI-native engineer**: deep vertical expertise in one or two domains, active horizontal engagement across many others through AI tools.
 
-2. **Autonomous agents are proliferating.** OpenClaw, Letta Code, Cline, custom harnesses, internal company agents. The population of long-running agents that accumulate state is growing fast. None of them have a clean answer to "how does this agent stay this agent?"
+Concretely: I'm an AI-native backend engineer. I go deep on backend systems and on AI research. But my day also involves front-end design decisions, database choices, blog posts, Reddit comments, LinkedIn posts, mentoring conversations. Every one of those is AI-assisted. Every one of them currently starts with me re-explaining how I work.
 
-3. **The memory-layer market is saturated for _fact recall_ — but nobody is solving identity continuity.** Mem0 has $24M and a memory passport. Letta has a stateful agent runtime. MemPalace has 96.6% on LongMemEval. Cognee has 30+ data connectors. Every one of them treats memory as a flat fact store. Not one of them treats it as the agent's continuity of self across substrate changes. That framing is open.
+If you're reading this and thinking "that's me but with different domains" — you're the user. Built for people deep in a domain who also operate across many, all AI-assisted, who've felt the amnesia tax.
 
-## Why this and not Mem0 / OpenMemory / Letta
+## Why this is different from what exists
 
-Honest read: those products solve different problems.
+Two adjacent product classes, two honest comparisons:
 
-- **Mem0 / OpenMemory** is a memory layer that other AIs call into. Tessera competes here on framing (identity, not memory) and on retrieval depth (SWCR-based topology-aware retrieval, vs. their hybrid-vector-graph). Also single-binary install vs. their Docker + Postgres + Qdrant stack.
-- **Letta / Letta Code** is an agent runtime that _replaces_ Claude Code. Tessera doesn't replace anything — it's the identity layer that any harness, including Letta, can consume.
-- **Provider memory** (ChatGPT, Gemini Personal Intelligence, Claude Projects) is single-provider lock-in. Tessera is the inverse — explicitly built to make leaving any provider painless.
+| Class | What it does | Why Tessera is different |
+|---|---|---|
+| **Per-tool preference files** (CLAUDE.md, ChatGPT custom instructions, Cursor rules, Codex config) | One preference file per tool | One tool only. Forget Claude's custom instructions exist when you're in ChatGPT. Tessera is cross-tool by design. |
+| **Cloud-hosted memory layers** (Mem0, OpenMemory, MemPalace, Cognee, and the emerging cloud-Postgres "second brain" products) | Memory layer (fact recall), typically served from a cloud database | Two differences. **Shape:** they treat memory as a flat blob; Tessera treats it as *structured context* — preferences, workflows, projects, style — so retrieval returns coherent bundles, not nearest-neighbor facts. **Sovereignty:** your context lives in their database; with Tessera it lives in a single file on your disk. Every other difference is downstream of those two. |
 
-The comparison isn't "Tessera vs. Mem0." It's "Tessera and Mem0 solve adjacent problems with different framings." If the agent-identity framing catches, it becomes a category. The category is open.
+## The write-time / query-time frame
 
-## Technical depth where it matters
+Every AI knowledge system has to answer one question: when does the AI do the hard thinking? Write-time (compile on ingest, like Karpathy's personal-wiki prompt), or query-time (store cheaply, synthesize when asked, like most memory products today)?
 
-Three architectural commitments make this real, not slideware:
+Tessera is **query-time by default, for the horizontal touch of the T-shape.** Preferences, workflows, project context, style — these are rules of engagement, not narrative synthesis. They want to be stored cleanly and retrieved coherently at query time. Write-time compilation is the wrong tool for "do I use `uv` or `pip`."
 
-1. **Per-model embedding tables.** Switching embedders creates a new vec table; old embeddings stay queryable until pruned. Model-portability at the storage layer, not just the API.
+For the **vertical depth of the T-shape** — your long-running research, your deep work, your evolving thinking — write-time compilation is the right tool. v0.5 ships it as a new facet type (`compiled_notebook`): you tag a project or skill as vertical-depth, and a compilation agent writes a synthesized artifact from those source facets. The v0.1 schema reserves the facet type and the `compiled_artifacts` table, so the transition is additive, not a rewrite. v0.1 is honest about scope: horizontal touch only. If your deep vertical needs wiki-style compilation today, Karpathy's prompt does it well; nothing in Tessera conflicts with running that alongside.
 
-2. **SWCR-based retrieval.** Topology-aware multi-agent retrieval — unpublished dissertation work — applied directly to identity reconstruction. The `assume_identity` call doesn't dump the top-K facets; it returns a _coherent_ bundle (voice that matches recent context, skills that match active goals, episodics that ground current relationships). This is the differentiator that doesn't lift-and-shift.
+## What makes it technically real
 
-3. **All-local default.** Ollama for embedding, extraction, and reranking. Cloud is opt-in. The full stack runs offline, on a plane, when OpenAI is down. Aligned with the open-source-LLM movement that's accelerating in 2026.
+Three architectural commitments that aren't marketing copy:
+
+1. **Single file, not a service.** The vault is a SQLite database at `~/.tessera/vault.db`. You can `cp` it. Email it. Inspect it with any SQLite browser. No Docker. No Postgres. No Qdrant. No account. The file is the product.
+
+2. **SWCR-based cross-facet retrieval.** When you ask ChatGPT to "draft a LinkedIn post about my anneal project," you don't want nearest-neighbor facts — you want your LinkedIn writing voice, your project context, your 5-act workflow, your preferences, *together*, coherent. That's what SWCR (Sequential Weighted Context Recall) delivers. It's topology-aware cross-facet coherence weighting done at query time, not a cosine search dressed up as retrieval.
+
+3. **All-local by default.** Ollama for embedding. sentence-transformers for reranking. Cloud is opt-in, never required. The stack runs on a plane. The DX-pain movement away from hosted model providers is accelerating; Tessera aligns with it structurally, not as a toggle.
 
 ## Posture
 
-This is a solo-dev craft project. Built on existing open-source primitives — SWCR (retrieval), archex (graph foundations), mudra (dedup) — drawn from the same ecosystem. Apache 2.0. No CLA. No telemetry. No funding aspirations. No hosted tier in v0.1. No paid features in the open-source core, ever.
+Solo-dev craft project. Built by Tom Mathews, on evenings and weekends, while a dissertation on agentic memory systems lands in parallel. Drawing on existing open-source primitives: SWCR (the retrieval algorithm), archex (graph foundations), mudra (dedup). Apache 2.0. No CLA. No telemetry. No hosted tier in v0.1. No paid features in the open-source core, ever.
 
-If a real audience forms, the long-term monetization shape would be optional managed sync (BYO storage is always free) — the Obsidian Sync playbook. That's a years-out concern. The reason this exists is that the substrate-change problem is real, the engineering shape is interesting, and the existing products in the space all miss the framing.
+Not venture-scale. Not trying to be. Built to be used — by me first, by people like me next, by whoever it turns out to serve after that. If a real audience forms, the long-term shape is optional managed sync (BYO storage always free), which is the Obsidian Sync playbook. That's a years-out concern.
 
 ## What I'm asking from you
 
-I want this to fail fast if it's going to fail. Three specific reactions would be useful, in order:
+I want this to fail fast if it's going to fail. Three specific reactions would be useful:
 
-1. **Does the framing land?** Does "agent identity that survives the substrate" feel like a real category, or does it feel like a memory product with a paint job? Be blunt.
+1. **Does the framing land?** Does "portable context layer for every AI tool" feel like a category, or does it feel like a memory product with a paint job? Be blunt.
 
-2. **Where does the demo break in your head?** When you imagine the model-swap demo path (agent on Sonnet 4.6 → swap to 4.7, same voice, same context, same skills), what's the part you don't believe?
+2. **Where does the demo break in your head?** When you imagine capturing a LinkedIn workflow in Claude and having ChatGPT produce a post in your voice using the right structure — what's the part you don't believe?
 
-3. **Who would actually use this in your network?** Not "who would think it's interesting." Who would change their setup to install it. Anyone running long-running agents, custom harnesses, or autonomous workflows. If the answer is "nobody I know," that's a real signal.
-
-I'd rather hear "this is solving a problem nobody has" now than build for six months and find out at launch.
+3. **Who would actually use this in your network?** Not "who would think it's interesting." Who would change their setup to install it. T-shaped engineers, people running 3+ AI tools, people who've written a CLAUDE.md and wished it worked everywhere. If the answer is "nobody I know," that's a real signal and I'd rather hear it now than at launch.
 
 ---
 
-**Tessera** — _The soul that outlives the substrate._
-_Persistent agent identity that survives every model change._
+**Tessera** — *Teach it once. Use it anywhere.*
+*Portable context that travels with you across every AI tool.*
 
 Apache 2.0. Local-first. Single binary. No telemetry.

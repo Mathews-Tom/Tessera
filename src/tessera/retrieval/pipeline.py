@@ -1,8 +1,8 @@
 """Retrieval pipeline orchestrator.
 
 Wires the per-stage modules — BM25, dense, RRF, cross-encoder rerank,
-SWCR reweighting, MMR, token budget — into one async call that
-``recall`` and ``assume_identity`` will sit on top of.
+SWCR reweighting, MMR, token budget — into one async call that the
+MCP ``recall`` tool sits on top of.
 
 Stage ordering per ``docs/swcr-spec.md §Pipeline placement``:
 
@@ -13,14 +13,16 @@ Stage ordering per ``docs/swcr-spec.md §Pipeline placement``:
     rrf_only     : skip rerank, skip SWCR. MMR ingests RRF-fused scores.
     rerank_only  : rerank after RRF; skip SWCR. MMR ingests rerank scores.
     swcr         : rerank after RRF; SWCR reweights the rerank scores;
-                   MMR ingests SWCR-ordered scores.
+                   MMR ingests SWCR-ordered scores. Default-on per
+                   ADR 0011.
 
 The mode is a property of the ``RetrievalConfig`` hash so switching arms
 invalidates the determinism seed — two different modes are not the same
 retrieval and never produce the same result set even for the same query.
 
-Per-stage timing is collected so the P8 MCP surface and P11 observability
-can surface slow-query events per ``docs/determinism-and-observability.md``.
+Per-stage timing is collected so the MCP surface and observability
+layer can surface slow-query events per
+``docs/determinism-and-observability.md``.
 """
 
 from __future__ import annotations

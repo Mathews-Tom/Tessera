@@ -17,7 +17,7 @@ def _cand(
     rerank_score: float,
     embedding: list[float],
     *,
-    facet_type: str = "episodic",
+    facet_type: str = "project",
     entities: frozenset[str] = frozenset(),
 ) -> SWCRCandidate:
     return SWCRCandidate(
@@ -44,7 +44,7 @@ def test_single_candidate_has_no_bonus() -> None:
 
 @pytest.mark.unit
 def test_coherence_bonus_adds_to_rerank_score() -> None:
-    a = _cand(1, 0.5, [1.0, 0.0], facet_type="episodic", entities=frozenset({"alice"}))
+    a = _cand(1, 0.5, [1.0, 0.0], facet_type="project", entities=frozenset({"alice"}))
     b = _cand(2, 0.5, [1.0, 0.0], facet_type="style", entities=frozenset({"alice"}))
     results = apply([a, b])
     # Both candidates should gain bonus from each other; high-similarity,
@@ -58,9 +58,9 @@ def test_isolated_candidate_gets_smaller_bonus_than_connected_one() -> None:
     # Two clustered candidates (high similarity, shared entity, cross-type)
     # plus one orthogonal loner. The clustered pair should outrank the loner
     # even though all three start with the same rerank score.
-    pair_a = _cand(1, 0.5, [1.0, 0.0, 0.0], facet_type="episodic", entities=frozenset({"x"}))
+    pair_a = _cand(1, 0.5, [1.0, 0.0, 0.0], facet_type="project", entities=frozenset({"x"}))
     pair_b = _cand(2, 0.5, [1.0, 0.0, 0.0], facet_type="style", entities=frozenset({"x"}))
-    loner = _cand(3, 0.5, [0.0, 0.0, 1.0], facet_type="episodic", entities=frozenset({"z"}))
+    loner = _cand(3, 0.5, [0.0, 0.0, 1.0], facet_type="project", entities=frozenset({"z"}))
     results = apply([pair_a, pair_b, loner])
     scores = {r.facet_id: r.score for r in results}
     assert scores[1] > scores[3]
@@ -71,9 +71,9 @@ def test_isolated_candidate_gets_smaller_bonus_than_connected_one() -> None:
 def test_cross_type_edge_is_stronger_than_same_type() -> None:
     # Same-type pair with identical embeddings and entities should still
     # get boosted, but less than a cross-type pair with the same features.
-    same_a = _cand(10, 0.5, [1.0, 0.0], facet_type="episodic", entities=frozenset({"e"}))
-    same_b = _cand(11, 0.5, [1.0, 0.0], facet_type="episodic", entities=frozenset({"e"}))
-    cross_a = _cand(20, 0.5, [1.0, 0.0], facet_type="episodic", entities=frozenset({"e"}))
+    same_a = _cand(10, 0.5, [1.0, 0.0], facet_type="project", entities=frozenset({"e"}))
+    same_b = _cand(11, 0.5, [1.0, 0.0], facet_type="project", entities=frozenset({"e"}))
+    cross_a = _cand(20, 0.5, [1.0, 0.0], facet_type="project", entities=frozenset({"e"}))
     cross_b = _cand(21, 0.5, [1.0, 0.0], facet_type="style", entities=frozenset({"e"}))
     same_scores = {r.facet_id: r.score for r in apply([same_a, same_b])}
     cross_scores = {r.facet_id: r.score for r in apply([cross_a, cross_b])}
@@ -95,8 +95,8 @@ def test_sparsification_threshold_drops_weak_edges() -> None:
     # Orthogonal embeddings + different types + no entities → edge weight
     # below default threshold. Applying with lam=1 would have amplified
     # any surviving edge; we check the bonus is effectively zero.
-    a = _cand(1, 0.5, [1.0, 0.0, 0.0], facet_type="episodic", entities=frozenset())
-    b = _cand(2, 0.5, [0.0, 1.0, 0.0], facet_type="episodic", entities=frozenset())
+    a = _cand(1, 0.5, [1.0, 0.0, 0.0], facet_type="project", entities=frozenset())
+    b = _cand(2, 0.5, [0.0, 1.0, 0.0], facet_type="project", entities=frozenset())
     results = apply([a, b], params=SWCRParams(lam=1.0))
     # The edge weight between these two = 0*0.5 + 0/(0+1)*0.3 + 0*0.2 = 0.0,
     # which is below the 0.1 threshold so bonuses stay zero.
@@ -106,9 +106,9 @@ def test_sparsification_threshold_drops_weak_edges() -> None:
 @pytest.mark.unit
 def test_determinism_same_input_same_output() -> None:
     candidates = [
-        _cand(1, 0.9, [1.0, 0.0], facet_type="episodic", entities=frozenset({"x"})),
+        _cand(1, 0.9, [1.0, 0.0], facet_type="project", entities=frozenset({"x"})),
         _cand(2, 0.7, [0.9, 0.1], facet_type="style", entities=frozenset({"x", "y"})),
-        _cand(3, 0.5, [0.0, 1.0], facet_type="semantic", entities=frozenset({"y"})),
+        _cand(3, 0.5, [0.0, 1.0], facet_type="preference", entities=frozenset({"y"})),
     ]
     first = apply(candidates)
     second = apply(candidates)

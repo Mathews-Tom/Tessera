@@ -2,8 +2,9 @@
 
 The runner handles three flows:
 
-* **Bootstrap** — a fresh vault file gets schema v1, a new ``vault_id``, and
-  ``kdf_version``. No backup is needed because there is nothing to protect.
+* **Bootstrap** — a fresh vault file gets schema ``SCHEMA_VERSION`` (the
+  current post-reframe shape), a new ``vault_id``, and ``kdf_version``.
+  No backup is needed because there is nothing to protect.
 * **Upgrade** — a vault at schema ``N`` is advanced to ``M > N`` by applying
   the registered steps for targets ``N+1 .. M`` in order. Each target takes
   a pre-migration backup and flags ``_meta.schema_target`` before the first
@@ -12,9 +13,9 @@ The runner handles three flows:
   ``schema_target``. Every step is idempotent and checks ``_migration_steps``
   before re-applying; rollback is the other (user-invoked) option.
 
-For v0.1 only the bootstrap path is exercised in production because the
-vault schema is at version 1. The framework is shaped so future versions
-plug in by registering a new step list against their target.
+The active upgrade target is v1 → v2 (post-reframe five-facet schema per
+ADR 0010). Future versions plug in by registering a new step list against
+their target in ``_STEPS_BY_TARGET``.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ from tessera.vault.connection import (
     VaultState,
 )
 from tessera.vault.encryption import CURRENT_KDF_VERSION, ProtectedKey
-from tessera.vault.schema import all_statements
+from tessera.vault.schema import SCHEMA_VERSION, all_statements
 
 
 class MigrationError(Exception):
@@ -78,17 +79,243 @@ def _install_schema(conn: sqlcipher3.Connection) -> None:
         conn.execute(stmt)
 
 
+# ---- v1 -> v2 forward migration steps -----------------------------------
+#
+# Schema v2 is the post-reframe (ADR 0010) vault shape: the ``facet_type``
+# CHECK is the five v0.1 types plus reserved v0.3/v0.5 types; facets carry a
+# ``mode`` column and a ``source_tool`` column (renamed from ``source_client``
+# to match the new vocabulary); ``compiled_artifacts`` is reserved. The
+# pre-reframe CHECK is table-literal, so the upgrade uses SQLite's 12-step
+# table-recreate pattern: drop triggers, rename, create new, copy with a
+# facet-type mapping CASE, drop old, recreate indexes/FTS/triggers, create
+# the new reserved table. Old ``judgment`` rows are dropped per the plan's
+# mapping table (no successor facet type in the post-reframe vocabulary).
+#
+# In practice no production v1 vault exists outside test harnesses — the v1
+# code path only ever wrote ``episodic`` / ``semantic`` / ``style`` rows
+# (see ``facets.V0_1_FACET_TYPES`` as it stood in P1). The full 7-type
+# mapping is carried anyway so a dogfooding vault that did sneak in a
+# ``skill`` / ``relationship`` / ``goal`` row (via raw SQL, not through the
+# Python surface) migrates cleanly.
+
+
+def _step_drop_v1_fts_triggers(conn: sqlcipher3.Connection) -> None:
+    conn.execute("DROP TRIGGER IF EXISTS facets_ai")
+    conn.execute("DROP TRIGGER IF EXISTS facets_ad")
+    conn.execute("DROP TRIGGER IF EXISTS facets_au")
+
+
+def _step_rename_v1_facets(conn: sqlcipher3.Connection) -> None:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='_facets_v1'"
+    ).fetchone()
+    if row is not None:
+        return
+    conn.execute("ALTER TABLE facets RENAME TO _facets_v1")
+
+
+def _step_create_v2_facets(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS facets (
+            id                     INTEGER PRIMARY KEY,
+            external_id            TEXT NOT NULL UNIQUE,
+            agent_id               INTEGER NOT NULL REFERENCES agents(id),
+            facet_type             TEXT NOT NULL CHECK (facet_type IN
+                ('identity', 'preference', 'workflow', 'project', 'style',
+                 'person', 'skill', 'compiled_notebook')),
+            content                TEXT NOT NULL,
+            content_hash           TEXT NOT NULL,
+            mode                   TEXT NOT NULL DEFAULT 'query_time'
+                CHECK (mode IN ('query_time', 'write_time', 'hybrid')),
+            source_tool            TEXT NOT NULL,
+            captured_at            INTEGER NOT NULL,
+            metadata               TEXT NOT NULL DEFAULT '{}',
+            is_deleted             INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+            deleted_at             INTEGER,
+            embed_model_id         INTEGER REFERENCES embedding_models(id),
+            embed_status           TEXT NOT NULL DEFAULT 'pending'
+                CHECK (embed_status IN ('pending', 'embedded', 'failed', 'stale')),
+            embed_attempts         INTEGER NOT NULL DEFAULT 0,
+            embed_last_error       TEXT,
+            embed_last_attempt_at  INTEGER,
+            UNIQUE(agent_id, content_hash)
+        )
+        """
+    )
+
+
+def _step_copy_v1_rows(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        INSERT INTO facets(
+            id, external_id, agent_id, facet_type, content, content_hash,
+            mode, source_tool, captured_at, metadata, is_deleted, deleted_at,
+            embed_model_id, embed_status, embed_attempts, embed_last_error,
+            embed_last_attempt_at
+        )
+        SELECT
+            id,
+            external_id,
+            agent_id,
+            CASE facet_type
+                WHEN 'episodic'     THEN 'project'
+                WHEN 'semantic'     THEN 'preference'
+                WHEN 'style'        THEN 'style'
+                WHEN 'skill'        THEN 'skill'
+                WHEN 'relationship' THEN 'person'
+                WHEN 'goal'         THEN 'project'
+            END AS facet_type,
+            content,
+            content_hash,
+            'query_time' AS mode,
+            source_client AS source_tool,
+            captured_at,
+            metadata,
+            is_deleted,
+            deleted_at,
+            embed_model_id,
+            embed_status,
+            embed_attempts,
+            embed_last_error,
+            embed_last_attempt_at
+        FROM _facets_v1
+        WHERE facet_type != 'judgment'
+        """
+    )
+
+
+def _step_drop_v1_facets(conn: sqlcipher3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS _facets_v1")
+
+
+def _step_create_v2_indexes(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_agent_type
+            ON facets(agent_id, facet_type, captured_at DESC)
+            WHERE is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_captured
+            ON facets(captured_at DESC) WHERE is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_mode
+            ON facets(mode, facet_type) WHERE is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_embed_model
+            ON facets(embed_model_id) WHERE is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_embed_status
+            ON facets(embed_status, embed_last_attempt_at)
+            WHERE is_deleted = 0 AND embed_status IN ('pending', 'failed')
+        """
+    )
+
+
+def _step_rebuild_fts(conn: sqlcipher3.Connection) -> None:
+    # facets_fts is an external-content FTS5 table pointing at facets.id.
+    # The facets table has been replaced under it, so purge any stale rows
+    # and re-insert from the new live content. This keeps the same virtual
+    # table (preserving tokenizer settings) rather than recreating it.
+    conn.execute("DELETE FROM facets_fts")
+    conn.execute(
+        """
+        INSERT INTO facets_fts(rowid, content)
+        SELECT id, content FROM facets WHERE is_deleted = 0
+        """
+    )
+
+
+def _step_recreate_fts_triggers(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS facets_ai AFTER INSERT ON facets BEGIN
+            INSERT INTO facets_fts(rowid, content) VALUES (new.id, new.content);
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS facets_ad AFTER DELETE ON facets BEGIN
+            INSERT INTO facets_fts(facets_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS facets_au AFTER UPDATE OF content ON facets BEGIN
+            INSERT INTO facets_fts(facets_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+            INSERT INTO facets_fts(rowid, content) VALUES (new.id, new.content);
+        END
+        """
+    )
+
+
+def _step_create_compiled_artifacts(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS compiled_artifacts (
+            id                INTEGER PRIMARY KEY,
+            external_id       TEXT NOT NULL UNIQUE,
+            agent_id          INTEGER NOT NULL REFERENCES agents(id),
+            source_facets     TEXT NOT NULL,
+            artifact_type     TEXT NOT NULL,
+            content           TEXT NOT NULL,
+            compiled_at       INTEGER NOT NULL,
+            compiler_version  TEXT NOT NULL,
+            is_stale          INTEGER NOT NULL DEFAULT 0 CHECK (is_stale IN (0, 1)),
+            metadata          TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS compiled_agent_type
+            ON compiled_artifacts(agent_id, artifact_type, compiled_at DESC)
+        """
+    )
+
+
+_V1_TO_V2_STEPS: Final[tuple[MigrationStep, ...]] = (
+    MigrationStep("drop_v1_fts_triggers", 2, _step_drop_v1_fts_triggers),
+    MigrationStep("rename_v1_facets", 2, _step_rename_v1_facets),
+    MigrationStep("create_v2_facets", 2, _step_create_v2_facets),
+    MigrationStep("copy_v1_rows", 2, _step_copy_v1_rows),
+    MigrationStep("drop_v1_facets", 2, _step_drop_v1_facets),
+    MigrationStep("create_v2_indexes", 2, _step_create_v2_indexes),
+    MigrationStep("rebuild_fts", 2, _step_rebuild_fts),
+    MigrationStep("recreate_fts_triggers", 2, _step_recreate_fts_triggers),
+    MigrationStep("create_compiled_artifacts", 2, _step_create_compiled_artifacts),
+)
+
+
 # Forward-migration step registry keyed by target version. Bootstrap (target 1
 # from a fresh vault) is intentionally absent: it cannot use the step runner
 # because `_meta` and `_migration_steps` do not exist until the schema DDL has
 # itself been applied, so the runner's state machine has nothing to write to.
 # A failed bootstrap leaves a schema-less file that the next open flags as
 # VaultNotInitializedError — safe even without a checkpoint trail.
-_STEPS_BY_TARGET: Final[dict[int, Sequence[MigrationStep]]] = {}
+_STEPS_BY_TARGET: Final[dict[int, Sequence[MigrationStep]]] = {
+    2: _V1_TO_V2_STEPS,
+}
 
 
 def bootstrap(path: Path, key: ProtectedKey) -> VaultState:
-    """Initialize a fresh vault at ``path`` with schema v1.
+    """Initialize a fresh vault at ``path`` at the current ``SCHEMA_VERSION``.
 
     Raises :class:`VaultAlreadyInitializedError` if ``_meta.schema_version``
     already exists; callers upgrading an existing vault use :func:`upgrade`.
@@ -111,7 +338,7 @@ def _apply_bootstrap(conn: sqlcipher3.Connection) -> None:
         conn.executemany(
             "INSERT INTO _meta(key, value) VALUES (?, ?)",
             [
-                ("schema_version", "1"),
+                ("schema_version", str(SCHEMA_VERSION)),
                 ("vault_id", vault_id),
                 ("kdf_version", str(CURRENT_KDF_VERSION)),
             ],
@@ -121,7 +348,7 @@ def _apply_bootstrap(conn: sqlcipher3.Connection) -> None:
             op="vault_init",
             actor="system",
             payload={
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
                 "kdf_version": CURRENT_KDF_VERSION,
                 "vault_id": vault_id,
             },

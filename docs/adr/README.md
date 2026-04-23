@@ -27,12 +27,14 @@ ADRs are numbered sequentially. Numbers are never reused. Superseding decisions 
 | 0001 | [SQLite over DuckDB, LMDB, Postgres](0001-sqlite-over-alternatives.md) | Accepted |
 | 0002 | [sqlite-vec over pgvector, Qdrant, Chroma](0002-sqlite-vec-over-external-vector-stores.md) | Accepted |
 | 0003 | [Per-model vec tables over unified embedding space](0003-per-model-vec-tables.md) | Accepted |
-| 0004 | [Seven-facet identity model](0004-seven-facet-identity-model.md) | Accepted |
+| 0004 | [Seven-facet identity model](0004-seven-facet-identity-model.md) | Superseded by 0010 |
 | 0005 | [MCP as primary transport](0005-mcp-as-primary-transport.md) | Accepted |
 | 0006 | [Ollama as default model runtime](0006-ollama-as-default-model-runtime.md) | Accepted |
 | 0007 | [Token lifecycle: short TTL, refresh, Unix-socket default](0007-token-lifecycle.md) | Accepted |
 | 0008 | [Adapter framework scope and registration](0008-adapter-framework-scope.md) | Accepted |
-| 0009 | [SWCR opt-in pending ablation](0009-swcr-opt-in-pending-ablation.md) | Accepted |
+| 0009 | [SWCR opt-in pending ablation](0009-swcr-opt-in-pending-ablation.md) | Superseded by 0011 |
+| 0010 | [Five-facet user-context model](0010-five-facet-user-context-model.md) | Accepted |
+| 0011 | [SWCR default-on as cross-facet coherence primitive](0011-swcr-default-on-cross-facet-coherence.md) | Accepted |
 
 ## When to write an ADR
 

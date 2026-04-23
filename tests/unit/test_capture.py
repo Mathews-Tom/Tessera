@@ -24,9 +24,9 @@ def test_capture_returns_external_id_and_writes_audit(open_vault: VaultConnectio
     result = capture.capture(
         open_vault.connection,
         agent_id=agent_id,
-        facet_type="episodic",
+        facet_type="project",
         content="Shipped P2 today.",
-        source_client="test",
+        source_tool="test",
     )
     assert result.is_duplicate is False
     assert result.external_id
@@ -38,7 +38,7 @@ def test_capture_returns_external_id_and_writes_audit(open_vault: VaultConnectio
     assert op == "facet_inserted"
     assert target == result.external_id
     payload = json.loads(payload_json)
-    assert payload["facet_type"] == "episodic"
+    assert payload["facet_type"] == "project"
     assert payload["is_duplicate"] is False
     assert len(payload["content_hash_prefix"]) == 8
 
@@ -53,14 +53,14 @@ def test_capture_dedup_returns_same_external_id_and_marks_duplicate(
         agent_id=agent_id,
         facet_type="style",
         content="voice sample",
-        source_client="test",
+        source_tool="test",
     )
     second = capture.capture(
         open_vault.connection,
         agent_id=agent_id,
         facet_type="style",
         content="voice sample",
-        source_client="test",
+        source_tool="test",
     )
     assert second.external_id == first.external_id
     assert second.is_duplicate is True
@@ -81,7 +81,7 @@ def test_capture_rejects_unsupported_facet_type(open_vault: VaultConnection) -> 
             agent_id=agent_id,
             facet_type="skill",
             content="p3 doesn't ship skills",
-            source_client="test",
+            source_tool="test",
         )
 
 
@@ -91,9 +91,9 @@ def test_capture_default_embed_status_is_pending(open_vault: VaultConnection) ->
     result = capture.capture(
         open_vault.connection,
         agent_id=agent_id,
-        facet_type="semantic",
+        facet_type="preference",
         content="Pydantic > dataclasses",
-        source_client="test",
+        source_tool="test",
     )
     row = open_vault.connection.execute(
         "SELECT embed_status FROM facets WHERE external_id=?",

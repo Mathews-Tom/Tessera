@@ -1,8 +1,8 @@
 # Tessera — System Overview
 
-> _The soul that outlives the substrate._
+> *Portable context that travels with you across every AI tool.*
 
-**Status:** Draft 1
+**Status:** Draft (post-reframe)
 **Date:** April 2026
 **Owner:** Tom Mathews
 **License:** Apache 2.0
@@ -11,180 +11,198 @@
 
 ## What Tessera is
 
-Tessera is a substrate-independent identity layer for AI agents. It stores who an agent _is_ — its memory, voice, learned skills, working relationships — in a single file on the user's machine, and serves that identity to any agent that asks for it via MCP. When the underlying model changes (Opus 4.6 → 4.7, GPT-5.3 → 5.4, cloud → local Qwen), the agent stays the same agent. Different body. Same soul.
+A portable context layer for AI tools. A local daemon (`tesserad`) owns a single-file SQLite vault holding the user's context across five facets — identity, preferences, workflows, projects, and style. Any MCP-capable AI tool reads and writes that context with a scoped capability token. The user teaches each thing once; every tool uses it thereafter.
 
-Tessera is not a notes app. Not an agent runtime. Not a memory passport for chatbots. It is the layer that makes an agent _the same agent_ across every model swap, provider change, or substrate migration.
+Tessera is not a notes app, not an agent runtime, not a memory passport for chatbots. It is the *rules-of-engagement* layer between the user and every AI tool they use.
 
-The lead user is the agent. The human is one of the agents.
+## Why Tessera exists — the pain
 
-## Why Tessera exists
+Three observations about how people actually use AI tools in 2026:
 
-Two trends are colliding in early 2026, and the collision creates a problem nobody's solving cleanly.
+**1. Every user accumulates a personal operating model for AI.** Preferences (`uv` over `pip`, Pydantic over dataclasses), workflows (LinkedIn 5-act structure, long-form w→x→y→z), stylistic rules (no emojis in professional posts, terse for Reddit), project context (currently working on anneal), identity facts (AI-native backend engineer, DBA candidate). This operating model is real and stable.
 
-**Model versions ship faster than agents can stabilize.** The release window between Opus 4.6 and 4.7 was six weeks. GPT-5.3 to 5.4 was similar. Each version shifts capabilities, prompt sensitivities, tool-use defaults, judgment patterns. An agent built and tuned on one version often behaves materially differently on the next, even within the same provider's ecosystem. A common framing in the autonomous-agent community is "new body, same soul" — but in practice today, model swaps produce a new body and a _new_ soul. Every restart from a different substrate is a new agent wearing the old name.
+**2. The operating model lives in a different place in every tool.** CLAUDE.md for Claude Code. Custom instructions for ChatGPT. Cursor rules for Cursor. Codex config for Codex. When any of these gets touched up, the others drift. The operating model is fragmented across tools and re-typed constantly.
 
-**Autonomous agents are proliferating.** Claude Code, Codex, OpenClaw, Letta Code, Cline, custom harnesses — the population of long-running agents is growing fast. These agents accumulate state: conversations, decisions, learned patterns, relationships with users. Currently, that state is locked to the model and the harness. Change either, and the agent loses everything.
+**3. Each provider wants to own the memory layer.** ChatGPT Memory now references all past conversations. Gemini Personal Intelligence connects to Gmail, Photos, YouTube, Search. Claude Projects scope context per project. The providers' answer is: stay inside our ecosystem and we'll remember you. The implicit cost is lock-in to their substrate.
 
-The pain isn't memory in the narrow sense ("I forgot a fact you told me"). The pain is identity rupture. There is currently no clean way for an agent to be _the same agent_ across substrate changes. Tessera makes the soul portable.
+The T-shaped user — deep in one or two domains, active across many through AI — pays this tax hardest because they touch the most tools. The amnesia tax compounds: multiple tools × multiple contexts × new model versions every six weeks.
 
-## How it works
+Tessera makes the operating model a first-class portable thing, owned by the user, readable by every tool.
 
-A small daemon runs locally on the user's machine. It owns a single-file SQLite vault containing the agent's identity, segmented into facets — episodic memory, semantic memory, voice/style samples, learned skills, working relationships. The vault speaks MCP. Any MCP-capable agent can connect with a scoped capability token and read or write its identity. When the model behind the agent changes, the new substrate connects to the same vault, calls `assume_identity()`, and reconstructs the agent's continuity from the facets stored there.
+## The T-shape as the unit of analysis
 
-Retrieval is built on a hybrid pipeline: BM25 + dense + RRF fusion + cross-encoder rerank + MMR diversification + token budget. Each stage is a discrete module with explicit tie-break rules so results are reproducible given a seed. The SWCR (Sequential Weighted Context Recall) coherence-reweighting stage from the dissertation lineage is shipped as an opt-in retrieval mode (`retrieval_mode: swcr`) in v0.1; the default is `rerank_only`. See `docs/adr/0009-swcr-opt-in-pending-ablation.md` for the evidence trail behind that decision — first-pass ablation evidence (`docs/benchmarks/B-RET-1-swcr-ablation/`) does not yet clear the spec's default-on thresholds, and a harder-dataset + human-rater run is scheduled for v0.1.x.
+The single most important framing choice in Tessera's design is that **context is not flat**. A T-shaped user has two distinct kinds of context:
 
-The substrate is fungible. The vault is the agent. See the System Design document for full architecture.
+- **Vertical (deep):** the user's primary domains of expertise. For the archetypal user: backend systems, AI research. Stable over years. Evolves through deep engagement. Outputs are often long-form and synthesized.
+- **Horizontal (broad):** everything else the user touches with AI assistance. Front-end decisions, database choices for a product, blog writing, social posts, mentoring conversations. Stable over weeks to months. Evolves through many small interactions. Outputs are short-form and transactional.
+
+Almost every real AI interaction crosses both arms of the T. Drafting a LinkedIn post about a backend project: the *substance* is vertical (backend, AI research), the *form* is horizontal (LinkedIn voice, 5-act structure, no-emoji preference). Writing a Reddit comment about a new AI paper: vertical substance, horizontal register.
+
+This has a concrete architectural implication: retrieval must be **cross-facet by default**. A query that hits only one facet is the exception, not the rule. This is why Tessera invests in SWCR (topology-aware retrieval) from v0.1 instead of shipping a flat cosine search.
+
+## The write-time / query-time frame
+
+Every AI knowledge system has to answer one question: when does the AI do the hard thinking? Write-time (compile on ingest, like Karpathy's personal-wiki prompt) or query-time (store cheaply, synthesize when asked, which is what most memory products do today).
+
+Tessera ships v0.1 as **query-time only**. The reason is matched to the audience:
+
+| Facet | Natural mode | Why |
+|---|---|---|
+| Identity | Query-time | Stable facts; synthesis at query is cheap and fresh |
+| Preferences | Query-time | Rules-of-engagement; you want them applied, not compiled |
+| Workflows | Query-time | Procedural patterns; reading them back is the whole point |
+| Projects | Query-time | Active context; write-time compilation would stale fast |
+| Style | Query-time | Voice samples; retrieval returns representatives, not synthesis |
+
+Each of these facets is about the **horizontal touch of the T-shape**. Query-time is the right mode. Write-time compilation would add complexity without adding value for these types.
+
+**Write-time compilation becomes relevant for the vertical depth of the T-shape** — long-running research notebooks, evolving domain knowledge. v0.5 adds `compiled_notebook` as a new facet type: the user tags a `project` or `skill` as vertical-depth, and a compilation agent synthesizes an artifact from those source facets. The v0.1 schema reserves the facet type and the `compiled_artifacts` table, so the transition is additive, not a rewrite.
+
+The `mode` column on `facets` discriminates rows by **production method**, not user choice: v0.1 writes `query_time` for all five facets; v0.5 writes `write_time` for `compiled_notebook` rows produced by the compiler. A per-facet mode toggle on existing facet types is not a v0.5 commitment — if real user signal calls for it after v0.5, it's a later decision.
 
 ## Market context
 
-The "AI memory" category is crowded as of April 2026. Honest map:
+Honest map as of April 2026.
 
 ### Memory layers (closest competitors)
 
-| Product                         | Position                | Local                 | License          | Notes                                                                             |
-| ------------------------------- | ----------------------- | --------------------- | ---------------- | --------------------------------------------------------------------------------- |
-| **Mem0 / OpenMemory MCP**       | Memory layer + dev SaaS | Yes (Docker stack)    | Apache 2.0       | $24M Series A, AWS partnership, 14M downloads, Docker + Postgres + Qdrant install |
-| **MemPalace**                   | Local memory layer      | Yes (SQLite + Chroma) | MIT              | 96.6% on LongMemEval, 19 MCP tools, no API keys                                   |
-| **CaviraOSS/OpenMemory**        | Memory layer            | Yes (npm)             | Apache 2.0       | Native MCP, temporal knowledge graph                                              |
-| **doobidoo/mcp-memory-service** | Memory layer            | Yes                   | OSS              | Production-tested, OAuth, 1500+ tests                                             |
-| **Cognee**                      | Memory + graph          | Self-host or cloud    | Open core        | 30+ data connectors, enterprise-priced                                            |
-| **Zep / Graphiti**              | Temporal memory         | Self-host or cloud    | Source-available | Strong on temporal queries                                                        |
-| **Memori / Memorilabs**         | SQL-native memory       | Self-host             | Open core        | Treats memory as relational data                                                  |
-| **OB1 / Open Brain**            | Memory layer            | Yes (Supabase)        | FSL-1.1-MIT      | Distribution-led, content-creator-built                                           |
+| Product | Position | Local | License | Notes |
+|---|---|---|---|---|
+| **Mem0 / OpenMemory MCP** (Mem0's open-source release) | Memory layer + dev SaaS | Yes (Docker stack) | Apache 2.0 | $24M Series A, AWS partnership, 14M downloads |
+| **MemPalace** | Local memory layer | Yes (SQLite + Chroma) | MIT | 96.6% on LongMemEval, 19 MCP tools, no API keys |
+| **CaviraOSS/OpenMemory** (unrelated to Mem0's OpenMemory — naming collision) | Memory layer | Yes (npm) | Apache 2.0 | Native MCP, temporal knowledge graph |
+| **doobidoo/mcp-memory-service** | Memory layer | Yes | OSS | Production-tested, OAuth, deployment-hardened |
+| **Cognee** | Memory + graph | Self-host or cloud | Open core | 30+ data connectors, enterprise-priced |
+| **Zep / Graphiti** | Temporal memory | Self-host or cloud | Source-available | Strong on temporal queries |
+| **Memori / Memorilabs** | SQL-native memory | Self-host | Open core | Treats memory as relational data |
+| **Cloud-Postgres "second brain" products** (emerging class) | Cross-tool memory served from a rented cloud database | Cloud-only | Varies | Content-creator-led distribution; architecturally welded to their cloud-PaaS backend |
 
-### Agent runtimes (different category, often confused)
+### Provider-level memory (platform threat)
 
-| Product                       | Position                            | Notes                                                     |
-| ----------------------------- | ----------------------------------- | --------------------------------------------------------- |
-| **Letta / Letta Code**        | Agent runtime with memory built in  | Replaces Claude Code; not a memory layer for other agents |
-| **Claude Code (with memory)** | Anthropic's agent + provider memory | Locked to Anthropic ecosystem                             |
+| Product | Position | Notes |
+|---|---|---|
+| ChatGPT Memory | Cross-conversation, OpenAI-locked | References all past chats automatically |
+| Gemini Personal Intelligence | Google-ecosystem | Launched January 2026 |
+| Claude Projects memory | Anthropic-scoped | Stays inside project boundary |
 
-### Provider-level memory (the platform threat)
+### Per-tool preference files (where the user currently lives)
 
-| Product                          | Position                                   | Notes                                          |
-| -------------------------------- | ------------------------------------------ | ---------------------------------------------- |
-| **ChatGPT Memory**               | Cross-conversation memory inside OpenAI    | References all past chats automatically        |
-| **Google Personal Intelligence** | Gemini + Gmail + Photos + YouTube + Search | Launched January 2026, Google-ecosystem-locked |
-| **Claude Projects memory**       | Project-scoped memory                      | Stays inside the project boundary              |
+| Product | Scope | Notes |
+|---|---|---|
+| CLAUDE.md | Claude Code, Claude Desktop | Markdown file, Claude-only |
+| ChatGPT Custom Instructions | ChatGPT | Web UI only, ChatGPT-only |
+| Cursor Rules | Cursor | Project or global, Cursor-only |
+| Codex config | Codex CLI | Codex-only |
+| Windsurf rules | Windsurf | Windsurf-only |
 
-### Browser-extension memory (consumer flank)
+### Knowledge compilation (different category — write-time)
 
-| Product                     | Position                  | Notes                                                  |
-| --------------------------- | ------------------------- | ------------------------------------------------------ |
-| AI Context Flow             | Cross-tool browser plugin | Works across ChatGPT, Claude, Gemini, Perplexity, Grok |
-| MemSync                     | Cross-app memory          | Semantic + episodic                                    |
-| myNeutron                   | Chrome capture            | Captures online activity                               |
-| OpenMemory Chrome Extension | Browser-only cross-tool   | Different project, same name                           |
-
-The category is saturated for _fact recall_. Every product above frames the value prop as "remember things you said." None frame it as **agent identity continuity across substrate changes.** That's the positioning hole.
+| Approach | Notes |
+|---|---|
+| Karpathy's personal wiki prompt | Write-time compiled Markdown in Obsidian; solo deep research |
+| NotebookLM | Google's hosted variant; write-time synthesis per-notebook |
+| Cloud-memory products announcing compilation extensions | Add a derived wiki layer over their existing cloud-Postgres backend |
 
 ## Where Tessera fits
 
-Tessera does not compete with Mem0 on fact recall. Mem0 has a $24M war chest, an AWS partnership, and 14M downloads. Tessera does not compete with Letta on agent execution. Letta is a Claude Code competitor with persistent agents.
+Tessera does not compete with Mem0 on scale of memory infra. Mem0 has $24M and an AWS partnership. We do not compete with Karpathy's wiki on deep research compilation — v0.1 doesn't do write-time. We do not compete with CLAUDE.md on the Claude-specific experience — Claude's integration inside Claude is always going to be tighter.
 
-Tessera competes on a frame nobody else has staked out: **the substrate-independent self.** What persists when you swap GPT for Claude for Llama for whatever ships next month.
+Tessera occupies a position nobody has clearly claimed: **the cross-tool, structured, user-owned context layer for the T-shaped AI-native user.**
 
-The closest analogues are not memory products at all:
+The closest stated analogue is **dotfiles for AI tools**. Your shell doesn't care which machine you SSH into; your `.zshrc` makes any shell feel like *your* shell. Tessera does the same for AI tools: your agent doesn't care which model or which harness; your context makes any AI feel like *your* AI.
 
-- **dotfiles** for shell environments — the layer that makes any shell feel like _your_ shell
-- **password managers** for credentials — the layer that makes any browser feel like _your_ browser
-- **Apple Continuity** for devices — the layer that makes any device feel like _your_ device
+## Moat
 
-Tessera is "Continuity for AI agents." The category is not yet occupied by a funded entrant. It is claimable, not claimed. That distinction matters for the moat discussion below.
+Ranked by defensibility. What's genuinely Tessera's, not marketing copy on top of shared primitives:
 
-### Audience reality check
+**1. Storage sovereignty.** The vault is a single SQLite file on the user's disk. No cloud Postgres, no rented database, no vendor account required to read your own context. Every cloud-dependent memory layer — whether it's Mem0's SaaS tier or a cloud-Postgres "second brain" product — forecloses offline use, single-file export, region-independence, zero-account install, and long-term independence from their infrastructure. That asymmetry is permanent: a cloud-memory product cannot adopt file-on-disk storage without abandoning its architecture.
 
-The addressable audience in April 2026 is narrow. Two populations feel substrate-change pain:
+**2. SWCR-based cross-facet retrieval.** T-shape synthesis — pulling style + project + workflow + preference coherently for a single query — is not what vanilla vector search does well. SWCR is unpublished dissertation research applied as the default retrieval mode, not an advanced option. Competitors would have to rewrite their retrieval stacks to match. Mem0 cannot, OpenMemory cannot, MemPalace cannot. This is the one technical moat that compounds with dissertation research Tom is doing anyway.
 
-- **Developers running custom or long-running autonomous agents** — Claude Code power users, Codex, OpenClaw, Cline, Letta, custom harnesses. Honest global count: **500–5,000**.
-- **Teams running self-hosted agent deployments who migrate between models for cost or capability reasons** — niche today, likely growing. Honest count: **low hundreds of teams**.
+**3. The category claim.** "Portable context layer" as a category is not yet staked by any funded player. Mem0 says "memory." Letta says "agent state." The emerging cloud-memory products say "second brain." Naming the category — and being specific about the T-shaped user — is a positioning moat that only works if claimed early and defended publicly.
 
-Everyone else — the mainstream user of ChatGPT, Gemini, or Claude via provider-native chat — does not feel this pain. Provider memory solves their use case adequately and keeps them on one substrate.
+**4. Single-binary install.** Every direct competitor ships Docker (OpenMemory, doobidoo), npm (CaviraOSS), cloud accounts (SaaS memory products), or a runtime (Letta Code). A real single-binary install — `brew install tessera`, no Docker, no Postgres, no Qdrant, no account — is a friction asymmetry. Mainstream non-technical users are gated by setup friction; first-mover on zero-friction install matters.
 
-Tessera is not a mass-market product. It is a tool for power users and autonomous-agent operators. The v1.0 ambition is 100+ active vaults in the wild. A category that grows to 50K users over the next three years is a win; staying at 5K would make Tessera a craft project that served its niche well. Both outcomes are acceptable.
+**5. All-local default.** Default to Ollama for embedding and extraction, sentence-transformers for rerank. Cloud is opt-in. Most competitors default to OpenAI keys. Aligns structurally with the open-source-LLM movement accelerating in 2026.
 
-## Moat (in order of defensibility)
+**6. Aesthetic and UX discipline.** Linear vs. Jira. Bear vs. Evernote. Most memory products are dev-tools-ugly. An opinionated, prosumer-quality interface (CLI first, no GUI in v0.1) that competes on shape rather than feature-count is a moat that compounds with brand.
 
-1. **The framing itself — conditional on speed.** "Agent identity" as a category is not yet claimed by any well-funded competitor. Naming a category is a real moat when the name sticks before a funded entrant co-opts it; Linear and Stripe are the positive examples. The negative examples (categories named first but owned by a later entrant with better distribution) are more common. A Medium post and a docs repositioning by Mem0 or Letta could occupy this frame in 48 hours. Tessera's defense is speed to public claim plus single-binary install plus all-local default — not framing alone. The narrative moat is 6–12 months, not durable on its own.
+What is *not* a moat: Apache 2.0 license (table stakes), MCP support (everyone has it), local storage (several have it), Ollama support (several have it). Stating these as differentiators would be self-deception.
 
-2. **Single-binary install.** Every direct competitor ships Docker (OpenMemory, doobidoo), npm (CaviraOSS), or a CLI requiring a runtime (Letta Code). A genuinely single-binary install — `brew install tessera`, no Docker, no Postgres, no Qdrant — is a real friction asymmetry. The mainstream "true non-technical user" is gated by setup friction; first-mover on zero-friction install matters.
+## Risks — stress-tested
 
-3. **All-local default.** Default to Ollama for embedding, extraction, and reranking. Cloud providers are opt-in, never required. Most competitors default to OpenAI keys. The DX-pain narrative around model providers is growing; aligning with the open-source-LLM movement is a structural bet, not just a feature.
+### Risk 1 — A cloud-memory competitor ships a hybrid write-time + query-time architecture
 
-4. **Aesthetic and UX discipline.** Most memory products are dev-tools-ugly. A genuinely opinionated, prosumer-quality interface (CLI first, optional GUI later) that does not compete on features but on shape — Linear vs. Jira, Bear vs. Evernote — is a moat that compounds with brand over time.
+**Scenario.** A funded or distribution-heavy competitor in the cloud-memory class adds a compilation-agent layer over their existing cloud-Postgres backend, becoming SQL + graph + derived wiki layer with broad audience reach.
 
-5. **SWCR — opt-in research-quality retrieval, not a shipping moat at v0.1.** The SWCR coherence-reweighting algorithm is implemented and available as an opt-in retrieval mode. First-pass ablation evidence (fake-adapter and real-adapter runs against a synthetic 2K-facet dataset) does not yet clear the spec's default-on thresholds — fake adapters show a measurable MRR regression, real adapters saturate all three arms at ceiling so no SWCR improvement can be measured on that dataset. The algorithm does not regress in either run. A harder-dataset ablation with human coherence raters at v0.1.x is the graduation gate. Until that clears, SWCR is a differentiator available to opt-in users, not a category claim. See `docs/adr/0009-swcr-opt-in-pending-ablation.md`.
+**Realism.** High. Probably 2–6 months for at least one such product.
 
-What is _not_ a moat: Apache 2.0 license (everyone has it), MCP support (everyone has it), local storage (everyone has it), graph layer (Mem0g, Cognee, Letta Filesystem all have it). Stating these as differentiators would be self-deception.
+**Defense.** The cloud dependency remains. Adding a compilation layer on top of a rented database does not change the architectural fact that the user's data lives on someone else's infrastructure. The sovereignty differentiator holds indefinitely. The audiences also tend to diverge: distribution-led cloud-memory products skew toward content-creator segments; Tessera targets the senior T-shaped engineer who will not adopt a cloud-dependent stack regardless of feature parity. Tessera can pick up the users who internalized the cross-tool framing but won't install a cloud-backed memory layer.
 
-## Risks (stress-tested)
+### Risk 2 — Mem0 or Letta pivots into the T-shape positioning
 
-### Risk 1 — Provider memory closes the gap on the human use case
+**Scenario.** A funded competitor repositions to target the user segment Tessera is aiming at.
 
-**Scenario.** ChatGPT Memory, Gemini Personal Intelligence, and Claude Projects all ship v3-grade cross-conversation memory. Users settle into one provider, never feel the cross-tool friction.
+**Realism.** Low for Mem0 (dev-tool-flavored, B2B-shaped). Low for Letta (agent-runtime-shaped). Medium for a new entrant.
 
-**Realism.** High. ChatGPT now references all past conversations across the platform. Google Personal Intelligence connects Gemini to Gmail, Photos, YouTube, and Search.
+**Defense.** SWCR's topology-aware cross-facet coherence weighting is non-trivial to copy; it requires rebuilding retrieval. The single-binary install is hard to achieve with a Python-SDK-shaped product (Mem0's natural shape). The user archetype is specific enough that generic memory positioning won't feel targeted.
 
-**Defense.** This kills "human PKM cross-tool memory" as a wedge — but Tessera isn't selling that. The agent-identity frame is orthogonal: provider memory does not solve substrate-change identity continuity, because providers want you locked to their substrate. The more they push their own memory, the more they validate that identity-substrate separation is a real category — and the more locked-in their memory becomes, the more painful it is to leave.
+### Risk 3 — Provider memory closes the gap
 
-### Risk 2 — A funded entrant pivots into the agent-identity frame
+**Scenario.** ChatGPT Memory, Claude Projects, Gemini Personal Intelligence all ship v3-grade cross-conversation memory. Users settle into one provider.
 
-**Scenario.** Mem0 or Letta repositions as "agent identity layer." They have funding, brand, and audience.
+**Realism.** High for partial (already happening). High for full within each provider's ecosystem within 12 months.
 
-**Realism.** Medium-high. Mem0 and Letta can reposition faster than Tessera can build. A blog post and a docs update are the cost of co-opting the frame. Neither would have to abandon their existing product; both could add "identity layer" language on top of their current stack within a week.
+**Defense.** Provider memory is explicitly provider-scoped. The more locked-in each provider's memory becomes, the more valuable cross-tool portability gets for the user who is *not* all-in on one provider. This is the Tessera user by definition — T-shaped, multi-tool. Provider memory does not threaten this audience; it validates it.
 
-**Defense.** The durable defenses are not narrative. They are:
+### Risk 4 — Platform-level identity ships at OS level
 
-- **Single-binary install on the all-local default path** — copying this means replacing a Docker + Postgres + Qdrant stack. An engineering-months commitment for Mem0; OOS for Letta, which is structurally a runtime.
-- **Encryption-at-rest by default and local-first posture** — small surface, consistent ideology.
-- **Speed to public claim** — matters for SEO and community identity, but is the weakest of the three. A funded incumbent with better distribution can outrun this.
+**Scenario.** Apple, Google, or Microsoft ships a system-wide AI context layer. Any AI app can read/write shared user context.
 
-At v0.1, the honest framing is that Tessera is better-packaged than the competition rather than algorithmically deeper. SWCR is implemented and shippable as an opt-in retrieval mode but has not yet cleared its ablation bar on synthetic evidence; the category-claim case depends on that bar clearing at v0.1.x with harder evaluation evidence and human-rater scoring, at which point default-on flips and the moat line becomes "SWCR retrieval depth + single-binary install". Until then the moat is packaging + ideology, not retrieval depth.
+**Realism.** Medium for partial in 18–24 months. High for full in 3–5 years.
 
-### Risk 3 — Platform-level identity ships at the OS layer
+**Defense.** Cross-platform portability. Apple's version will be Apple-only. Tessera works across macOS, Linux, Windows, and eventually Android. This is years away; monitor, don't over-design for it now.
 
-**Scenario.** Apple, Google, or Microsoft ships a system-wide AI identity layer. Any AI app can read/write a shared user context.
+## Examples — what this looks like in daily use
 
-**Realism.** Medium for partial in 18–24 months, high for full in 3–5 years. Apple specifically is positioned for this.
+### Example 1 — The LinkedIn post demo (the v0.1 demo of record)
 
-**Defense.** Cross-platform portability. Apple's version will be Apple-only by definition. Tessera explicitly works across macOS, Linux, Windows, and (eventually) Android. The cross-substrate, cross-OS, cross-provider story is exactly what platform-level identity _cannot_ offer without breaking its own walled garden. Don't overbuild for this risk today; monitor and stay nimble.
+Tom, AI-native backend engineer, decides to write a LinkedIn post about why his anneal project uses git worktrees for isolation.
 
-## Examples
+**Day 1.** Working in Claude Desktop. Tom teaches Claude: "For LinkedIn, use the 5-act structure — Hook → Legend → Credibility Spike → Observation → Meaning. No emojis. 150–300 words." Claude captures this via `capture(content, facet_type='workflow')`. Tom pastes three recent LinkedIn posts as voice samples. Claude captures each via `capture(content, facet_type='style')`. Tom mentions anneal's architecture (Artifact-Eval-Agent triplet, git worktrees for isolation). Claude captures via `capture(content, facet_type='project')`.
 
-### Example 1 — Personal coding agent across model versions
+**Day 4.** Tom opens ChatGPT for an unrelated task. Later that week: "Draft me a LinkedIn post about why my anneal project uses git worktrees." ChatGPT, configured with Tessera MCP, calls `recall("LinkedIn post anneal git worktrees")`. Tessera's SWCR retrieval returns a coherent cross-facet bundle — LinkedIn style samples, the 5-act workflow, anneal project context, no-emoji preference — all within the 2K token budget. ChatGPT drafts a post that feels like Tom wrote it, across every dimension, without Tom setting anything up in ChatGPT.
 
-A solo developer runs a custom coding harness backed by Claude Sonnet 4.5. The harness has Tessera connected. Over six months, the agent learns the developer's coding conventions (no-magic philosophy, type hints everywhere, Pydantic over dataclasses), accumulates project-specific context (archex codebase patterns), and develops a working voice in commit messages and PR descriptions.
+The wow moment is not "ChatGPT remembered one fact Tom told Claude." It's **"ChatGPT produced a draft that feels like mine, synthesized across dimensions, without me configuring ChatGPT."**
 
-Sonnet 4.7 ships. The developer swaps the model. The new substrate connects to the same Tessera vault, calls `assume_identity()`, and behaves continuously: same coding conventions, same project knowledge, same commit-message voice. No re-teaching. No tone drift. The substrate changed; the agent did not.
+### Example 2 — Cross-tool preference propagation
 
-### Example 2 — Multi-agent knowledge handoff for research
+Tom tells Cursor: "I prefer `uv` over `pip` for Python. Never suggest `pip install`." Cursor captures via Tessera. Later, working in Codex CLI on a new project, Tom asks Codex to set up dependencies. Codex queries Tessera, gets the preference, uses `uv` without Tom re-specifying. Same for Pydantic over dataclasses, for async-first I/O, for Go for backend services.
 
-A graduate student runs three agents: a literature-review agent (in Cursor), a writing agent (in Claude Desktop), and a citation-cleaning agent (custom Python harness). Each has its own Tessera identity, but they share a common namespace for research-specific facts (papers read, key claims, contradiction patterns).
+These aren't memory — they're rules of engagement. They should propagate automatically. Tessera makes that the default behavior.
 
-The writing agent calls `recall("the contradiction we found between Smith 2024 and Patel 2025")`. The fact was originally captured by the literature-review agent. Tessera returns it with provenance: "captured by lit-review-agent, 2026-03-14, while reading Smith et al." The student doesn't have to broker the handoff manually.
+### Example 3 — The T-shape synthesis — vertical substance, horizontal form
 
-### Example 3 — Long-running autonomous agent surviving infrastructure migration
+Tom is drafting a Reddit comment in r/LocalLLaMA about a paper he's reading on agentic memory. The *substance* is vertical (AI research, his specialty). The *form* is horizontal (Reddit register: terse, slightly abrasive, in-group aware, minor grammatical imperfections OK).
 
-A small business runs an autonomous customer-support agent on a self-hosted Letta deployment, backed by GPT-5.3. After three months, the agent has accumulated thousands of customer interactions, learned how to handle edge cases, and built a working model of recurring customer types.
+Tom asks any AI tool: "Draft a Reddit comment on this paper: [link]." Tessera's `recall` returns: the AI-research project/identity context (vertical substance), the Reddit comment style samples (horizontal form), the Reddit-specific preferences ("4 sentence max, no transition phrases, no LLM-structural tells"). The resulting draft reflects all three.
 
-The business migrates from GPT-5.3 to local Qwen 3 for cost reasons. Without Tessera, the agent loses everything — three months of learned behavior gone. With Tessera, the agent's identity (customer profiles, learned response patterns, escalation rules) lives in the vault, independent of the model. The new substrate picks up where the old one left off.
+No existing memory layer does this. They return facts. Tessera returns a coherent operating model for a specific output type.
 
 ## Origin and posture
 
-Tessera is a solo-developer craft project. Built by Tom Mathews, drawing on existing open-source primitives in the [`determ-ai`](https://github.com/determ-ai) and [`Mathews-Tom`](https://github.com/Mathews-Tom) ecosystems — specifically SWCR (retrieval), archex (graph), mudra (dedup), and the no-magic philosophy throughout.
+Tessera is a solo-developer craft project. Built by Tom Mathews and hosted at [`Mathews-Tom/Tessera`](https://github.com/Mathews-Tom/Tessera) (the personal-namespace convention for dev-tool repos). It draws on existing open-source primitives split across two namespaces — [`determ-ai`](https://github.com/determ-ai) for longer-lived project repos (archex, VoxID, docex) and [`Mathews-Tom`](https://github.com/Mathews-Tom) for dev-tool repos (armory, no-magic, mudra, codevigil) — specifically SWCR (retrieval algorithm), archex (graph foundations), mudra (dedup), and the no-magic philosophy throughout.
 
-This is not a venture-scale opportunity. It is a craft project that may grow if it earns an audience, with no expectation that it must. The roadmap is paced by what Tom can build solo, in evenings and weekends, while writing a dissertation on agentic memory systems.
+This is explicitly not a venture-scale opportunity. It is a craft project that Tom will dogfood first, then use in teaching/mentoring contexts, then ship to whoever it turns out to serve after that. Paced by solo-dev evening-and-weekend velocity while a DBA dissertation on agentic memory systems lands in parallel.
 
 Apache 2.0. No CLA. No telemetry. No hosted tier in v0.1. No model reselling. No paid features in the open-source core, ever.
 
-If a real audience forms, the long-term monetization shape would be optional managed sync (BYO storage is always free) — the Obsidian Sync playbook. That's a years-out concern, and not the reason this exists.
-
-The reason this exists is that the substrate-change problem is real, the engineering shape is interesting, and the existing products in the space all miss the framing.
+If a real audience forms, the long-term monetization shape would be optional managed sync (BYO storage always free) — the Obsidian Sync playbook. That's years out and not the reason this exists. The reason this exists is that the cross-tool operating-model fragmentation is a real daily tax Tom pays, the engineering shape is interesting, and the existing products all miss the framing.
 
 ---
 
 ## Reading next
 
-- **System Design** — full architecture, schema, retrieval pipeline, MCP surface
-- **Pitch** — share with colleagues to test the waters
-- **Release Spec** — what ships in v0.1, v0.3, v0.5, v1.0
+- **System Design** — architecture, schema, retrieval pipeline, MCP surface
+- **Release Spec** — what ships in v0.1, v0.3, v0.5, v1.0, and what never ships
+- **Pitch** — share-with-colleagues version

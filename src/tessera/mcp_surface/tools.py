@@ -1,4 +1,4 @@
-"""MCP tool surface: capture, recall, assume_identity, show, list_facets, stats.
+"""MCP tool surface: capture, recall, show, list_facets, stats, forget.
 
 Each tool is a thin wrapper around a storage/retrieval primitive plus
 four cross-cutting concerns the boundary owns and the primitives
@@ -11,15 +11,19 @@ below it do not:
    ``scope_denied`` audit rows and raise :class:`ScopeDenied`.
 3. Per-tool token-budget declaration — every response passes through
    ``apply_budget`` so no tool can return more tokens than it promised.
-4. Audit emission — capture/recall/assume_identity delegate to their
-   primitive's existing audit path; show/list_facets/stats are pure
-   reads so they do not add audit entries.
+4. Audit emission — capture/recall/forget delegate to their primitive's
+   existing audit path; show/list_facets/stats are pure reads and do
+   not add audit entries.
 
 The surface is intentionally storage-layer-thin. Each tool is a dozen
 lines of validation + scope check + delegate + response-shape — the
-heavy lifting lives in the retrieval pipeline (P4/P5), the identity
-bundle assembler (P6), and the vault CRUD helpers (P3). Keeping the
-boundary thin keeps the audit and scope invariants legible.
+heavy lifting lives in the retrieval pipeline and the vault CRUD
+helpers. Keeping the boundary thin keeps the audit and scope
+invariants legible.
+
+The sixth tool is ``forget`` (soft-delete with an audit entry).
+Cross-facet context is delivered by ``recall`` with ``facet_types``
+defaulting to every type the caller is scoped for (per ADR 0010).
 """
 
 from __future__ import annotations
@@ -37,16 +41,10 @@ import sqlcipher3
 from tessera.adapters import models_registry
 from tessera.auth.scopes import Scope, ScopeOp
 from tessera.auth.tokens import VerifiedCapability, record_scope_denial
-from tessera.identity.bundle import (
-    IdentityBundle,
-)
-from tessera.identity.bundle import (
-    assume_identity as _assume_identity,
-)
-from tessera.identity.roles import BUNDLE_DEFAULT_WINDOW_HOURS
 from tessera.retrieval.budget import BudgetedItem, apply_budget, count_tokens, truncate_snippet
 from tessera.retrieval.pipeline import PipelineContext, RecallResult
 from tessera.retrieval.pipeline import recall as _pipeline_recall
+from tessera.vault import audit as vault_audit
 from tessera.vault import capture as vault_capture
 from tessera.vault import facets as vault_facets
 
@@ -56,15 +54,11 @@ from tessera.vault import facets as vault_facets
 # or buggy caller from the operator.
 _MAX_CONTENT_CHARS: Final[int] = 65_536
 _MAX_QUERY_CHARS: Final[int] = 4_096
-_MAX_MODEL_HINT_CHARS: Final[int] = 128
+_MAX_REASON_CHARS: Final[int] = 1_024
 _MIN_K: Final[int] = 1
 _MAX_K: Final[int] = 100
 _MIN_LIMIT: Final[int] = 1
 _MAX_LIMIT: Final[int] = 100
-# Recent-window cap at one year in hours — long enough for any sensible
-# identity-bundle horizon, short enough to bound the SQL scan.
-_MIN_WINDOW_HOURS: Final[int] = 1
-_MAX_WINDOW_HOURS: Final[int] = 8_760
 # Metadata is a small structured blob, not a freeform dump. Caps here
 # mirror the "validate all input at the system boundary" rule for
 # dict-shaped payloads: a bounded JSON size and a shallow depth.
@@ -77,27 +71,27 @@ _MIN_SINCE_EPOCH: Final[int] = 0
 _MAX_SINCE_EPOCH: Final[int] = 253_402_300_799  # 9999-12-31T23:59:59Z
 
 # Per-tool token budgets (cl100k_base). Callers may request smaller
-# budgets but never larger — ``recall`` and ``assume_identity`` clamp
-# their requested_budget to the declared ceiling.
+# budgets but never larger — ``recall`` clamps its requested_budget to
+# the declared ceiling.
 CAPTURE_RESPONSE_BUDGET: Final[int] = 512
 RECALL_RESPONSE_BUDGET: Final[int] = 6_000
-ASSUME_IDENTITY_RESPONSE_BUDGET: Final[int] = 6_000
 SHOW_RESPONSE_BUDGET: Final[int] = 2_048
 LIST_FACETS_RESPONSE_BUDGET: Final[int] = 2_048
 STATS_RESPONSE_BUDGET: Final[int] = 1_024
+FORGET_RESPONSE_BUDGET: Final[int] = 256
 
 # ULID shape: 26 chars Crockford base32. We accept the canonical upper
 # alphabet only; the facets module mints via python-ulid which emits
 # uppercase, and allowing lowercase would double the enumeration
 # surface a stolen vault's ``show`` calls have to defend against.
 _ULID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
-_CLIENT_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_SOURCE_TOOL_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 class ToolError(Exception):
     """Base class for MCP-boundary errors.
 
-    Every subclass carries a stable ``code`` attribute so the future
+    Every subclass carries a stable ``code`` attribute so the
     JSON-RPC wire format can return discriminated error payloads
     without leaking internal exception types.
     """
@@ -154,9 +148,9 @@ class ToolContext:
     """Everything an MCP tool needs that was resolved before dispatch.
 
     ``pipeline`` is optional so tools that do not touch retrieval
-    (capture, show, list_facets, stats) can be called without wiring an
-    embedder or reranker. Tools that do require retrieval raise
-    :class:`ValidationError` when ``pipeline`` is missing.
+    (capture, show, list_facets, stats, forget) can be called without
+    wiring an embedder or reranker. Tools that do require retrieval
+    raise :class:`ValidationError` when ``pipeline`` is missing.
     """
 
     conn: sqlcipher3.Connection
@@ -198,23 +192,12 @@ class RecallResponse:
 
 
 @dataclass(frozen=True, slots=True)
-class AssumeIdentityResponse:
-    facets: tuple[RecallMatchView, ...]
-    per_role_counts: dict[str, int]
-    total_tokens: int
-    total_budget_tokens: int
-    truncated: bool
-    warnings: tuple[str, ...]
-    seed: int
-
-
-@dataclass(frozen=True, slots=True)
 class ShowResponse:
     external_id: str
     facet_type: str
     snippet: str
     captured_at: int
-    source_client: str
+    source_tool: str
     embed_status: str
     token_count: int
 
@@ -225,7 +208,7 @@ class FacetSummary:
     facet_type: str
     snippet: str
     captured_at: int
-    source_client: str
+    source_tool: str
     embed_status: str
 
 
@@ -259,6 +242,13 @@ class StatsResponse:
     facet_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class ForgetResponse:
+    external_id: str
+    facet_type: str
+    deleted_at: int
+
+
 # ---- Tools ---------------------------------------------------------------
 
 
@@ -267,13 +257,13 @@ async def capture(
     *,
     content: str,
     facet_type: str,
-    source_client: str | None = None,
+    source_tool: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> CaptureResponse:
     """MCP ``capture`` — insert a facet.
 
     Delegates to :func:`tessera.vault.capture.capture` after write-scope
-    enforcement. ``source_client`` defaults to the capability's
+    enforcement. ``source_tool`` defaults to the capability's
     ``client_name`` when omitted; callers may override to attribute a
     capture to a specific sub-agent, but the capability's client_name
     is what lands in the audit row regardless.
@@ -282,8 +272,8 @@ async def capture(
     _validate_length("content", content, _MAX_CONTENT_CHARS, allow_empty=False)
     _validate_facet_type(facet_type)
     _validate_metadata(metadata)
-    resolved_source = source_client or tctx.verified.client_name
-    _validate_client_name(resolved_source)
+    resolved_source = source_tool or tctx.verified.client_name
+    _validate_source_tool(resolved_source)
     _require_scope(tctx, op="write", facet_type=facet_type)
     try:
         result = vault_capture.capture(
@@ -291,7 +281,7 @@ async def capture(
             agent_id=tctx.verified.agent_id,
             facet_type=facet_type,
             content=content,
-            source_client=resolved_source,
+            source_tool=resolved_source,
             metadata=metadata,
         )
     except vault_facets.UnknownAgentError as exc:
@@ -314,13 +304,15 @@ async def recall(
     facet_types: Sequence[str] | None = None,
     requested_budget_tokens: int | None = None,
 ) -> RecallResponse:
-    """MCP ``recall`` — hybrid retrieval + rerank + budget.
+    """MCP ``recall`` — hybrid retrieval + rerank + SWCR + budget.
 
-    ``facet_types`` defaults to the pipeline's configured set, which in
-    the v0.1 schema is (style, episodic). Read-scope is checked per
-    requested facet type — a partial scope denial raises rather than
-    returning a filtered subset, so the caller cannot accidentally
-    observe a narrower result than they asked for.
+    ``facet_types`` defaults to the pipeline's configured set. Under
+    the post-reframe surface the dispatcher populates that set with
+    every v0.1 facet type the caller is scoped to read, so a bare
+    ``recall`` produces a cross-facet bundle. Read-scope is checked
+    per requested facet type — a partial scope denial raises rather
+    than returning a filtered subset, so the caller cannot
+    accidentally observe a narrower result than they asked for.
     """
 
     if tctx.pipeline is None:
@@ -348,73 +340,6 @@ async def recall(
     )
 
 
-async def assume_identity(
-    tctx: ToolContext,
-    *,
-    model_hint: str | None = None,
-    recent_window_hours: int = BUNDLE_DEFAULT_WINDOW_HOURS,
-    requested_budget_tokens: int | None = None,
-    query_text: str | None = None,
-    explain: bool = False,
-) -> AssumeIdentityResponse:
-    """MCP ``assume_identity`` — role-diversified identity bundle.
-
-    Read-scope is required on every role's ``facet_type``. The identity
-    module enforces its own budget internally; this wrapper re-runs the
-    budget on the flattened response as a belt-and-braces check so a
-    misconfigured role could not exceed the declared ceiling.
-    """
-
-    if tctx.pipeline is None:
-        raise ValidationError("assume_identity requires a configured pipeline context")
-    if model_hint is not None:
-        _validate_length("model_hint", model_hint, _MAX_MODEL_HINT_CHARS, allow_empty=False)
-    if query_text is not None:
-        _validate_length("query_text", query_text, _MAX_QUERY_CHARS, allow_empty=False)
-    _validate_recent_window_hours(recent_window_hours)
-    budget_tokens = _resolve_response_budget(
-        requested_budget_tokens, ASSUME_IDENTITY_RESPONSE_BUDGET
-    )
-    # Scope check: every active role's facet_type must be readable. We
-    # look up the role list the assembler would use so a caller cannot
-    # slip past the scope gate by the assembler silently dropping roles.
-    from tessera.identity.roles import active_roles_for_schema  # avoid import cycle
-
-    for role in active_roles_for_schema():
-        _require_scope(tctx, op="read", facet_type=role.facet_type)
-    bundle: IdentityBundle = await _assume_identity(
-        tctx.pipeline,
-        model_hint=model_hint,
-        recent_window_hours=recent_window_hours,
-        total_budget_tokens=budget_tokens,
-        query_text=query_text,
-        explain=explain,
-    )
-    matches = tuple(
-        RecallMatchView(
-            external_id=f.external_id,
-            facet_type=f.facet_type,
-            snippet=f.snippet,
-            score=f.score,
-            rank=i,
-            captured_at=f.captured_at,
-            token_count=f.token_count,
-        )
-        for i, f in enumerate(bundle.facets)
-    )
-    trimmed, truncated = _enforce_response_budget(matches, budget_tokens)
-    per_role_counts = {role: len(items) for role, items in bundle.per_role.items()}
-    return AssumeIdentityResponse(
-        facets=trimmed,
-        per_role_counts=per_role_counts,
-        total_tokens=sum(m.token_count for m in trimmed),
-        total_budget_tokens=bundle.total_budget_tokens,
-        truncated=truncated or bundle.truncated,
-        warnings=bundle.warnings,
-        seed=bundle.seed,
-    )
-
-
 async def show(tctx: ToolContext, *, external_id: str) -> ShowResponse:
     """MCP ``show`` — fetch one facet by ULID with read-scope."""
 
@@ -437,7 +362,7 @@ async def show(tctx: ToolContext, *, external_id: str) -> ShowResponse:
         facet_type=facet.facet_type,
         snippet=snippet,
         captured_at=facet.captured_at,
-        source_client=facet.source_client,
+        source_tool=facet.source_tool,
         embed_status=facet.embed_status,
         token_count=token_count,
     )
@@ -470,7 +395,7 @@ async def list_facets(
             facet_type=r.facet_type,
             snippet=truncate_snippet(r.content, max_tokens=64),
             captured_at=r.captured_at,
-            source_client=r.source_client,
+            source_tool=r.source_tool,
             embed_status=r.embed_status,
         )
         for r in rows
@@ -518,6 +443,53 @@ async def stats(tctx: ToolContext) -> StatsResponse:
     )
 
 
+async def forget(
+    tctx: ToolContext,
+    *,
+    external_id: str,
+    reason: str | None = None,
+) -> ForgetResponse:
+    """MCP ``forget`` — soft-delete one facet, emit an audit entry.
+
+    The capability must carry ``write`` scope for the target facet's
+    type. The facet row keeps its audit trail; re-capturing the same
+    content resurrects the row via the dedup path in
+    :func:`tessera.vault.facets.insert`. Hard delete is explicit and
+    only reachable via the ``tessera vault vacuum`` CLI path.
+    """
+
+    _validate_ulid(external_id)
+    if reason is not None:
+        _validate_length("reason", reason, _MAX_REASON_CHARS, allow_empty=False)
+    facet = vault_facets.get(tctx.conn, external_id)
+    if facet is None:
+        raise ValidationError(f"facet {external_id!r} does not exist")
+    if facet.is_deleted:
+        raise ValidationError(f"facet {external_id!r} is already forgotten")
+    _require_scope(tctx, op="write", facet_type=facet.facet_type)
+    deleted = vault_facets.soft_delete(tctx.conn, external_id)
+    if not deleted:
+        # A concurrent forget raced us between the get() above and the
+        # soft_delete() — surface as validation so the caller sees the
+        # same error shape as the "already forgotten" path above.
+        raise ValidationError(f"facet {external_id!r} is already forgotten")
+    now = tctx.clock()
+    vault_audit.write(
+        tctx.conn,
+        op="forget",
+        actor=tctx.verified.client_name,
+        agent_id=tctx.verified.agent_id,
+        target_external_id=external_id,
+        payload={"facet_type": facet.facet_type, "reason": reason},
+        at=now,
+    )
+    return ForgetResponse(
+        external_id=external_id,
+        facet_type=facet.facet_type,
+        deleted_at=now,
+    )
+
+
 # ---- Helpers -------------------------------------------------------------
 
 
@@ -552,10 +524,10 @@ def _validate_facet_type(facet_type: str) -> None:
         )
 
 
-def _validate_client_name(client_name: str) -> None:
-    if not _CLIENT_NAME_PATTERN.match(client_name):
+def _validate_source_tool(source_tool: str) -> None:
+    if not _SOURCE_TOOL_PATTERN.match(source_tool):
         raise ValidationError(
-            f"client_name {client_name!r} must match {_CLIENT_NAME_PATTERN.pattern}"
+            f"source_tool {source_tool!r} must match {_SOURCE_TOOL_PATTERN.pattern}"
         )
 
 
@@ -571,15 +543,6 @@ def _validate_limit(limit: int) -> None:
         raise ValidationError("limit must be an integer")
     if limit < _MIN_LIMIT or limit > _MAX_LIMIT:
         raise ValidationError(f"limit={limit} outside [{_MIN_LIMIT}, {_MAX_LIMIT}]")
-
-
-def _validate_recent_window_hours(hours: int) -> None:
-    if not isinstance(hours, int) or isinstance(hours, bool):
-        raise ValidationError("recent_window_hours must be an integer")
-    if hours < _MIN_WINDOW_HOURS or hours > _MAX_WINDOW_HOURS:
-        raise ValidationError(
-            f"recent_window_hours={hours} outside [{_MIN_WINDOW_HOURS}, {_MAX_WINDOW_HOURS}]"
-        )
 
 
 def _validate_since(since: int) -> None:
@@ -708,11 +671,11 @@ def _embed_health(conn: sqlcipher3.Connection, *, agent_id: int) -> EmbedHealth:
 def _counts_by_source(conn: sqlcipher3.Connection, *, agent_id: int) -> dict[str, int]:
     rows = conn.execute(
         """
-        SELECT source_client, COUNT(*)
+        SELECT source_tool, COUNT(*)
           FROM facets
          WHERE agent_id = ? AND is_deleted = 0
-      GROUP BY source_client
-      ORDER BY source_client
+      GROUP BY source_tool
+      ORDER BY source_tool
         """,
         (agent_id,),
     ).fetchall()
@@ -724,29 +687,30 @@ def _now_epoch() -> int:
 
 
 __all__ = [
-    "ASSUME_IDENTITY_RESPONSE_BUDGET",
     "CAPTURE_RESPONSE_BUDGET",
+    "FORGET_RESPONSE_BUDGET",
     "LIST_FACETS_RESPONSE_BUDGET",
     "RECALL_RESPONSE_BUDGET",
     "SHOW_RESPONSE_BUDGET",
     "STATS_RESPONSE_BUDGET",
     "ActiveModel",
-    "AssumeIdentityResponse",
     "BudgetExceeded",
     "CaptureResponse",
     "EmbedHealth",
     "FacetSummary",
+    "ForgetResponse",
     "ListFacetsResponse",
     "RecallMatchView",
     "RecallResponse",
     "ScopeDenied",
     "ShowResponse",
     "StatsResponse",
+    "StorageError",
     "ToolContext",
     "ToolError",
     "ValidationError",
-    "assume_identity",
     "capture",
+    "forget",
     "list_facets",
     "recall",
     "show",

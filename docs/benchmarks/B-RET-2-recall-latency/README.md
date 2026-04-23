@@ -12,9 +12,12 @@ the pipeline itself.
 - 100 trials after a warm-up call that is discarded.
 - Single-writer, single-reader; sequential per-query path.
 
-The full DoD matrix — p50 < 500 ms / p95 < 1 s at 10K, p50 < 1 s / p95
-< 2.5 s at 100K on M1 Pro with real providers — is finalised in P12.
-This baseline proves the pipeline fits its target on small vaults and
+The full DoD matrix — median `recall` < 500 ms at 10K facets, scaling
+curves out to 100K — is finalised in P12 against the reference hardware
+baseline defined in `docs/release-spec.md §v0.1 DoD` (MacBook Pro M1
+Pro 10-core CPU / 16-core GPU, 16 GB RAM, macOS 15.x, daemon idle
+except for the test query, no concurrent Ollama workload). This first
+baseline proves the pipeline fits its target on small vaults and
 records the shape for later comparison.
 
 ## Reproduce

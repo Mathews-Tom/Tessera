@@ -29,10 +29,15 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     "migration_resumed": frozenset({"schema_target"}),
     "migration_rolledback": frozenset({"from_version", "backup_path"}),
     "facet_inserted": frozenset(
-        {"facet_type", "source_client", "is_duplicate", "content_hash_prefix"}
+        {"facet_type", "source_tool", "is_duplicate", "content_hash_prefix"}
     ),
     "facet_soft_deleted": frozenset({"facet_type"}),
     "facet_hard_deleted": frozenset({"facet_type"}),
+    # ``forget`` is the MCP-surface soft-delete primitive post-reframe
+    # (ADR 0010). The op carries the facet type and an optional free-text
+    # reason the caller supplied; external_id lives on the audit row's
+    # ``target_external_id`` column, not inside the payload.
+    "forget": frozenset({"facet_type", "reason"}),
     # Retrieval pipeline (P4). The allowlist excludes query_text and
     # facet content — docs/determinism-and-observability.md §Audit log
     # fields for replay — so stolen-vault forensics cannot reconstruct
@@ -58,25 +63,6 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
         }
     ),
     "retrieval_rerank_degraded": frozenset({"seed", "reranker_name", "reason"}),
-    # Identity bundle assembly (P6). Emitted once per ``assume_identity``
-    # call. No query text, no facet content; ``per_role_counts`` is a
-    # plain ``{role_name: int}`` shape the forensic trail can inspect
-    # without reconstructing the bundle.
-    "identity_bundle_assembled": frozenset(
-        {
-            "seed",
-            "model_hint",
-            "recent_window_hours",
-            "retrieval_mode",
-            "total_tokens",
-            "total_budget_tokens",
-            "per_role_counts",
-            "truncated",
-            "duration_ms",
-            "rerank_degraded",
-            "pipeline_error",
-        }
-    ),
     # Capability lifecycle (P7). ``token_id`` is the capabilities rowid and
     # ``token_hash_prefix`` is the first 12 chars of the stored sha256 —
     # enough for forensics to correlate issue → refresh → revoke without

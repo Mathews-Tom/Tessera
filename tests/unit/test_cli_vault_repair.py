@@ -26,7 +26,7 @@ def _seed_failed(vc: VaultConnection, agent_id: int, *, facet_type: str, n: int)
             agent_id=agent_id,
             facet_type=facet_type,
             content=f"{facet_type}-{i}",
-            source_client="test",
+            source_tool="test",
         )
     vc.connection.execute(
         "UPDATE facets SET embed_status='failed', embed_attempts=4, "
@@ -39,8 +39,8 @@ def _seed_failed(vc: VaultConnection, agent_id: int, *, facet_type: str, n: int)
 @pytest.mark.unit
 def test_repair_embeds_resets_all_failed(open_vault: VaultConnection) -> None:
     agent_id = _make_agent(open_vault)
-    _seed_failed(open_vault, agent_id, facet_type="episodic", n=2)
-    _seed_failed(open_vault, agent_id, facet_type="semantic", n=3)
+    _seed_failed(open_vault, agent_id, facet_type="project", n=2)
+    _seed_failed(open_vault, agent_id, facet_type="preference", n=3)
 
     updated = cli_vault.repair_embeds(open_vault.connection)
 
@@ -54,20 +54,20 @@ def test_repair_embeds_resets_all_failed(open_vault: VaultConnection) -> None:
 @pytest.mark.unit
 def test_repair_embeds_filters_by_facet_type(open_vault: VaultConnection) -> None:
     agent_id = _make_agent(open_vault)
-    _seed_failed(open_vault, agent_id, facet_type="episodic", n=2)
-    _seed_failed(open_vault, agent_id, facet_type="semantic", n=3)
+    _seed_failed(open_vault, agent_id, facet_type="project", n=2)
+    _seed_failed(open_vault, agent_id, facet_type="preference", n=3)
 
-    updated = cli_vault.repair_embeds(open_vault.connection, facet_type="episodic")
+    updated = cli_vault.repair_embeds(open_vault.connection, facet_type="project")
 
     assert updated == 2
-    episodic = open_vault.connection.execute(
-        "SELECT COUNT(*) FROM facets WHERE facet_type='episodic' AND embed_status='pending'"
+    project_row = open_vault.connection.execute(
+        "SELECT COUNT(*) FROM facets WHERE facet_type='project' AND embed_status='pending'"
     ).fetchone()
-    semantic = open_vault.connection.execute(
-        "SELECT COUNT(*) FROM facets WHERE facet_type='semantic' AND embed_status='failed'"
+    preference_row = open_vault.connection.execute(
+        "SELECT COUNT(*) FROM facets WHERE facet_type='preference' AND embed_status='failed'"
     ).fetchone()
-    assert int(episodic[0]) == 2
-    assert int(semantic[0]) == 3
+    assert int(project_row[0]) == 2
+    assert int(preference_row[0]) == 3
 
 
 @pytest.mark.unit
@@ -85,7 +85,7 @@ def test_cli_entrypoint_runs_end_to_end(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_id = _make_agent(open_vault)
-    _seed_failed(open_vault, agent_id, facet_type="episodic", n=1)
+    _seed_failed(open_vault, agent_id, facet_type="project", n=1)
     open_vault.close()
 
     key_bytes = bytes.fromhex(vault_key.hex())

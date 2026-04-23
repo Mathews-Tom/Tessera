@@ -4,7 +4,7 @@ Uses deterministic fake adapters (sha256-hash embedder, length-inverse
 reranker) so the test isolates tool-surface behaviour — validation,
 scope enforcement, budget clamping, audit shape — from provider-side
 latency. The heavy lifting beneath each tool is covered in its own
-phase's test file; here we pin the boundary contract.
+module's test file; here we pin the boundary contract.
 """
 
 from __future__ import annotations
@@ -67,10 +67,10 @@ async def _bootstrap(
     open_vault: VaultConnection,
     vault_path: Path,
     *,
-    scope_read: Sequence[str] = ("style", "episodic"),
-    scope_write: Sequence[str] = ("style", "episodic"),
+    scope_read: Sequence[str] = ("style", "project"),
+    scope_write: Sequence[str] = ("style", "project"),
     style_count: int = 5,
-    episodic_count: int = 7,
+    project_count: int = 7,
 ) -> mcp.ToolContext:
     """Set up an agent, a capability, embedded facets, and a ToolContext."""
 
@@ -88,16 +88,16 @@ async def _bootstrap(
             agent_id=agent_id,
             facet_type="style",
             content=f"voice sample {i}: terse imperative code-first",
-            source_client="test",
+            source_tool="test",
             captured_at=1_000_000 + i,
         )
-    for i in range(episodic_count):
+    for i in range(project_count):
         vault_capture.capture(
             open_vault.connection,
             agent_id=agent_id,
-            facet_type="episodic",
-            content=f"event {i}: decided to ship P8 today",
-            source_client="test",
+            facet_type="project",
+            content=f"project note {i}: shipping P10 reframe reconciliation",
+            source_tool="test",
             captured_at=1_000_000 + i,
         )
     while True:
@@ -128,7 +128,7 @@ async def _bootstrap(
         config=RetrievalConfig(rerank_model="length", mmr_lambda=0.7, max_candidates=50),
         tool_budget_tokens=6000,
         k=10,
-        facet_types=("style", "episodic"),
+        facet_types=("style", "project"),
     )
     return mcp.ToolContext(
         conn=open_vault.connection,
@@ -148,16 +148,16 @@ async def test_capture_inserts_new_facet(open_vault: VaultConnection, vault_path
     tctx = await _bootstrap(
         open_vault,
         vault_path,
-        scope_write=("style", "episodic", "semantic"),
+        scope_write=("style", "project", "preference"),
     )
     resp = await mcp.capture(
         tctx,
         content="freshly captured note",
-        facet_type="semantic",
-        source_client="cli",
+        facet_type="preference",
+        source_tool="cli",
     )
     assert resp.is_duplicate is False
-    assert resp.facet_type == "semantic"
+    assert resp.facet_type == "preference"
     assert len(resp.external_id) == 26
 
 
@@ -168,7 +168,7 @@ async def test_capture_respects_write_scope(open_vault: VaultConnection, vault_p
     tctx = await _bootstrap(
         open_vault,
         vault_path,
-        scope_read=("style", "episodic", "semantic"),
+        scope_read=("style", "project", "preference"),
         scope_write=(),
     )
     with pytest.raises(mcp.ScopeDenied) as exc:
@@ -224,8 +224,8 @@ async def test_recall_scope_partial_denial_raises(
     # style scope only; request both → deny before running retrieval.
     tctx = await _bootstrap(open_vault, vault_path, scope_read=("style",), scope_write=())
     with pytest.raises(mcp.ScopeDenied) as exc:
-        await mcp.recall(tctx, query_text="q", k=5, facet_types=("style", "episodic"))
-    assert exc.value.required_facet_type == "episodic"
+        await mcp.recall(tctx, query_text="q", k=5, facet_types=("style", "project"))
+    assert exc.value.required_facet_type == "project"
 
 
 @pytest.mark.integration
@@ -259,35 +259,6 @@ async def test_recall_budget_truncation_flag(open_vault: VaultConnection, vault_
     assert resp.truncated is True
 
 
-# ---- assume_identity ----------------------------------------------------
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_assume_identity_returns_budgeted_bundle(
-    open_vault: VaultConnection, vault_path: Path
-) -> None:
-    tctx = await _bootstrap(open_vault, vault_path)
-    resp = await mcp.assume_identity(tctx)
-    assert resp.total_tokens > 0
-    assert resp.total_tokens <= mcp.ASSUME_IDENTITY_RESPONSE_BUDGET
-    assert "voice" in resp.per_role_counts
-    assert "recent_events" in resp.per_role_counts
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_assume_identity_denied_without_read_on_all_role_facets(
-    open_vault: VaultConnection, vault_path: Path
-) -> None:
-    # Drop episodic read scope — recent_events role's facet_type is
-    # episodic, so the call must be denied.
-    tctx = await _bootstrap(open_vault, vault_path, scope_read=("style",))
-    with pytest.raises(mcp.ScopeDenied) as exc:
-        await mcp.assume_identity(tctx)
-    assert exc.value.required_facet_type == "episodic"
-
-
 # ---- show ---------------------------------------------------------------
 
 
@@ -303,6 +274,7 @@ async def test_show_returns_facet_by_external_id(
     resp = await mcp.show(tctx, external_id=external_id)
     assert resp.external_id == external_id
     assert resp.facet_type == "style"
+    assert resp.source_tool == "test"
     assert resp.token_count > 0
     assert resp.token_count <= mcp.SHOW_RESPONSE_BUDGET
 
@@ -333,6 +305,7 @@ async def test_list_facets_returns_summaries(open_vault: VaultConnection, vault_
     resp = await mcp.list_facets(tctx, facet_type="style", limit=3)
     assert len(resp.items) == 3
     assert all(item.facet_type == "style" for item in resp.items)
+    assert all(item.source_tool == "test" for item in resp.items)
     assert resp.total_tokens <= mcp.LIST_FACETS_RESPONSE_BUDGET
 
 
@@ -341,7 +314,7 @@ async def test_list_facets_returns_summaries(open_vault: VaultConnection, vault_
 async def test_list_facets_scope_denial(open_vault: VaultConnection, vault_path: Path) -> None:
     tctx = await _bootstrap(open_vault, vault_path, scope_read=("style",))
     with pytest.raises(mcp.ScopeDenied):
-        await mcp.list_facets(tctx, facet_type="episodic", limit=5)
+        await mcp.list_facets(tctx, facet_type="project", limit=5)
 
 
 @pytest.mark.integration
@@ -360,7 +333,7 @@ async def test_list_facets_rejects_bad_limit(open_vault: VaultConnection, vault_
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_stats_exposes_required_fields(open_vault: VaultConnection, vault_path: Path) -> None:
-    """P8 exit gate: stats() includes embed_health, by_source, active_models, vault_size_bytes."""
+    """stats() includes embed_health, by_source, active_models, vault_size_bytes."""
 
     tctx = await _bootstrap(open_vault, vault_path)
     resp = await mcp.stats(tctx)
@@ -369,22 +342,82 @@ async def test_stats_exposes_required_fields(open_vault: VaultConnection, vault_
     assert len(resp.active_models) == 1
     assert resp.active_models[0].name == "ollama"
     assert resp.vault_size_bytes > 0
-    assert resp.facet_count == 12  # 5 style + 7 episodic
+    assert resp.facet_count == 12  # 5 style + 7 project
 
 
-# ---- cross-cutting ------------------------------------------------------
+# ---- forget -------------------------------------------------------------
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_assume_identity_rejects_bad_recent_window_hours(
+async def test_forget_soft_deletes_and_audits(
     open_vault: VaultConnection, vault_path: Path
 ) -> None:
     tctx = await _bootstrap(open_vault, vault_path)
-    with pytest.raises(mcp.ValidationError):
-        await mcp.assume_identity(tctx, recent_window_hours=0)
-    with pytest.raises(mcp.ValidationError):
-        await mcp.assume_identity(tctx, recent_window_hours=10_000)
+    external_id = open_vault.connection.execute(
+        "SELECT external_id FROM facets WHERE facet_type='style' LIMIT 1"
+    ).fetchone()[0]
+    resp = await mcp.forget(tctx, external_id=external_id, reason="demo")
+    assert resp.external_id == external_id
+    assert resp.facet_type == "style"
+    assert resp.deleted_at == 1_000_100
+    # Audit row was written with the target_external_id and the right op.
+    row = open_vault.connection.execute(
+        "SELECT op, target_external_id, payload FROM audit_log "
+        "WHERE target_external_id=? ORDER BY id DESC LIMIT 1",
+        (external_id,),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "forget"
+    assert row[1] == external_id
+    assert "demo" in row[2]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_forget_rejects_unknown_id(open_vault: VaultConnection, vault_path: Path) -> None:
+    tctx = await _bootstrap(open_vault, vault_path)
+    with pytest.raises(mcp.ValidationError, match="does not exist"):
+        await mcp.forget(tctx, external_id="01ARZ3NDEKTSV4RRFFQ69G5FAV")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_forget_rejects_bad_ulid(open_vault: VaultConnection, vault_path: Path) -> None:
+    tctx = await _bootstrap(open_vault, vault_path)
+    with pytest.raises(mcp.ValidationError, match="not a valid ULID"):
+        await mcp.forget(tctx, external_id="nope")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_forget_denied_without_write_scope(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    # Read-only on style: forget needs write on the target facet's type.
+    tctx = await _bootstrap(open_vault, vault_path, scope_read=("style", "project"), scope_write=())
+    external_id = open_vault.connection.execute(
+        "SELECT external_id FROM facets WHERE facet_type='style' LIMIT 1"
+    ).fetchone()[0]
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.forget(tctx, external_id=external_id)
+    assert exc.value.required_op == "write"
+    assert exc.value.required_facet_type == "style"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_forget_already_deleted(open_vault: VaultConnection, vault_path: Path) -> None:
+    tctx = await _bootstrap(open_vault, vault_path)
+    external_id = open_vault.connection.execute(
+        "SELECT external_id FROM facets WHERE facet_type='style' LIMIT 1"
+    ).fetchone()[0]
+    await mcp.forget(tctx, external_id=external_id)
+    with pytest.raises(mcp.ValidationError, match="already forgotten"):
+        await mcp.forget(tctx, external_id=external_id)
+
+
+# ---- cross-cutting ------------------------------------------------------
 
 
 @pytest.mark.integration

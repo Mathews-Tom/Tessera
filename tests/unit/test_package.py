@@ -27,7 +27,6 @@ def test_package_version_is_dev_prerelease() -> None:
         "tessera.auth",
         "tessera.cli",
         "tessera.daemon",
-        "tessera.identity",
         "tessera.mcp_surface",
         "tessera.migration",
         "tessera.observability",

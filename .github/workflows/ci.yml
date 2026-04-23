@@ -84,6 +84,30 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash scripts/no_telemetry_grep.sh
 
+  facet-vocabulary:
+    # Per ADR 0010, the pre-reframe facet types (episodic, semantic,
+    # relationship, goal, judgment) are retired. The gate rejects any
+    # reintroduction as a string literal in src/ or tests/; the
+    # migration runner carries the v1 mapping and is allowlisted.
+    name: Facet-vocabulary grep
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/facet_vocabulary_grep.sh
+
+  assume-identity:
+    # Per ADR 0010, assume_identity is retired. Cross-facet context is
+    # delivered by recall(facet_types=all). The gate blocks any
+    # reintroduction of the name in src/ or tests/; ADRs and the
+    # swcr-spec retirement note live under docs/ and are unaffected.
+    name: Assume-identity grep
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/assume_identity_grep.sh
+
   no-outbound:
     # The adapter framework is the first code in src/tessera that speaks to
     # the network (Ollama, OpenAI, Cohere). Per docs/determinism-and-

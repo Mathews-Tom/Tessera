@@ -90,7 +90,7 @@ async def _bootstrap_state(
             agent_id=agent_id,
             facet_type="style",
             content=f"voice sample {i}",
-            source_client="test",
+            source_tool="test",
             captured_at=1_000_000 + i,
         )
     while True:
@@ -104,7 +104,7 @@ async def _bootstrap_state(
         agent_id=agent_id,
         client_name="cli",
         token_class="session",
-        scope=build_scope(read=["style", "episodic"], write=["style"]),
+        scope=build_scope(read=["style", "project"], write=["style"]),
         now_epoch=1_000_000,
     )
     state = DaemonState(

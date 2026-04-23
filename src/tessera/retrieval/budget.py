@@ -56,10 +56,9 @@ def truncate_snippet(text: str, *, max_tokens: int = SNIPPET_MAX_TOKENS) -> str:
 
 
 # BudgetedItem + apply_budget own the v0.1 "every tool response fits its
-# declared budget" invariant. The retrieval pipeline is the first caller;
-# the forthcoming MCP surface (P8) and ``assume_identity`` (P6) are the
-# next two, so the shape is deliberately a stable boundary contract
-# rather than an internal helper.
+# declared budget" invariant. The retrieval pipeline and the MCP tool
+# surface both hang budgets off this shape, so it is deliberately a
+# stable boundary contract rather than an internal helper.
 @dataclass(frozen=True, slots=True)
 class BudgetedItem:
     key: str

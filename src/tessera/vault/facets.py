@@ -1,11 +1,16 @@
 """CRUD over the ``facets`` table.
 
 This module owns content-hash deduplication, soft/hard delete semantics, and
-the read helpers the MCP surface will call in later phases. ``hard_delete``
-cascades across every registered ``vec_<id>`` virtual table in one
-transaction so erasure actually erases (``docs/threat-model.md §S7``). FTS
-rows are maintained by the ``facets_ad`` / ``facets_au`` triggers installed
-with the schema.
+the read helpers the MCP surface calls. ``hard_delete`` cascades across every
+registered ``vec_<id>`` virtual table in one transaction so erasure actually
+erases (``docs/threat-model.md §S7``). FTS rows are maintained by the
+``facets_ai`` / ``facets_ad`` / ``facets_au`` triggers installed with the
+schema.
+
+The facet-type allowlist is post-reframe (ADR 0010): the five v0.1 types
+are writable today; the v0.3 (``person``, ``skill``) and v0.5
+(``compiled_notebook``) types are reserved in the schema CHECK but not
+acceptable to the write path until those versions activate them.
 """
 
 from __future__ import annotations
@@ -23,7 +28,25 @@ from ulid import ULID
 
 from tessera.vault.connection import ensure_vec_loaded, savepoint
 
-V0_1_FACET_TYPES: Final[frozenset[str]] = frozenset({"episodic", "semantic", "style"})
+# v0.1 writable facet types (ADR 0010). These are the only facet_type values
+# a capture call will accept until v0.3 ships ``person`` and ``skill`` and
+# v0.5 ships ``compiled_notebook`` — even though the schema CHECK reserves
+# all eight so tokens can be scoped forward without a migration.
+V0_1_FACET_TYPES: Final[frozenset[str]] = frozenset(
+    {"identity", "preference", "workflow", "project", "style"}
+)
+
+# Forward-compatibility allowlists used by scope validation and migration
+# tests. They mirror the schema CHECK so a future write path can unlock them
+# by swapping which allowlist the capture surface consults, rather than
+# editing a scattered set of string literals.
+V0_3_FACET_TYPES: Final[frozenset[str]] = V0_1_FACET_TYPES | frozenset({"person", "skill"})
+V0_5_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | frozenset({"compiled_notebook"})
+
+# Superset of every facet type the schema CHECK permits. Used by the scope
+# layer — a token may be scoped for read against a reserved type even when
+# the write path rejects that type today.
+ALL_FACET_TYPES: Final[frozenset[str]] = V0_5_FACET_TYPES
 
 
 class FacetError(Exception):
@@ -46,7 +69,7 @@ class Facet:
     facet_type: str
     content: str
     content_hash: str
-    source_client: str
+    source_tool: str
     captured_at: int
     metadata: dict[str, Any]
     is_deleted: bool
@@ -64,7 +87,7 @@ def insert(
     agent_id: int,
     facet_type: str,
     content: str,
-    source_client: str,
+    source_tool: str,
     metadata: dict[str, Any] | None = None,
     captured_at: int | None = None,
 ) -> tuple[str, bool]:
@@ -108,7 +131,7 @@ def insert(
             """
             INSERT INTO facets(
                 external_id, agent_id, facet_type, content, content_hash,
-                source_client, captured_at, metadata
+                source_tool, captured_at, metadata
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -117,7 +140,7 @@ def insert(
                 facet_type,
                 content,
                 digest,
-                source_client,
+                source_tool,
                 captured,
                 meta_json,
             ),
@@ -133,7 +156,7 @@ def get(conn: sqlcipher3.Connection, external_id: str) -> Facet | None:
     row = conn.execute(
         """
         SELECT id, external_id, agent_id, facet_type, content, content_hash,
-               source_client, captured_at, metadata, is_deleted, embed_status
+               source_tool, captured_at, metadata, is_deleted, embed_status
         FROM facets WHERE external_id = ?
         """,
         (external_id,),
@@ -157,7 +180,7 @@ def list_by_type(
         rows = conn.execute(
             """
             SELECT id, external_id, agent_id, facet_type, content, content_hash,
-                   source_client, captured_at, metadata, is_deleted, embed_status
+                   source_tool, captured_at, metadata, is_deleted, embed_status
             FROM facets
             WHERE agent_id = ? AND facet_type = ? AND is_deleted = 0
             ORDER BY captured_at DESC
@@ -169,7 +192,7 @@ def list_by_type(
         rows = conn.execute(
             """
             SELECT id, external_id, agent_id, facet_type, content, content_hash,
-                   source_client, captured_at, metadata, is_deleted, embed_status
+                   source_tool, captured_at, metadata, is_deleted, embed_status
             FROM facets
             WHERE agent_id = ? AND facet_type = ? AND is_deleted = 0
               AND captured_at >= ?
@@ -224,7 +247,7 @@ def _row_to_facet(row: tuple[Any, ...]) -> Facet:
         facet_type=str(row[3]),
         content=str(row[4]),
         content_hash=str(row[5]),
-        source_client=str(row[6]),
+        source_tool=str(row[6]),
         captured_at=int(row[7]),
         metadata=json.loads(row[8]) if row[8] else {},
         is_deleted=bool(row[9]),

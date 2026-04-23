@@ -35,7 +35,7 @@ def _new_agent(conn: object, *, external_id: str = "01AUTH") -> int:
 @pytest.mark.integration
 def test_issue_returns_well_formed_pair(open_vault: VaultConnection) -> None:
     agent_id = _new_agent(open_vault)
-    scope = build_scope(read=["style", "episodic"], write=["style"])
+    scope = build_scope(read=["style", "project"], write=["style"])
     issued = tokens.issue(
         open_vault.connection,
         agent_id=agent_id,
@@ -455,7 +455,7 @@ def test_record_scope_denial_writes_audit_row(open_vault: VaultConnection) -> No
         token_id=issued.token_id,
         client_name="cli",
         required_op="write",
-        required_facet_type="episodic",
+        required_facet_type="project",
         now_epoch=1_000_005,
     )
     row = open_vault.connection.execute(
@@ -464,4 +464,4 @@ def test_record_scope_denial_writes_audit_row(open_vault: VaultConnection) -> No
     payload = json.loads(row[0])
     assert payload["token_id"] == issued.token_id
     assert payload["required_op"] == "write"
-    assert payload["required_facet_type"] == "episodic"
+    assert payload["required_facet_type"] == "project"

@@ -88,9 +88,9 @@ async def _bootstrap_vault(open_vault: VaultConnection) -> tuple[int, PipelineCo
         capture.capture(
             open_vault.connection,
             agent_id=agent_id,
-            facet_type="episodic",
+            facet_type="project",
             content=f"event {i} about retrieval and pipelines",
-            source_client="test",
+            source_tool="test",
         )
     await embed_worker.run_pass(
         open_vault.connection,
@@ -117,7 +117,7 @@ async def _bootstrap_vault(open_vault: VaultConnection) -> tuple[int, PipelineCo
         ),
         tool_budget_tokens=200,
         k=5,
-        facet_types=("episodic",),
+        facet_types=("project",),
     )
     return agent_id, ctx
 

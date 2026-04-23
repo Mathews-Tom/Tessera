@@ -15,8 +15,8 @@ This document enumerates the security-relevant assets, threats, and mitigations 
 
 | Asset                            | Description                                                                     | Sensitivity                                                                |
 | -------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| A1 — Vault file                  | `~/.tessera/vault.db`: facets, capabilities, audit log, vector indexes          | High. Contains full agent identity and any data the agent has encountered. |
-| A2 — Capability tokens (live)    | Raw tokens presented by agents in MCP calls                                     | High. Bearer; possession = agent impersonation.                            |
+| A1 — Vault file                  | `~/.tessera/vault.db`: facets, capabilities, audit log, vector indexes          | High. Contains the user's full portable context across identity, preferences, workflows, projects, and style. |
+| A2 — Capability tokens (live)    | Raw tokens presented by MCP-connected AI tools in requests                      | High. Bearer; possession = tool impersonation across the token's granted facet-type scopes. |
 | A3 — Capability tokens (at rest) | Hashed tokens in `capabilities.token_hash`                                      | Low on their own; high when correlated with A2.                            |
 | A4 — Daemon process              | `tesserad` running, holding the vault open, serving MCP                         | Medium. Compromise = persistent access to A1, A2.                          |
 | A5 — Config files                | `~/.tessera/config.yaml`, client-side MCP configs (Claude Desktop, Codex, etc.) | Medium. Client configs typically hold the raw token.                       |
@@ -29,7 +29,7 @@ This document enumerates the security-relevant assets, threats, and mitigations 
 | Actor                                   | Description                                                                      | Default trust                                           |
 | --------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------- |
 | T1 — User                               | The human on the machine                                                         | Trusted                                                 |
-| T2 — Local agent                        | MCP client running with a valid capability token                                 | Trusted within its scoped permissions                   |
+| T2 — Connected AI tool                  | Any MCP client (Claude Desktop, Claude Code, Cursor, Codex, ChatGPT Dev Mode, autonomous agent) running with a valid capability token | Trusted within the scopes granted to its token          |
 | T3 — Co-located process                 | Any other process running as the same OS user                                    | **Untrusted**                                           |
 | T4 — Co-located user (shared host)      | Another OS user on the same machine (SSH, multi-user dev box)                    | Untrusted                                               |
 | T5 — Remote network attacker            | Attacker on the LAN or internet                                                  | Untrusted; must not be reachable by default             |
@@ -46,7 +46,7 @@ This document enumerates the security-relevant assets, threats, and mitigations 
 | Offline read of vault by attacker with disk access | Information disclosure | T6 reads `vault.db` from stolen disk, unencrypted backup, emailed copy      | **Encryption at rest**: sqlcipher or libsodium-encrypted pages, key derived via argon2id from user passphrase. See `system-design.md §Encryption at rest`. | v0.1 mandatory                       |
 | Offline modification of vault                      | Tampering              | T6 edits `vault.db` to plant facets, rewrite audit log, insert capabilities | Encryption at rest makes modification require the key; HMAC-chained audit log makes tampering detectable.                                                  | v0.1 (encryption), v0.3 (HMAC chain) |
 | Accidental exposure via user action                | Information disclosure | User emails vault, uploads to Dropbox unencrypted, commits to git           | Default encryption means the exported file is ciphertext. Docs explicitly warn against sharing the passphrase.                                             | v0.1                                 |
-| Multi-agent namespace leak                         | Information disclosure | A token scoped to agent-B reads agent-A's facets                            | Foreign-key `agent_id` enforced in every SELECT path; integration tests per agent boundary.                                                                | v0.1                                 |
+| Cross-tool scope leak                              | Information disclosure | A token granted `read: [preference, workflow]` to ChatGPT returns `style` facets to that tool | Per-facet-type scope check is the first gate of every `recall`/`show`/`list_facets`/`stats` path (see `system-design.md §Trust & capability tokens`). Integration tests cover every (scope-set, facet-type) combination. v1.0 multi-user isolation additionally enforces `user_id` foreign key on every SELECT. | v0.1 (scope check); v1.0 (multi-user)|
 
 ### S2 — Capability tokens (A2, A3)
 

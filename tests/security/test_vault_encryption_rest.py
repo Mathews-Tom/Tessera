@@ -10,6 +10,7 @@ import pytest
 from tessera.migration import bootstrap
 from tessera.vault.connection import VaultConnection, VaultLockedError
 from tessera.vault.encryption import derive_key, new_salt
+from tessera.vault.schema import SCHEMA_VERSION
 
 
 @pytest.mark.security
@@ -53,7 +54,7 @@ def test_correct_passphrase_unlocks(tmp_path: Path) -> None:
     k2 = derive_key(bytearray(b"phrase"), salt)
     try:
         with VaultConnection.open(vault, k2) as vc:
-            assert vc.state.schema_version == 1
+            assert vc.state.schema_version == SCHEMA_VERSION
     finally:
         k2.wipe()
 

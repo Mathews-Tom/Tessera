@@ -1,13 +1,21 @@
-"""B-RET-3 — assume_identity latency baseline.
+"""B-RET-3 — cross-facet ``recall(facet_types=all)`` bundle-assembly latency.
 
-Records end-to-end identity-bundle latency on a synthetic vault with
-mixed facet types. Uses deterministic fake adapters so the measurement
-isolates the bundle-assembly cost (per-role recall via asyncio.gather +
-time-window filter + bundle budget) from provider-side embedding
-latency. The v0.1 DoD target (docs/release-spec.md §Performance) is
-p50 < 1.5 s, p95 < 3 s at 10K facets on M1 Pro; this first pass uses
-a smaller vault with fake adapters so the harness is reproducible
-offline and the shape is measurable in seconds, not minutes.
+Records end-to-end latency for the post-reframe cross-facet recall
+primitive on a synthetic vault spanning every v0.1 facet type
+(identity / preference / workflow / project / style). Uses
+deterministic fake adapters so the measurement isolates the
+bundle-assembly cost (per-facet-type candidate generation via
+asyncio.gather + RRF + rerank + SWCR + MMR + token budget) from
+provider-side embedding latency.
+
+Per ADR 0010, ``assume_identity`` is retired; cross-facet context is
+delivered by ``recall`` with ``facet_types`` defaulting to every type
+the caller is scoped for. This harness exercises that code path.
+
+The v0.1 DoD target (``docs/release-spec.md §Performance``) is
+p50 < 1.5 s, p95 < 3 s at 10K facets on the reference hardware
+baseline (M1 Pro). This harness uses a smaller vault with fake
+adapters so the shape is reproducible offline in seconds.
 """
 
 from __future__ import annotations
@@ -28,10 +36,9 @@ from typing import Any, ClassVar
 
 import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
-from tessera.identity.bundle import assume_identity
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
-from tessera.retrieval.pipeline import PipelineContext
+from tessera.retrieval.pipeline import PipelineContext, recall
 from tessera.retrieval.seed import RetrievalConfig
 from tessera.vault import capture
 from tessera.vault.connection import VaultConnection
@@ -40,8 +47,18 @@ from tessera.vault.encryption import derive_key, new_salt
 HERE = Path(__file__).parent
 RESULTS_DIR = HERE / "results"
 DIM = 8
-N_STYLE = 500
-N_EPISODIC = 1500
+# Per-facet counts sized to cover the five v0.1 types with a realistic
+# distribution: lots of small-grained project/style rows, fewer stable
+# identity and preference rows. The total (2_000) stays small enough
+# that the fake-adapter benchmark runs in seconds but large enough to
+# stress candidate generation + RRF + rerank + SWCR + MMR.
+N_PER_TYPE: dict[str, int] = {
+    "identity": 20,
+    "preference": 60,
+    "workflow": 120,
+    "project": 900,
+    "style": 900,
+}
 TRIALS = 100
 
 
@@ -104,6 +121,19 @@ def _git_sha() -> str:
     return out.decode().strip()
 
 
+def _seed_content(facet_type: str, index: int) -> str:
+    """Produce a deterministic, facet-type-flavoured content string."""
+
+    flavor = {
+        "identity": "stable-for-years fact about the user",
+        "preference": "stable-for-months behavioural rule",
+        "workflow": "procedural pattern the user reuses",
+        "project": "active work context the user is building",
+        "style": "writing-voice sample in the user's register",
+    }[facet_type]
+    return f"{facet_type} row {index}: {flavor}"
+
+
 async def _run() -> int:
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-3.db"
@@ -126,24 +156,20 @@ async def _run() -> int:
                     vc.connection, name="ollama", dim=DIM, activate=True
                 )
                 now_base = 1_700_000_000
-                for i in range(N_STYLE):
-                    capture.capture(
-                        vc.connection,
-                        agent_id=agent_id,
-                        facet_type="style",
-                        content=f"voice sample {i}: terse imperative code-first",
-                        source_client="bench",
-                        captured_at=now_base - i * 3600,
-                    )
-                for i in range(N_EPISODIC):
-                    capture.capture(
-                        vc.connection,
-                        agent_id=agent_id,
-                        facet_type="episodic",
-                        content=f"event {i}: decided to ship and reviewed backlog",
-                        source_client="bench",
-                        captured_at=now_base - i * 600,
-                    )
+                # Stagger capture timestamps so ``captured_at DESC`` gives
+                # the retrieval pipeline something non-trivial to rank.
+                ts = now_base
+                for ftype, count in N_PER_TYPE.items():
+                    for i in range(count):
+                        capture.capture(
+                            vc.connection,
+                            agent_id=agent_id,
+                            facet_type=ftype,
+                            content=_seed_content(ftype, i),
+                            source_tool="bench",
+                            captured_at=ts,
+                        )
+                        ts -= 60
                 while True:
                     stats = await embed_worker.run_pass(
                         vc.connection, embedder, active_model_id=model.id, batch_size=128
@@ -165,17 +191,15 @@ async def _run() -> int:
                     ),
                     tool_budget_tokens=6000,
                     k=20,
-                    facet_types=("style", "episodic"),
+                    facet_types=tuple(N_PER_TYPE.keys()),
                 )
-                await assume_identity(ctx, now_epoch=now_base)  # warm-up
+                # Warm-up: prime the reranker and the embedder cache
+                # before the measured loop.
+                await recall(ctx, query_text="bench warmup query")
                 samples_ms: list[float] = []
                 for i in range(TRIALS):
                     start = time.perf_counter()
-                    await assume_identity(
-                        ctx,
-                        now_epoch=now_base,
-                        model_hint=f"bench-model-{i}",
-                    )
+                    await recall(ctx, query_text=f"cross-facet bundle {i}")
                     samples_ms.append((time.perf_counter() - start) * 1000.0)
 
     metrics = {
@@ -191,16 +215,16 @@ async def _run() -> int:
         "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "env": _env_block(),
         "inputs": {
-            "n_style": N_STYLE,
-            "n_episodic": N_EPISODIC,
-            "n_facets_total": N_STYLE + N_EPISODIC,
+            "n_per_type": dict(N_PER_TYPE),
+            "n_facets_total": sum(N_PER_TYPE.values()),
             "dim": DIM,
             "trials": TRIALS,
             "adapters": "fake",
             "embedder": "hash-fake",
             "reranker": "length-fake",
             "tool_budget_tokens": 6000,
-            "recent_window_hours": 168,
+            "facet_types": list(N_PER_TYPE.keys()),
+            "retrieval_mode": "swcr",
         },
         "metrics": metrics,
     }

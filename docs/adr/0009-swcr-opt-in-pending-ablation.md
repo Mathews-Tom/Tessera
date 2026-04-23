@@ -1,10 +1,12 @@
 # ADR 0009 — SWCR ships opt-in at v0.1 pending ablation evidence
 
-**Status:** Accepted
+**Status:** Superseded by [ADR 0011 — SWCR default-on as cross-facet coherence primitive](0011-swcr-default-on-cross-facet-coherence.md)
 **Date:** April 2026
 **Deciders:** Tom Mathews
 **Supersedes:** none
 **Revisit at:** v0.1.x graduation, after harder-dataset B-RET-1 run with human-rater scoring
+
+> **Supersede note.** This ADR gated SWCR on single-facet ablation thresholds that were calibrated before the April 2026 reframe changed Tessera's load-bearing use case from agent-identity bundle assembly to cross-facet user-context recall. Under the reframe, SWCR's job is cross-facet coherence weighting, which the B-RET-1 single-persona-per-facet dataset cannot measure. ADR 0011 supersedes this decision: SWCR ships default-on at v0.1, evidence gate moves to the T-shape demo in the v0.1 DoD, and B-RET-1 is retained as a regression guard rather than an acceptance gate. This file is retained for historical record of the evidence that motivated the prior opt-in stance.
 
 ## Context
 

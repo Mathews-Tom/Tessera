@@ -15,6 +15,7 @@ from typing import Any
 from tessera.auth.tokens import VerifiedCapability
 from tessera.daemon.state import DaemonState, build_pipeline_context
 from tessera.mcp_surface import tools as mcp
+from tessera.vault import facets as vault_facets
 
 
 class UnknownMethodError(Exception):
@@ -42,19 +43,35 @@ async def dispatch_tool_call(
 
 
 def _tool_context(state: DaemonState, verified: VerifiedCapability) -> mcp.ToolContext:
-    pipeline = build_pipeline_context(
-        state,
-        agent_id=verified.agent_id,
-        tool_budget_tokens=mcp.RECALL_RESPONSE_BUDGET,
-        k=20,
-        facet_types=("style", "episodic"),
+    # Default ``facet_types`` is every v0.1 type the token can read. This is
+    # the cross-facet default the reframe requires: a recall() without an
+    # explicit filter assembles a bundle across every facet the caller is
+    # scoped for, which is what makes the T-shape synthesis story work
+    # (``docs/system-design.md §Retrieval pipeline``). A caller that wants a
+    # single-facet-type recall passes ``facet_types=[...]`` explicitly.
+    scoped_types = tuple(
+        ftype
+        for ftype in _DEFAULT_RECALL_TYPES
+        if verified.scope.allows(op="read", facet_type=ftype)
     )
     return mcp.ToolContext(
         conn=state.vault.connection,
         verified=verified,
         vault_path=state.vault_path,
-        pipeline=pipeline,
+        pipeline=build_pipeline_context(
+            state,
+            agent_id=verified.agent_id,
+            tool_budget_tokens=mcp.RECALL_RESPONSE_BUDGET,
+            k=20,
+            facet_types=scoped_types,
+        ),
     )
+
+
+# The v0.1 facet types a recall() without an explicit ``facet_types`` filter
+# fans out over — sorted deterministically so scope-filtered subsets still
+# produce a stable order in the pipeline context.
+_DEFAULT_RECALL_TYPES: tuple[str, ...] = tuple(sorted(vault_facets.V0_1_FACET_TYPES))
 
 
 async def _do_capture(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -62,7 +79,7 @@ async def _do_capture(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, 
         tctx,
         content=_require_str(args, "content"),
         facet_type=_require_str(args, "facet_type"),
-        source_client=args.get("source_client"),
+        source_tool=args.get("source_tool"),
         metadata=args.get("metadata"),
     )
     return {
@@ -91,26 +108,6 @@ async def _do_recall(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, A
     }
 
 
-async def _do_assume_identity(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    resp = await mcp.assume_identity(
-        tctx,
-        model_hint=args.get("model_hint"),
-        recent_window_hours=int(args.get("recent_window_hours", 168)),
-        requested_budget_tokens=args.get("requested_budget_tokens"),
-        query_text=args.get("query_text"),
-        explain=bool(args.get("explain", False)),
-    )
-    return {
-        "facets": [_match_to_json(m) for m in resp.facets],
-        "per_role_counts": resp.per_role_counts,
-        "total_tokens": resp.total_tokens,
-        "total_budget_tokens": resp.total_budget_tokens,
-        "truncated": resp.truncated,
-        "warnings": list(resp.warnings),
-        "seed": resp.seed,
-    }
-
-
 async def _do_show(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     resp = await mcp.show(tctx, external_id=_require_str(args, "external_id"))
     return {
@@ -118,9 +115,22 @@ async def _do_show(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any
         "facet_type": resp.facet_type,
         "snippet": resp.snippet,
         "captured_at": resp.captured_at,
-        "source_client": resp.source_client,
+        "source_tool": resp.source_tool,
         "embed_status": resp.embed_status,
         "token_count": resp.token_count,
+    }
+
+
+async def _do_forget(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.forget(
+        tctx,
+        external_id=_require_str(args, "external_id"),
+        reason=args.get("reason"),
+    )
+    return {
+        "external_id": resp.external_id,
+        "facet_type": resp.facet_type,
+        "deleted_at": resp.deleted_at,
     }
 
 
@@ -155,15 +165,15 @@ async def _do_stats(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, An
     }
 
 
-_HANDlerT = Callable[[mcp.ToolContext, dict[str, Any]], Awaitable[dict[str, Any]]]
+_HandlerT = Callable[[mcp.ToolContext, dict[str, Any]], Awaitable[dict[str, Any]]]
 
-_HANDLERS: dict[str, _HANDlerT] = {
+_HANDLERS: dict[str, _HandlerT] = {
     "capture": _do_capture,
     "recall": _do_recall,
-    "assume_identity": _do_assume_identity,
     "show": _do_show,
     "list_facets": _do_list_facets,
     "stats": _do_stats,
+    "forget": _do_forget,
 }
 
 
@@ -199,7 +209,7 @@ def _summary_to_json(s: mcp.FacetSummary) -> dict[str, Any]:
         "facet_type": s.facet_type,
         "snippet": s.snippet,
         "captured_at": s.captured_at,
-        "source_client": s.source_client,
+        "source_tool": s.source_tool,
         "embed_status": s.embed_status,
     }
 

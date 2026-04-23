@@ -24,10 +24,11 @@ from typing import Final, Literal
 
 RetrievalMode = Literal["rrf_only", "rerank_only", "swcr"]
 
-# ADR 0009: default retrieval mode at v0.1 is ``rerank_only``. SWCR is
-# available as opt-in (``retrieval_mode="swcr"``) but does not ship
-# default-on until the v0.1.x ablation clears the spec thresholds.
-DEFAULT_RETRIEVAL_MODE: Final[RetrievalMode] = "rerank_only"
+# ADR 0011 (supersedes ADR 0009): SWCR ships default-on at v0.1 as the
+# cross-facet coherence weighting stage of the retrieval pipeline.
+# ``rerank_only`` and ``rrf_only`` remain fully wired so ablations can
+# still run and users who want to disable SWCR flip one config line.
+DEFAULT_RETRIEVAL_MODE: Final[RetrievalMode] = "swcr"
 
 
 @dataclass(frozen=True, slots=True)
