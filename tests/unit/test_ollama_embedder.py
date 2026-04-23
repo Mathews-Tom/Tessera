@@ -13,7 +13,7 @@ from tessera.adapters.errors import (
     AdapterOOMError,
     AdapterResponseError,
 )
-from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.ollama_embedder import KEEP_ALIVE_FOREVER, OllamaEmbedder
 
 
 def _embedder_with(handler: Callable[[httpx.Request], httpx.Response]) -> OllamaEmbedder:
@@ -208,3 +208,22 @@ async def test_batch_embed_preserves_order() -> None:
     assert vectors[0] == [1.0, 0.0, 0.0, 0.0]
     assert vectors[1] == [0.0, 1.0, 0.0, 0.0]
     assert vectors[2] == [0.0, 0.0, 1.0, 0.0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_embed_pins_model_with_keep_alive_forever() -> None:
+    # Prevent regression of the warm-keep behaviour: every /api/embeddings
+    # POST must carry keep_alive=-1 so a daemon that idles between recalls
+    # does not pay the Ollama cold-load tax (~2-5 s for nomic-embed-text).
+    import json as _json
+
+    captured_bodies: list[dict[str, object]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured_bodies.append(_json.loads(req.read().decode()))
+        return httpx.Response(200, json={"embedding": [0.0, 0.0, 0.0, 0.0]})
+
+    await _embedder_with(handler).embed(["warm"])
+    assert captured_bodies, "embed call did not reach the transport"
+    assert captured_bodies[0].get("keep_alive") == KEEP_ALIVE_FOREVER
