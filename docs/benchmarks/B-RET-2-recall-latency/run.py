@@ -32,6 +32,9 @@ from typing import Any, ClassVar
 # Registering the Ollama adapter name satisfies models_registry's adapter check.
 import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
+from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.protocol import Embedder, Reranker
+from tessera.adapters.st_reranker import SentenceTransformersReranker
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
 from tessera.retrieval.pipeline import PipelineContext, recall
@@ -41,14 +44,17 @@ from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt
 
 RESULTS_DIR = Path(__file__).parent / "results"
-DIM = 8
+FAKE_DIM = 8
+OLLAMA_MODEL = "nomic-embed-text"
+OLLAMA_DIM = 768
+OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TRIALS = 100
 
 
 class _HashEmbedder:
     name: ClassVar[str] = "fake"
     model_name: str = "hash-fake"
-    dim: int = DIM
+    dim: int = FAKE_DIM
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         out: list[list[float]] = []
@@ -59,6 +65,23 @@ class _HashEmbedder:
 
     async def health_check(self) -> None:
         return None
+
+
+def _select_adapters(adapters: str) -> tuple[Embedder, Reranker, int, str, str]:
+    """Return ``(embedder, reranker, dim, embedder_id, reranker_id)``.
+
+    ``adapters='fake'`` is the reproducible default; ``adapters='real'``
+    swaps in the v0.1 DoD reference pair (Ollama ``nomic-embed-text`` +
+    sentence-transformers MiniLM cross-encoder).
+    """
+
+    if adapters == "fake":
+        return _HashEmbedder(), _LengthReranker(), FAKE_DIM, "hash-fake", "length-fake"
+    if adapters == "real":
+        embedder = OllamaEmbedder(model_name=OLLAMA_MODEL, dim=OLLAMA_DIM, host=OLLAMA_HOST)
+        reranker = SentenceTransformersReranker()
+        return embedder, reranker, OLLAMA_DIM, f"ollama/{OLLAMA_MODEL}", reranker.model_name
+    raise SystemExit(f"unknown --adapters value: {adapters!r}")
 
 
 class _LengthReranker:
@@ -104,7 +127,14 @@ def _git_sha() -> str:
     return out.decode().strip()
 
 
-async def _run(*, n_facets: int, trials: int, retrieval_mode: RetrievalMode) -> int:
+async def _run(
+    *,
+    n_facets: int,
+    trials: int,
+    retrieval_mode: RetrievalMode,
+    adapters: str,
+) -> int:
+    embedder, reranker, dim, embedder_id, reranker_id = _select_adapters(adapters)
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-2.db"
         passphrase = b"b-ret-2-passphrase"
@@ -120,10 +150,8 @@ async def _run(*, n_facets: int, trials: int, retrieval_mode: RetrievalMode) -> 
                         "SELECT id FROM agents WHERE external_id='01B'"
                     ).fetchone()[0]
                 )
-                embedder = _HashEmbedder()
-                reranker = _LengthReranker()
                 model = models_registry.register_embedding_model(
-                    vc.connection, name="ollama", dim=DIM, activate=True
+                    vc.connection, name="ollama", dim=dim, activate=True
                 )
                 for i in range(n_facets):
                     capture.capture(
@@ -148,7 +176,7 @@ async def _run(*, n_facets: int, trials: int, retrieval_mode: RetrievalMode) -> 
                     vault_id="01VAULT",
                     agent_id=agent_id,
                     config=RetrievalConfig(
-                        rerank_model="length",
+                        rerank_model=reranker_id,
                         mmr_lambda=0.7,
                         max_candidates=50,
                         retrieval_mode=retrieval_mode,
@@ -179,10 +207,11 @@ async def _run(*, n_facets: int, trials: int, retrieval_mode: RetrievalMode) -> 
         "env": _env_block(),
         "inputs": {
             "facets": n_facets,
-            "dim": DIM,
+            "dim": dim,
             "trials": trials,
-            "embedder": "hash-fake",
-            "reranker": "length-fake",
+            "adapters": adapters,
+            "embedder": embedder_id,
+            "reranker": reranker_id,
             "retrieval_mode": retrieval_mode,
         },
         "metrics": metrics,
@@ -212,12 +241,19 @@ def _cli(argv: list[str] | None = None) -> int:
         choices=("rrf_only", "rerank_only", "swcr"),
         default=DEFAULT_RETRIEVAL_MODE,
     )
+    parser.add_argument(
+        "--adapters",
+        choices=("fake", "real"),
+        default="fake",
+        help="'real' requires Ollama with nomic-embed-text and the sentence-transformers MiniLM cross-encoder",
+    )
     args = parser.parse_args(argv)
     return asyncio.run(
         _run(
             n_facets=args.n_facets,
             trials=args.trials,
             retrieval_mode=args.retrieval_mode,
+            adapters=args.adapters,
         )
     )
 

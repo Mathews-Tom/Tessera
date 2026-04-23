@@ -37,6 +37,9 @@ from typing import Any, ClassVar
 
 import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
+from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.protocol import Embedder, Reranker
+from tessera.adapters.st_reranker import SentenceTransformersReranker
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
 from tessera.retrieval.pipeline import PipelineContext, recall
@@ -47,7 +50,10 @@ from tessera.vault.encryption import derive_key, new_salt
 
 HERE = Path(__file__).parent
 RESULTS_DIR = HERE / "results"
-DIM = 8
+FAKE_DIM = 8
+OLLAMA_MODEL = "nomic-embed-text"
+OLLAMA_DIM = 768
+OLLAMA_HOST = "http://localhost:11434"
 # Per-facet counts sized to cover the five v0.1 types with a realistic
 # distribution: lots of small-grained project/style rows, fewer stable
 # identity and preference rows. The total (2_000) stays small enough
@@ -66,7 +72,7 @@ TRIALS = 100
 class _HashEmbedder:
     name: ClassVar[str] = "fake"
     model_name: str = "hash-fake"
-    dim: int = DIM
+    dim: int = FAKE_DIM
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         out: list[list[float]] = []
@@ -91,6 +97,16 @@ class _LengthReranker:
 
     async def health_check(self) -> None:
         return None
+
+
+def _select_adapters(adapters: str) -> tuple[Embedder, Reranker, int, str, str]:
+    if adapters == "fake":
+        return _HashEmbedder(), _LengthReranker(), FAKE_DIM, "hash-fake", "length-fake"
+    if adapters == "real":
+        embedder = OllamaEmbedder(model_name=OLLAMA_MODEL, dim=OLLAMA_DIM, host=OLLAMA_HOST)
+        reranker = SentenceTransformersReranker()
+        return embedder, reranker, OLLAMA_DIM, f"ollama/{OLLAMA_MODEL}", reranker.model_name
+    raise SystemExit(f"unknown --adapters value: {adapters!r}")
 
 
 def _percentile(samples: list[float], pct: float) -> float:
@@ -147,8 +163,9 @@ def _scale(scale: int) -> dict[str, int]:
     return {ftype: count * scale for ftype, count in N_PER_TYPE.items()}
 
 
-async def _run(*, scale: int = 1, trials: int = TRIALS) -> int:
+async def _run(*, scale: int = 1, trials: int = TRIALS, adapters: str = "fake") -> int:
     per_type = _scale(scale)
+    embedder, reranker, dim, embedder_id, reranker_id = _select_adapters(adapters)
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-3.db"
         passphrase = b"b-ret-3-passphrase"
@@ -164,10 +181,8 @@ async def _run(*, scale: int = 1, trials: int = TRIALS) -> int:
                         "SELECT id FROM agents WHERE external_id='01B'"
                     ).fetchone()[0]
                 )
-                embedder = _HashEmbedder()
-                reranker = _LengthReranker()
                 model = models_registry.register_embedding_model(
-                    vc.connection, name="ollama", dim=DIM, activate=True
+                    vc.connection, name="ollama", dim=dim, activate=True
                 )
                 now_base = 1_700_000_000
                 # Stagger capture timestamps so ``captured_at DESC`` gives
@@ -199,7 +214,7 @@ async def _run(*, scale: int = 1, trials: int = TRIALS) -> int:
                     vault_id="B-RET-3",
                     agent_id=agent_id,
                     config=RetrievalConfig(
-                        rerank_model="length",
+                        rerank_model=reranker_id,
                         mmr_lambda=0.7,
                         max_candidates=50,
                     ),
@@ -231,12 +246,12 @@ async def _run(*, scale: int = 1, trials: int = TRIALS) -> int:
         "inputs": {
             "n_per_type": dict(per_type),
             "n_facets_total": sum(per_type.values()),
-            "dim": DIM,
+            "dim": dim,
             "trials": trials,
             "scale": scale,
-            "adapters": "fake",
-            "embedder": "hash-fake",
-            "reranker": "length-fake",
+            "adapters": adapters,
+            "embedder": embedder_id,
+            "reranker": reranker_id,
             "tool_budget_tokens": 6000,
             "facet_types": list(per_type.keys()),
             "retrieval_mode": "swcr",
@@ -267,8 +282,14 @@ def _cli(argv: list[str] | None = None) -> int:
         help="per-type count multiplier (1 = 2K default, 5 = 10K DoD finalisation)",
     )
     parser.add_argument("--trials", type=int, default=TRIALS)
+    parser.add_argument(
+        "--adapters",
+        choices=("fake", "real"),
+        default="fake",
+        help="'real' requires Ollama nomic-embed-text + sentence-transformers cross-encoder",
+    )
     args = parser.parse_args(argv)
-    return asyncio.run(_run(scale=args.scale, trials=args.trials))
+    return asyncio.run(_run(scale=args.scale, trials=args.trials, adapters=args.adapters))
 
 
 if __name__ == "__main__":
