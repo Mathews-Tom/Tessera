@@ -91,6 +91,7 @@ class PipelineContext:
     k: int
     facet_types: tuple[str, ...]
     candidates_per_list: int = 50
+    rerank_candidate_limit: int | None = None
     swcr_params: swcr.SWCRParams = swcr.DEFAULT_PARAMS
     event_log: EventLog | None = None
     slow_threshold_ms: float = DEFAULT_SLOW_RECALL_MS
@@ -151,6 +152,8 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
                 for item in fused
                 if item.facet_id in content_lookup
             ]
+            if ctx.rerank_candidate_limit is not None:
+                rerank_input = rerank_input[: ctx.rerank_candidate_limit]
             t0 = time.perf_counter()
             rerank_outcome = await rerank.rerank(
                 ctx.reranker,

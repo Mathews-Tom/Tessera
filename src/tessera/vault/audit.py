@@ -86,6 +86,13 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     ),
     "auth_denied": frozenset({"client_name", "reason"}),
     "scope_denied": frozenset({"token_id", "client_name", "required_op", "required_facet_type"}),
+    # Daemon lifecycle: ``daemon_warmed`` records the result of the
+    # supervisor's explicit embedder + reranker warm-up at startup. The
+    # resolved reranker device string is the operator-visible signal for
+    # which performance tier (cpu / mps / cuda) the daemon is running on.
+    # No user content crosses the boundary: the warm-up uses the literal
+    # string ``"warm"`` as input.
+    "daemon_warmed": frozenset({"reranker_device", "embedder_name", "duration_ms"}),
 }
 
 

@@ -26,6 +26,14 @@ from tessera.adapters.registry import register_embedder
 
 DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT_SECONDS = 30.0
+# Ollama unloads idle models after 5 minutes by default. A daemon that
+# services one recall every few minutes would pay a cold-load penalty
+# (~2-5 s for nomic-embed-text on M1 Pro) on every call - fine for
+# benchmarks that run back-to-back trials, catastrophic for real-user
+# latency. ``keep_alive=-1`` pins the model for the lifetime of the
+# Ollama daemon; the integer wire format is documented in Ollama's API
+# reference and interpreted as "never unload".
+KEEP_ALIVE_FOREVER = -1
 
 
 @register_embedder("ollama")
@@ -91,7 +99,11 @@ class OllamaEmbedder:
         try:
             resp = await client.post(
                 "/api/embeddings",
-                json={"model": self.model_name, "prompt": text},
+                json={
+                    "model": self.model_name,
+                    "prompt": text,
+                    "keep_alive": KEEP_ALIVE_FOREVER,
+                },
             )
         except httpx.HTTPError as exc:
             raise AdapterNetworkError(f"ollama embed call failed: {exc}") from exc
