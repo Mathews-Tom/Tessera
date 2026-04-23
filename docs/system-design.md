@@ -490,13 +490,13 @@ Critically: **the v0.1 architecture does not foreclose any of this.** The `mode`
 
 | Aspect | v0.1 |
 |---|---|
-| Install | `pip install tessera` or `uv tool install tessera`. macOS: `brew install tessera` (v0.1.x) |
+| Install | `pip install tessera-context` or `uv tool install tessera-context`. macOS: `brew install tessera` (v0.1.x, tap name follows GitHub repo). CLI binary remains `tessera`. |
 | Process model | Single async Python daemon. No Docker. No external services. |
 | OS support | macOS, Linux first-class. Windows via pip. |
 | Auto-start | `launchd` (macOS), systemd user unit (Linux), manual on Windows |
 | Network | `127.0.0.1:5710` (HTTP MCP) + Unix socket (control). No outbound calls except to configured model adapters. |
 | Telemetry | None. Verified by source review and CI grep check (`scripts/no_telemetry_grep.sh`). |
-| Updates | Standard `pip install -U tessera`. Semver. Vault schema migrations are explicit and reviewable. |
+| Updates | Standard `pip install -U tessera-context`. Semver. Vault schema migrations are explicit and reviewable. |
 
 ## What's deferred (honest scope discipline)
 

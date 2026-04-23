@@ -4,7 +4,106 @@ All notable changes to Tessera are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.0] — TBD (draft release notes)
+
+Tessera v0.1.0 ships the **T-shape cross-facet synthesis demo** end-to-end: capture a user's identity, preference, workflow, project, and style facets in any MCP-capable AI client, then recall them as a coherent cross-facet bundle in a different client. All-local by default (Ollama + sentence-transformers); zero telemetry; sqlcipher-encrypted vault with capability-scoped per-tool access.
+
+### What v0.1 delivers
+
+- **Five-facet capture** across `identity`, `preference`, `workflow`, `project`, `style` via MCP `capture` tool.
+- **Cross-facet recall** through `recall(facet_types=all)` with SWCR-weighted coherence as the default retrieval mode (ADR 0011).
+- **Soft-delete** via `forget`, with audit trail.
+- **Six MCP tools** exposed: `capture`, `recall`, `show`, `list_facets`, `stats`, `forget`.
+- **Client connectors** for Claude Desktop, Claude Code, Cursor, Codex (`~/.codex/config.toml`), and ChatGPT Developer Mode.
+- **Portable export** via `tessera export --format json|md|sqlite` (+ `tessera import-vault` for JSON round-trip). Exports respect soft-delete via `--include-deleted`.
+- **Setup diagnostics** via `tessera doctor` for Ollama / port / sqlite-vec / model / schema / token / facet-type issues.
+- **Structured observability** at `~/.tessera/events.db` with `recall_slow`, `embed_backlog`, and `retrieval_rerank_degraded` events; diagnostic-bundle export with content scrubbing.
+
+### Install (all-local mode, the v0.1 default)
+
+```bash
+# PyPI (after v0.1.0 tag). Package name is `tessera-context` because
+# the short `tessera` PyPI name is held by an abandoned Graphite
+# dashboard project (last upload 2017); PEP 541 reclaim is being
+# pursued in parallel for a future release. CLI binary and Python
+# import path remain `tessera`.
+pip install tessera-context
+# or from source:
+git clone https://github.com/Mathews-Tom/Tessera.git
+cd Tessera && uv sync
+
+ollama pull nomic-embed-text
+
+tessera init --vault ~/.tessera/vault.db
+tessera daemon start --vault ~/.tessera/vault.db
+tessera connect claude-desktop --vault ~/.tessera/vault.db
+```
+
+Full T-shape demo walkthrough: `docs/pitch.md` and `docs/release-spec.md §v0.1 DoD`. Architecture deep-dive: `docs/system-design.md`.
+
+### Performance tiers (measured)
+
+Real adapters (Ollama `nomic-embed-text` + sentence-transformers `cross-encoder/ms-marco-MiniLM-L-6-v2`), `rerank_candidate_limit=20`, 100 trials, reference hardware baseline (MacBook Pro M1 Pro 10-core CPU / 16-core GPU, 16 GB RAM, macOS 15.x, daemon idle except for the test query, Ollama model pinned via `keep_alive=-1`).
+
+| Tier | Vault size | p50 | p95 | p99 | Evidence |
+|------|-----------:|----:|----:|----:|----------|
+| Demo-day | ≤ 500 facets | 404 ms | 574 ms | 674 ms | `docs/benchmarks/B-RET-2-recall-latency/results/20260423T215936Z.json` |
+| Steady-state (CPU reranker) | 10K facets | 730 ms | 778 ms | 897 ms | `.../20260423T182517Z.json` |
+| Steady-state (MPS reranker, opt-in) | 10K facets | 710 ms | 832 ms | — | `.../20260423T212745Z.json` |
+
+Re-embed at 10K facets: 442.7 s wall / 22.6 facets/s throughput (`docs/benchmarks/B-REEMBED-1-embedder-swap/`). Concurrent capture: 992 writes/sec at p99 4.4 ms (`docs/benchmarks/B-WRITE-1-concurrent-capture/`).
+
+### Security surface
+
+- **Encryption at rest** via sqlcipher + argon2id-derived key.
+- **Capability tokens** per-tool / per-scope / per-facet-type; stored as salted sha256; per-request re-validation against `revoked_at`; 30-minute access TTL for session-class tokens.
+- **CSRF protection** on HTTP MCP via Origin-header allowlist.
+- **Zero outbound network** by default: CI `no-outbound` job blocks every non-loopback destination on the full test suite; cloud adapters (OpenAI embedder, Cohere reranker) require explicit import.
+- **OS keyring** (Keychain / secret-service / Credential Manager) is the only source for cloud adapter API keys. Env-var fallback is refused loudly.
+- **Audit log** with closed payload allowlist; no facet content, query text, or token values ever cross the boundary.
+- Full threat-model coverage map: `docs/threat-model-coverage.md`.
+
+### Determinism
+
+- Retrieval pipeline produces bit-identical results across runs on the CPU reranker backend with the same seed on the same vault state.
+- MPS / CUDA backends are bit-identical within a single daemon lifetime on same hardware. `TESSERA_RERANK_DEVICE=cpu` forces CPU for cross-run replay testing.
+- Full spec: `docs/determinism-and-observability.md`.
+
+### Known limitations (v0.1)
+
+- **No people or skill facets.** Deferred to v0.3 per ADR 0010.
+- **No importers** for ChatGPT or Claude conversation history. Deferred to v0.3.
+- **No write-time compilation** or episodic temporal retrieval. Deferred to v0.5.
+- **Linear scan dense vector search.** Acceptable to ~100K facets per ADR 0002; ANN index is post-v0.1 work.
+- **CUDA reranker path shipped but unmeasured** — auto-detection priority is CUDA > MPS > CPU; no CUDA hardware has been benchmarked yet. The code path reuses sentence-transformers' existing CUDA integration, so the determinism and correctness story is the same as MPS.
+- **HMAC-chained audit log** is v0.3 scope. v0.1 audit integrity relies on vault encryption-at-rest to make tampering detectable via passphrase loss, not a cryptographic chain.
+- **Dependency CVE scanning** is manual via `uv lock` review. Automated `pip-audit` in CI is v0.1.x follow-up.
+- **stdio MCP bridge** is a stub; HTTP MCP is the v0.1 transport. stdio bridge lands in v0.1.x.
+
+### What v0.1 explicitly does NOT ship
+
+Per `docs/non-goals.md`: no auto-capture, no AI-generated capture, no hosted-only mode, no model reselling, no telemetry, no cloud-PaaS default dependency. See `docs/release-spec.md §What v0.1 explicitly does NOT ship` for the full list.
+
+### Blockers before v0.1.0 is tagged
+
+- Real-user test: one external engineer completes the T-shape demo unaided, recorded. P14 task 6.
+- Cross-platform smoke test: clean install + demo on macOS + Ubuntu + Windows, recorded. P14 task 4.
+
+---
+
 ## [Unreleased] — v0.1.0-pre
+
+### P14 pre-release hardening
+
+- **`rerank_candidate_limit=20`** is the production default on the retrieval pipeline. The B-RET-2 sweep (six result files under `docs/benchmarks/B-RET-2-recall-latency/results/`) showed the knee of the latency curve at k=20; B-RET-1 at k=20 confirmed no quality regression (MRR/nDCG/purity saturate at 1.000 across all three arms on the 2K dataset). See PR #17.
+- **Reranker device auto-detection** (CPU/MPS/CUDA) via `tessera.adapters.devices.detect_best_device`. `TESSERA_RERANK_DEVICE=cpu` forces CPU for cross-run bit-identical determinism. Resolved device is audited at daemon startup via the new `daemon_warmed` audit op.
+- **Ollama model warm-keep** — every `/api/embeddings` POST carries `keep_alive=-1`, pinning the embedding model for the lifetime of the Ollama daemon. Without this, real-user recalls after idle paid a 2–5 s cold-load penalty invisible to the benchmark.
+- **Explicit daemon warm-up** at supervisor startup: the embedder and reranker both load before the control socket opens, shifting the cold-load cost off the first user recall.
+- **v0.1 DoD revised** in `docs/release-spec.md` with a tiered latency table backed by committed benchmark artifacts; original single-number gate conflated demo-day and year-two steady-state conditions.
+- **Tessera export** (`tessera export --format json|md|sqlite`) + `tessera import-vault` — closes the P14 data-portability DoD item. JSON is byte-equivalent round-trippable; Markdown is per-facet-type; SQLite is a plain-text decrypted copy. Seven integration tests cover round-trip fidelity and `--include-deleted` semantics.
+- **Threat-model coverage audit** at `docs/threat-model-coverage.md` — every `v0.1`-tagged mitigation in `docs/threat-model.md` mapped to a test path or enforcing code reference, plus OWASP MCP-over-HTTP self-audit. Three follow-ups recorded for v0.1.x (socket-mode assertion, `pip-audit` automation, HMAC chain is explicitly v0.3 scope).
+
+### Benchmark finalisation — live Ollama reruns
 
 ### Benchmark finalisation — live Ollama reruns
 
