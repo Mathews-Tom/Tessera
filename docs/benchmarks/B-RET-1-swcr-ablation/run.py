@@ -370,14 +370,29 @@ def _select_adapters(
     raise SystemExit(f"unknown --adapters value: {adapters!r}")
 
 
-async def _run(adapters: str) -> int:
-    if not DATASET_PATH.is_file():
+def _dataset_label(path: Path) -> str:
+    """Render a stable, repo-relative label for the dataset.
+
+    ``Path.relative_to`` raises when the caller passed a dataset
+    outside this benchmark's tree (absolute overrides, ad-hoc runs).
+    Rendering a filename-only fallback keeps the result file's inputs
+    block stable regardless of how the dataset was located.
+    """
+
+    try:
+        return str(path.resolve().relative_to(HERE.parent.parent.resolve()))
+    except ValueError:
+        return path.name
+
+
+async def _run(adapters: str, dataset_path: Path) -> int:
+    if not dataset_path.is_file():
         print(
-            f"missing dataset: {DATASET_PATH}. Run dataset/generate.py first.",
+            f"missing dataset: {dataset_path}. Run dataset/generate.py first.",
             file=sys.stderr,
         )
         return 1
-    dataset: dict[str, Any] = json.loads(DATASET_PATH.read_text())
+    dataset: dict[str, Any] = json.loads(dataset_path.read_text())
     embedder, reranker, dim, embedder_id, reranker_id = _select_adapters(adapters)
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-1.db"
@@ -447,7 +462,7 @@ async def _run(adapters: str) -> int:
         "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "env": _env_block(),
         "inputs": {
-            "dataset": str(DATASET_PATH.relative_to(HERE.parent.parent)),
+            "dataset": _dataset_label(dataset_path),
             "n_facets": len(dataset["facets"]),
             "n_queries": len(dataset["queries"]),
             "dim": dim,
@@ -496,8 +511,14 @@ def _cli(argv: list[str] | None = None) -> int:
             "sentence-transformers MiniLM cross-encoder."
         ),
     )
+    parser.add_argument(
+        "--dataset",
+        type=Path,
+        default=DATASET_PATH,
+        help="path to the S1 dataset JSON; defaults to the 2K dataset beside this script",
+    )
     args = parser.parse_args(argv)
-    return asyncio.run(_run(args.adapters))
+    return asyncio.run(_run(args.adapters, args.dataset))
 
 
 if __name__ == "__main__":

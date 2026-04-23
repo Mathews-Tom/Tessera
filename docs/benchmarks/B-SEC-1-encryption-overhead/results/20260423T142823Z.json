@@ -1,0 +1,40 @@
+{
+  "benchmark_id": "B-SEC-1",
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.3.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "sqlcipher_version": "3.51.1",
+    "sqlite_version": "3.47.1",
+    "tessera_sha": "ba4dc5b33f2dbae5a6510e128fcf3b4a8c44d7de"
+  },
+  "inputs": {
+    "facets": 10000,
+    "passphrase_bytes": 24,
+    "trials": 500
+  },
+  "metrics": {
+    "encrypted": {
+      "bootstrap_ms": 7.551084039732814,
+      "read_p50_ms": 0.0027921050786972046,
+      "read_p95_ms": 0.0031671952456235886,
+      "unlock_p50_ms": 1.0984374675899744,
+      "unlock_p95_ms": 1.2194160372018814,
+      "write_p50_ms": 0.2190619707107544,
+      "write_p95_ms": 0.3338749520480633
+    },
+    "overhead": {
+      "read_p50_ratio": 0.7616386154334709,
+      "read_p95_ratio": 0.7835378146420137,
+      "write_p50_ratio": 1.4146299290853719,
+      "write_p95_ratio": 1.059920246283026
+    },
+    "plain": {
+      "read_p50_ms": 0.0036659184843301773,
+      "read_p95_ms": 0.004042172804474831,
+      "write_p50_ms": 0.15485461335629225,
+      "write_p95_ms": 0.31500007025897503
+    }
+  },
+  "timestamp": "2026-04-23T14:28:23Z"
+}

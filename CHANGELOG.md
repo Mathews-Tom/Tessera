@@ -6,6 +6,40 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] — v0.1.0-pre
 
+### Benchmark finalisation at 10K facets
+
+- B-RET-1 dataset generator now emits a 10K variant
+  (`docs/benchmarks/B-RET-1-swcr-ablation/dataset/s1_10k.json`); the
+  harness gains `--dataset` to select it. Fresh 10K fake-adapter run
+  recorded: MRR 1.000 for `rerank_only`, 0.970 for `swcr`
+  (saturation noise vs. keyword reranker, expected per ADR 0011);
+  p95 latency 38.4 ms vs. 40.1 ms (+4.4%, inside the regression
+  guard's +15% / +100 ms bound).
+- B-RET-2 gains `--n-facets` / `--trials` / `--retrieval-mode`.
+  10K fake-adapter baseline: p50 277 ms, p95 284 ms, p99 285 ms —
+  inside the v0.1 DoD target of p50 < 500 ms, p95 < 1000 ms.
+- B-RET-3 gains `--scale` / `--trials`; scale 5 targets 10K total
+  facets across the five v0.1 types. 10K baseline: p50 235 ms,
+  p95 240 ms, p99 245 ms — well inside the p50 < 1500 ms / p95 < 3000 ms
+  target.
+- B-WRITE-1 rebuilt for concurrent writers: 10 threads, 10K preload,
+  100 writes each. Aggregate 992 writes/sec, p99 4.4 ms — comfortably
+  meeting "≥ 50 writes/sec at p99 < 200 ms".
+- B-SEC-1 re-run against a 10K-facet vault with the post-reframe
+  `project`/`source_tool` vocabulary. Write p50 overhead 1.41×,
+  p95 1.06×; read overhead < 1 (WAL-mode wins at read path). No
+  regression vs. the 1K pre-reframe baseline.
+- New **B-REEMBED-1** benchmark at
+  `docs/benchmarks/B-REEMBED-1-embedder-swap/` — end-to-end
+  embedder-rotation wall time. Fake-adapter 10K baseline: 2.06 s
+  wall, 4848 facets/s throughput. Pins the storage-side ceiling so
+  a future regression in the worker's write path is detected even
+  without a live provider. The live-Ollama run for the < 10 min DoD
+  target is a P14 hardening task.
+- B-EMB-1 re-verified (vocabulary updated: `project` + `source_tool`).
+  B-RERANK-1 re-verified against the post-reframe code path — no
+  change in shape.
+
 ### Observability + diagnostic bundles
 
 - `~/.tessera/events.db` structured event log per

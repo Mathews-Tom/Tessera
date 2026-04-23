@@ -20,6 +20,7 @@ adapters so the shape is reproducible offline in seconds.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import json
@@ -134,7 +135,20 @@ def _seed_content(facet_type: str, index: int) -> str:
     return f"{facet_type} row {index}: {flavor}"
 
 
-async def _run() -> int:
+def _scale(scale: int) -> dict[str, int]:
+    """Return the per-type facet counts scaled by ``scale``.
+
+    Scale 1 targets the reproducible fake-adapter default (2_000 total).
+    Scale 5 targets the 10K finalisation run the v0.1 DoD links to.
+    Non-integer multiples are not exposed — the ratios below are the
+    realistic T-shape distribution called for in the plan.
+    """
+
+    return {ftype: count * scale for ftype, count in N_PER_TYPE.items()}
+
+
+async def _run(*, scale: int = 1, trials: int = TRIALS) -> int:
+    per_type = _scale(scale)
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-3.db"
         passphrase = b"b-ret-3-passphrase"
@@ -159,7 +173,7 @@ async def _run() -> int:
                 # Stagger capture timestamps so ``captured_at DESC`` gives
                 # the retrieval pipeline something non-trivial to rank.
                 ts = now_base
-                for ftype, count in N_PER_TYPE.items():
+                for ftype, count in per_type.items():
                     for i in range(count):
                         capture.capture(
                             vc.connection,
@@ -191,13 +205,13 @@ async def _run() -> int:
                     ),
                     tool_budget_tokens=6000,
                     k=20,
-                    facet_types=tuple(N_PER_TYPE.keys()),
+                    facet_types=tuple(per_type.keys()),
                 )
                 # Warm-up: prime the reranker and the embedder cache
                 # before the measured loop.
                 await recall(ctx, query_text="bench warmup query")
                 samples_ms: list[float] = []
-                for i in range(TRIALS):
+                for i in range(trials):
                     start = time.perf_counter()
                     await recall(ctx, query_text=f"cross-facet bundle {i}")
                     samples_ms.append((time.perf_counter() - start) * 1000.0)
@@ -215,15 +229,16 @@ async def _run() -> int:
         "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "env": _env_block(),
         "inputs": {
-            "n_per_type": dict(N_PER_TYPE),
-            "n_facets_total": sum(N_PER_TYPE.values()),
+            "n_per_type": dict(per_type),
+            "n_facets_total": sum(per_type.values()),
             "dim": DIM,
-            "trials": TRIALS,
+            "trials": trials,
+            "scale": scale,
             "adapters": "fake",
             "embedder": "hash-fake",
             "reranker": "length-fake",
             "tool_budget_tokens": 6000,
-            "facet_types": list(N_PER_TYPE.keys()),
+            "facet_types": list(per_type.keys()),
             "retrieval_mode": "swcr",
         },
         "metrics": metrics,
@@ -243,5 +258,18 @@ async def _run() -> int:
     return 0
 
 
+def _cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="b-ret-3")
+    parser.add_argument(
+        "--scale",
+        type=int,
+        default=1,
+        help="per-type count multiplier (1 = 2K default, 5 = 10K DoD finalisation)",
+    )
+    parser.add_argument("--trials", type=int, default=TRIALS)
+    args = parser.parse_args(argv)
+    return asyncio.run(_run(scale=args.scale, trials=args.trials))
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(_run()))
+    raise SystemExit(_cli())

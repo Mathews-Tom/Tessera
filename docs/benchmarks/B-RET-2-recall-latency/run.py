@@ -1,15 +1,20 @@
-"""B-RET-2 — retrieval latency at 1K facets.
+"""B-RET-2 — retrieval latency at N facets.
 
-Records end-to-end pipeline latency (BM25 + dense + RRF + rerank + MMR +
-budget) against a fresh encrypted vault with 1K synthetic episodic
-facets. Uses a deterministic hash-based fake embedder and an in-process
-score-by-length fake reranker so the measurement isolates the pipeline
-cost from provider-side embedding latency. The full 1K/10K/100K matrix
-with a real Ollama + cross-encoder reranker is finalised in P12.
+Records end-to-end pipeline latency (BM25 + dense + RRF + rerank + SWCR +
+MMR + budget) against a fresh encrypted vault preloaded with ``--n-facets``
+synthetic project facets. Uses a deterministic hash-based fake embedder and
+an in-process score-by-length fake reranker so the measurement isolates
+the pipeline cost from provider-side embedding latency.
+
+The v0.1 DoD targets (``docs/release-spec.md §Performance``) are p50
+median < 500 ms and p95 < 1 s at 10K on the reference hardware baseline
+(M1 Pro). Run with ``--n-facets 10000`` to produce the finalisation
+result the DoD links to.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import json
@@ -30,15 +35,14 @@ from tessera.adapters import models_registry
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
 from tessera.retrieval.pipeline import PipelineContext, recall
-from tessera.retrieval.seed import RetrievalConfig
+from tessera.retrieval.seed import DEFAULT_RETRIEVAL_MODE, RetrievalConfig, RetrievalMode
 from tessera.vault import capture
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt
 
 RESULTS_DIR = Path(__file__).parent / "results"
-N_FACETS = 1000
 DIM = 8
-TRIALS = 100
+DEFAULT_TRIALS = 100
 
 
 class _HashEmbedder:
@@ -100,7 +104,7 @@ def _git_sha() -> str:
     return out.decode().strip()
 
 
-async def _run() -> int:
+async def _run(*, n_facets: int, trials: int, retrieval_mode: RetrievalMode) -> int:
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-2.db"
         passphrase = b"b-ret-2-passphrase"
@@ -121,13 +125,13 @@ async def _run() -> int:
                 model = models_registry.register_embedding_model(
                     vc.connection, name="ollama", dim=DIM, activate=True
                 )
-                for i in range(N_FACETS):
+                for i in range(n_facets):
                     capture.capture(
                         vc.connection,
                         agent_id=agent_id,
-                        facet_type="episodic",
-                        content=f"event {i} about retrieval latency on synthetic vault",
-                        source_client="bench",
+                        facet_type="project",
+                        content=f"project note {i} about retrieval latency on synthetic vault",
+                        source_tool="bench",
                     )
                 while True:
                     stats = await embed_worker.run_pass(
@@ -147,16 +151,16 @@ async def _run() -> int:
                         rerank_model="length",
                         mmr_lambda=0.7,
                         max_candidates=50,
-                        retrieval_mode="rrf_only",
+                        retrieval_mode=retrieval_mode,
                     ),
                     tool_budget_tokens=2000,
                     k=5,
-                    facet_types=("episodic",),
+                    facet_types=("project",),
                 )
                 # Warm-up call, discarded.
                 await recall(ctx, query_text="warm-up")
                 samples_ms: list[float] = []
-                for i in range(TRIALS):
+                for i in range(trials):
                     start = time.perf_counter()
                     await recall(ctx, query_text=f"retrieval query variant {i}")
                     samples_ms.append((time.perf_counter() - start) * 1000.0)
@@ -174,12 +178,12 @@ async def _run() -> int:
         "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "env": _env_block(),
         "inputs": {
-            "facets": N_FACETS,
+            "facets": n_facets,
             "dim": DIM,
-            "trials": TRIALS,
+            "trials": trials,
             "embedder": "hash-fake",
             "reranker": "length-fake",
-            "retrieval_mode": "rrf_only",
+            "retrieval_mode": retrieval_mode,
         },
         "metrics": metrics,
     }
@@ -190,9 +194,33 @@ async def _run() -> int:
         print(f"refusing to overwrite {out}", file=sys.stderr)
         return 1
     out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    print(f"wrote {out}")
+    print(
+        f"wrote {out}\n"
+        f"p50={metrics['p50_ms']:.1f}ms p95={metrics['p95_ms']:.1f}ms "
+        f"p99={metrics['p99_ms']:.1f}ms "
+        f"(DoD target at 10K: p50<500ms, p95<1000ms)"
+    )
     return 0
 
 
+def _cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="b-ret-2")
+    parser.add_argument("--n-facets", type=int, default=1000)
+    parser.add_argument("--trials", type=int, default=DEFAULT_TRIALS)
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=("rrf_only", "rerank_only", "swcr"),
+        default=DEFAULT_RETRIEVAL_MODE,
+    )
+    args = parser.parse_args(argv)
+    return asyncio.run(
+        _run(
+            n_facets=args.n_facets,
+            trials=args.trials,
+            retrieval_mode=args.retrieval_mode,
+        )
+    )
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(_run()))
+    raise SystemExit(_cli())
