@@ -4,7 +4,7 @@ All notable changes to Tessera are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] — TBD (draft release notes)
+## [0.1.0rc1] — 2026-04-25 (pre-release)
 
 Tessera v0.1.0 ships the **T-shape cross-facet synthesis demo** end-to-end: capture a user's identity, preference, workflow, project, and style facets in any MCP-capable AI client, then recall them as a coherent cross-facet bundle in a different client. All-local by default (Ollama + sentence-transformers); zero telemetry; sqlcipher-encrypted vault with capability-scoped per-tool access.
 
