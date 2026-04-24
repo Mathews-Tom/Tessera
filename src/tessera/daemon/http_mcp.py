@@ -3,8 +3,8 @@
 Minimal JSON-over-HTTP/1.1 framing on top of ``asyncio.start_server``
 so the daemon can serve agent clients without a heavyweight web
 framework dependency. The request shape mirrors the control plane:
-``{"method": ..., "args": ...}`` → ``{"ok": bool, "result?": ...,
-"error?": str}``.
+``{"method": ..., "args": ...}`` → ``{"ok": true, "result": ...}``
+or ``{"ok": false, "error": {"code": "...", "message": "..."}}``.
 
 Two cross-cutting concerns live here rather than in the route
 handlers: the ``Origin`` header allowlist (rejects browser-driven
@@ -26,7 +26,9 @@ from typing import Any, Final
 import sqlcipher3
 
 from tessera.auth.tokens import AuthDenied, VerifiedCapability, verify_and_touch
+from tessera.daemon.dispatch import UnknownMethodError
 from tessera.daemon.exchange import NonceStore, UnknownNonceError
+from tessera.mcp_surface import tools as mcp_tools
 
 _MAX_HEADER_BYTES: Final[int] = 16 * 1024
 _MAX_BODY_BYTES: Final[int] = 1 << 20  # 1 MiB
@@ -79,7 +81,7 @@ async def serve_http_mcp(
         try:
             request_line, headers, body = await _read_request(reader)
         except HttpMcpError as exc:
-            await _write_response(writer, exc.status, {"error": exc.message})
+            await _write_error(writer, exc.status, "invalid_input", exc.message)
             return
         except (asyncio.IncompleteReadError, TimeoutError):
             with contextlib.suppress(ConnectionError):
@@ -87,52 +89,68 @@ async def serve_http_mcp(
                 await writer.wait_closed()
             return
 
-        method, target, _ = request_line.split(" ", 2)
+        try:
+            method, target, _ = request_line.split(" ", 2)
+        except ValueError:
+            await _write_error(writer, 400, "invalid_input", "malformed request line")
+            return
         if method != "POST":
-            await _write_response(writer, 405, {"error": "POST only"})
+            await _write_error(writer, 405, "invalid_input", "POST only")
             return
         if target == "/mcp/exchange":
             await _route_exchange(writer, headers, body, nonce_store, now_epoch_fn)
             return
         if target != "/mcp":
-            await _write_response(writer, 404, {"error": "unknown route"})
+            await _write_error(writer, 404, "unknown_method", "unknown route")
             return
         origin = headers.get("origin")
         if origin is not None and origin not in allowed_origins:
-            await _write_response(writer, 403, {"error": "origin not allowed"})
+            await _write_error(writer, 403, "scope_denied", "origin not allowed")
             return
         token_header = headers.get("authorization", "")
         if not token_header.lower().startswith("bearer "):
-            await _write_response(writer, 401, {"error": "missing bearer token"})
+            await _write_error(writer, 401, "invalid_input", "missing bearer token")
             return
         raw_token = token_header[len("bearer ") :].strip()
         try:
             verified = verify_and_touch(conn, raw_token=raw_token, now_epoch=now_epoch_fn())
         except AuthDenied:
-            await _write_response(writer, 401, {"error": "unauthenticated"})
+            await _write_error(writer, 401, "scope_denied", "unauthenticated")
             return
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            await _write_response(writer, 400, {"error": "invalid json body"})
+            await _write_error(writer, 400, "invalid_input", "invalid json body")
             return
         if not isinstance(payload, dict):
-            await _write_response(writer, 400, {"error": "body must be a JSON object"})
+            await _write_error(writer, 400, "invalid_input", "body must be a JSON object")
             return
         mcp_method = payload.get("method")
         mcp_args = payload.get("args", {})
         if not isinstance(mcp_method, str) or not isinstance(mcp_args, dict):
-            await _write_response(
-                writer, 400, {"error": "method must be string, args must be object"}
+            await _write_error(
+                writer, 400, "invalid_input", "method must be string, args must be object"
             )
             return
         try:
             result = await dispatch(verified, mcp_method, mcp_args)
+        except mcp_tools.ValidationError as exc:
+            await _write_error(writer, 400, "invalid_input", str(exc))
+            return
+        except mcp_tools.ScopeDenied as exc:
+            await _write_error(writer, 403, "scope_denied", str(exc))
+            return
+        except UnknownMethodError as exc:
+            await _write_error(writer, 400, "unknown_method", str(exc))
+            return
+        except mcp_tools.StorageError as exc:
+            await _write_error(writer, 500, "storage_error", str(exc))
+            return
         except Exception as exc:
             # Error-class name only; message suppressed so internal
             # paths or data never leak to the HTTP client. The audit
             # log has the full trace for operators.
-            await _write_response(writer, 500, {"error": f"internal:{type(exc).__name__}"})
+            await _write_error(writer, 500, "internal_error", type(exc).__name__)
             return
         await _write_response(writer, 200, {"ok": True, "result": result})
 
@@ -221,7 +239,10 @@ async def _read_request(
             raise HttpMcpError(400, "malformed header line")
         name, _, value = line.partition(":")
         headers[name.strip().lower()] = value.strip()
-    content_length = int(headers.get("content-length", "0") or "0")
+    try:
+        content_length = int(headers.get("content-length", "0") or "0")
+    except ValueError as exc:
+        raise HttpMcpError(400, "invalid content-length") from exc
     if content_length < 0 or content_length > _MAX_BODY_BYTES:
         raise HttpMcpError(413, "body too large")
     body = (
@@ -247,6 +268,25 @@ async def _write_response(writer: asyncio.StreamWriter, status: int, body: dict[
     writer.close()
     with contextlib.suppress(ConnectionError):
         await writer.wait_closed()
+
+
+async def _write_error(
+    writer: asyncio.StreamWriter,
+    status: int,
+    code: str,
+    message: str,
+) -> None:
+    await _write_response(
+        writer,
+        status,
+        {
+            "ok": False,
+            "error": {
+                "code": code,
+                "message": message,
+            },
+        },
+    )
 
 
 def _status_text(status: int) -> str:

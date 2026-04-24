@@ -26,11 +26,19 @@ from tessera.auth.scopes import build_scope
 from tessera.daemon.dispatch import dispatch_tool_call
 from tessera.daemon.http_mcp import serve_http_mcp
 from tessera.daemon.state import DaemonState
+from tessera.mcp_surface import tools as mcp
 from tessera.retrieval import embed_worker
 from tessera.vault import capture as vault_capture
 from tessera.vault.connection import VaultConnection
 
 _DIM = 8
+
+
+def _error_code(resp: httpx.Response) -> str:
+    body = resp.json()
+    error = body["error"]
+    assert isinstance(error, dict)
+    return str(error["code"])
 
 
 @dataclass
@@ -139,6 +147,21 @@ async def _serve(
     )
 
 
+async def _serve_with_dispatch(
+    state: DaemonState,
+    port: int,
+    dispatch_fn: Any,
+) -> asyncio.AbstractServer:
+    return await serve_http_mcp(
+        host="127.0.0.1",
+        port=port,
+        allowed_origins=frozenset({"http://localhost", "null"}),
+        conn=state.vault.connection,
+        dispatch=dispatch_fn,
+        now_epoch_fn=lambda: 1_000_100,
+    )
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_http_mcp_stats_round_trip(open_vault: VaultConnection, vault_path: Path) -> None:
@@ -174,7 +197,8 @@ async def test_http_mcp_rejects_missing_token(
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
             resp = await client.post("/mcp", json={"method": "stats", "args": {}})
         assert resp.status_code == 401
-        assert "bearer" in resp.json()["error"].lower()
+        assert _error_code(resp) == "invalid_input"
+        assert "bearer" in resp.json()["error"]["message"].lower()
     finally:
         server.close()
         await server.wait_closed()
@@ -199,6 +223,7 @@ async def test_http_mcp_rejects_disallowed_origin(
                 },
             )
         assert resp.status_code == 403
+        assert _error_code(resp) == "scope_denied"
     finally:
         server.close()
         await server.wait_closed()
@@ -214,6 +239,7 @@ async def test_http_mcp_rejects_non_post(open_vault: VaultConnection, vault_path
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
             resp = await client.get("/mcp")
         assert resp.status_code == 405
+        assert _error_code(resp) == "invalid_input"
     finally:
         server.close()
         await server.wait_closed()
@@ -235,6 +261,7 @@ async def test_http_mcp_rejects_unknown_route(
                 headers={"Authorization": f"Bearer {raw_token}"},
             )
         assert resp.status_code == 404
+        assert _error_code(resp) == "unknown_method"
     finally:
         server.close()
         await server.wait_closed()
@@ -259,6 +286,7 @@ async def test_http_mcp_rejects_invalid_json_body(
                 },
             )
         assert resp.status_code == 400
+        assert _error_code(resp) == "invalid_input"
     finally:
         server.close()
         await server.wait_closed()
@@ -284,6 +312,129 @@ async def test_http_mcp_dispatches_recall(open_vault: VaultConnection, vault_pat
         body = resp.json()
         assert body["ok"] is True
         assert "matches" in body["result"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_maps_validation_error(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                json={"method": "recall", "args": {"query_text": "voice", "k": "bad"}},
+                headers={"Authorization": f"Bearer {raw_token}"},
+            )
+        assert resp.status_code == 400
+        assert _error_code(resp) == "invalid_input"
+        assert "k must be an integer" in resp.json()["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_maps_scope_denied(open_vault: VaultConnection, vault_path: Path) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                json={
+                    "method": "capture",
+                    "args": {"content": "denied", "facet_type": "identity"},
+                },
+                headers={"Authorization": f"Bearer {raw_token}"},
+            )
+        assert resp.status_code == 403
+        assert _error_code(resp) == "scope_denied"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_maps_unknown_method(open_vault: VaultConnection, vault_path: Path) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                json={"method": "unknown", "args": {}},
+                headers={"Authorization": f"Bearer {raw_token}"},
+            )
+        assert resp.status_code == 400
+        assert _error_code(resp) == "unknown_method"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_maps_storage_error(open_vault: VaultConnection, vault_path: Path) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+
+    async def dispatch_storage_error(
+        verified: tokens.VerifiedCapability, method: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        del verified, method, args
+        raise mcp.StorageError("storage failed")
+
+    server = await _serve_with_dispatch(state, port, dispatch_storage_error)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                json={"method": "stats", "args": {}},
+                headers={"Authorization": f"Bearer {raw_token}"},
+            )
+        assert resp.status_code == 500
+        assert _error_code(resp) == "storage_error"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_maps_internal_error_without_message_leak(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+
+    async def dispatch_internal_error(
+        verified: tokens.VerifiedCapability, method: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        del verified, method, args
+        raise RuntimeError("secret path /tmp/private")
+
+    server = await _serve_with_dispatch(state, port, dispatch_internal_error)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                json={"method": "stats", "args": {}},
+                headers={"Authorization": f"Bearer {raw_token}"},
+            )
+        assert resp.status_code == 500
+        assert _error_code(resp) == "internal_error"
+        assert resp.json()["error"]["message"] == "RuntimeError"
     finally:
         server.close()
         await server.wait_closed()
