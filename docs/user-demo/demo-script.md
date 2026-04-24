@@ -50,13 +50,14 @@ tessera tokens create \
 # one default agent. If the vault has >1 agents, add `--agent-id N`.
 # Copy the printed access_token value; you'll paste it into Claude's config.
 
-# 4. Start the daemon in the foreground (open a second terminal tab, or
-# background with `&` if you want to keep this one free). For a hands-off
-# persistent daemon use `tessera daemon install` instead (launchd on
-# macOS, systemd --user on Linux) — but that's for after the demo.
-tessera daemon start-fg --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE" &
-# Once you see the "daemon_warmed" audit line in stderr, the daemon is
-# ready. Verify via:
+# 4. Start the daemon. `daemon start` detaches tesserad as a background
+# process and shows an infinite spinner ("⠋ waiting for daemon to be
+# ready") until the control socket answers. Returns with a panel of
+# pid / vault_id / active_model_id / log path. For a persistent daemon
+# that survives reboot, `tessera daemon install` writes the launchd
+# plist / systemd user unit — not used in the recording.
+tessera daemon start --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
+# Re-query status any time (the panel shows the live values):
 tessera daemon status
 # Expect: vault_id=<ulid>  active_model_id=1  schema_version=2
 ```
