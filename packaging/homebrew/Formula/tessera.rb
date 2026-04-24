@@ -25,9 +25,9 @@ class Tessera < Formula
 
   desc "Portable context layer for T-shaped AI-native users (encrypted SQLite, served over MCP)"
   homepage "https://github.com/Mathews-Tom/Tessera"
-  url "https://files.pythonhosted.org/packages/source/t/tessera-context/tessera_context-0.1.0rc1.tar.gz"
-  version "0.1.0rc1"
-  sha256 "35371a146c54f1d76bfd9ae6ec338367beee3e484a010c8e67823ee93004ad4f"
+  url "https://files.pythonhosted.org/packages/source/t/tessera-context/tessera_context-0.1.0rc2.tar.gz"
+  version "0.1.0rc2"
+  sha256 "f65bc5c2dd9b172dbe0ae4f9b46622521c68e0113ecaee85d933987c21a035e9"
   license "Apache-2.0"
   head "https://github.com/Mathews-Tom/Tessera.git", branch: "main"
 
