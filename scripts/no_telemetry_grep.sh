@@ -18,6 +18,12 @@ FORBIDDEN='^\s*(import|from)\s+(requests|httpx|aiohttp|urllib\.request)\b'
 #   - src/tessera/cli/tools_cmd.py is the CLI's loopback client to
 #     tesserad's HTTP MCP endpoint at 127.0.0.1. Calls from CLI to the
 #     local daemon do not leave the machine.
+#   - src/tessera/daemon/stdio_bridge.py is the stdio-to-HTTP bridge
+#     that Claude Desktop launches; it POSTs every tools/list and
+#     tools/call to tesserad's /mcp endpoint at 127.0.0.1 over the
+#     same loopback path as tools_cmd.py. The bridge never reaches a
+#     non-local host — `tessera connect claude-desktop` wires it to
+#     `http://127.0.0.1:<port>/mcp`.
 # Extending this list requires a matching §CI enforcement note in
 # docs/determinism-and-observability.md.
 SCAN_ROOT="src/tessera"
@@ -25,6 +31,7 @@ ALLOWLIST="src/tessera/adapters"
 ALLOWLISTED_FILES=(
   "src/tessera/daemon/doctor.py"
   "src/tessera/cli/tools_cmd.py"
+  "src/tessera/daemon/stdio_bridge.py"
 )
 
 if [[ ! -d "${SCAN_ROOT}" ]]; then
