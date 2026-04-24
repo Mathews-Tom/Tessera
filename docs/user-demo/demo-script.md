@@ -21,9 +21,9 @@ Close every app that writes to `~/.tessera/` except the terminal you'll record. 
 | Stage | Wall-clock | What the camera sees |
 |-------|-----------:|----------------------|
 | 0. Bootstrap | 0:00–1:00 | terminal: `tessera init`, model registered, daemon started |
-| 1. Claude Desktop connect | 1:00–1:30 | `tessera connect claude-desktop`, restart Claude, verify MCP tool surface |
-| 2. Capture four facets in Claude | 1:30–5:30 | Claude conversation: four `capture` calls |
-| 3. Verify vault state | 5:30–6:00 | terminal: `tessera stats`, `tessera list_facets` |
+| 1. Connect capture-side client | 1:00–1:30 | `tessera connect <client>` (any of claude-desktop, claude-code, cursor, codex), restart, verify MCP tool surface |
+| 2. Capture four facets in the client | 1:30–5:30 | Client conversation: four `capture` calls |
+| 3. Verify vault state | 5:30–6:00 | Client invokes the `list_facets` MCP tool, displays the four captured facets |
 | 4. ChatGPT connect | 6:00–7:00 | ChatGPT Dev Mode MCP config |
 | 5. Cross-facet recall + draft | 7:00–9:30 | ChatGPT: `recall(facet_types=all)`, then a draft request |
 | 6. Close and verify | 9:30–10:00 | terminal: `tessera doctor`, `tessera daemon stop` |
@@ -99,16 +99,19 @@ Read each prompt verbatim to Claude. The prompts are optimised to produce a natu
 **Style** (1 min):
 > "Capture a style sample. I write LinkedIn posts in this voice: 'The measured p50 latency at 10K facets was 730ms. The pre-measurement target was 500ms. The gap is structural: Ollama embed, sqlite-vec linear scan, SWCR, MMR. None are cheap; each is the right call for the constraint. Shipping v0.1 with the measured envelope documented, revising in v0.1.x.'"
 
-**Pass gate:** Claude confirms four facets captured. Optionally: `tessera stats --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"` prints `facets=4, by_type={preference=1, workflow=1, project=1, style=1}`.
+**Pass gate:** Claude confirms four facets captured. Optionally verify on camera by asking the client to call the `stats` MCP tool; it returns `{"facets": 4, "by_facet_type": {"preference": 1, "workflow": 1, "project": 1, "style": 1}}`.
 
 ## Stage 3 — Verify vault state (30 sec)
 
-```bash
-tessera stats --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
-tessera list_facets --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
-```
+On-camera action: ask the connected client to call the `list_facets` MCP tool (Claude / Cursor / Codex all expose it through the Tessera MCP server). Read to the client:
 
-**Pass gate:** all four facets listed with their external-IDs. This shot is the evidence-on-camera that the capture worked.
+> "Please call the `list_facets` tool on Tessera and show me all four facets you captured, with their external_ids and facet types."
+
+The tool returns a structured list of the four captured facets. This is the evidence-on-camera that the capture worked — no terminal shot is needed because the client's MCP panel already renders the tool call and its response.
+
+**Terminal-side alternative** (for recording with a split-screen terminal): `tessera stats` and `tessera show <external_id>` are MCP passthroughs that need a bearer token. Export the access token from Stage 0 first (`export TESSERA_TOKEN=<raw_token>`) then call `tessera stats`.
+
+**Pass gate:** all four facets listed with their external-IDs (via the MCP tool output or the terminal variant).
 
 ## Stage 4 — ChatGPT connect (1 min)
 
@@ -148,7 +151,7 @@ tessera daemon stop
 |---------|--------------|----------|
 | `daemon status` shows empty `vault_id` | Warm-up failed | `tail ~/.tessera/run/tesserad.log`; common: missing nomic-embed-text → `ollama pull nomic-embed-text` |
 | Claude doesn't see Tessera tools | Claude cached old config | `tessera disconnect claude-desktop`, then `tessera connect claude-desktop`, full restart |
-| `recall` returns empty result set | No facets captured yet, or active model mismatch | `tessera list_facets` on camera — if empty, loop back to Stage 2 |
+| `recall` returns empty result set | No facets captured yet, or active model mismatch | Ask the client to call the `list_facets` MCP tool — if empty, loop back to Stage 2. (There is no `tessera list_facets` CLI subcommand; the verb only exists as an MCP tool.) |
 | ChatGPT MCP panel says "can't reach server" | Token TTL expired | `tessera tokens create` again; update the ChatGPT URL |
 | p99 spike > 3 s on a `recall` | Ollama cold-reload | Wait 30 s and re-run — `keep_alive=-1` should prevent repeat |
 
