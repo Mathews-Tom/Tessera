@@ -246,6 +246,63 @@ def test_connect_fails_loud_with_multiple_agents(
 
 
 @pytest.mark.integration
+def test_connect_all_writes_every_file_based_client(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `tessera connect all` expands to the four file-based clients
+    # (claude-desktop, claude-code, cursor, codex). ChatGPT is not in
+    # the `all` meta because its handler uses the URL-exchange flow.
+    monkeypatch.setenv("TESSERA_PASSPHRASE", "demo")
+    monkeypatch.setenv("HOME", str(short_tmp))
+    vault = short_tmp / "v.db"
+    parser = _build_parser()
+    parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"]).handler(
+        parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"])
+    )
+    capsys.readouterr()
+    connect_args = parser.parse_args(["connect", "all", "--vault", str(vault)])
+    rc = connect_args.handler(connect_args)
+    assert rc == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    # Every file-based client name surfaces in the output.
+    for name in ("Claude Desktop", "Claude Code", "Cursor", "Codex"):
+        assert name in combined
+    # ChatGPT is deliberately absent from the `all` expansion.
+    assert "ChatGPT" not in combined
+
+
+@pytest.mark.integration
+def test_connect_accepts_multiple_explicit_clients(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The positional accepts one or more client ids. Duplicates collapse
+    # to the first occurrence so `connect claude-desktop claude-desktop`
+    # writes the config once, not twice.
+    monkeypatch.setenv("TESSERA_PASSPHRASE", "demo")
+    monkeypatch.setenv("HOME", str(short_tmp))
+    vault = short_tmp / "v.db"
+    parser = _build_parser()
+    parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"]).handler(
+        parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"])
+    )
+    capsys.readouterr()
+    connect_args = parser.parse_args(
+        ["connect", "claude-desktop", "claude-code", "--vault", str(vault)]
+    )
+    rc = connect_args.handler(connect_args)
+    assert rc == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "Claude Desktop" in combined
+    assert "Claude Code" in combined
+
+
+@pytest.mark.integration
 def test_tokens_create_fails_loud_with_multiple_agents(
     short_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

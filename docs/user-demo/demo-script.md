@@ -64,15 +64,24 @@ tessera daemon status
 
 **Pass gate:** `tessera daemon status` returns a ULID and model 1. If `vault_id` is empty, the daemon didn't warm up — check the log at `~/.tessera/run/tesserad.log`.
 
-## Stage 1 — Claude Desktop (30 sec)
+## Stage 1 — Connect the capture-side client (30 sec)
+
+The recording uses **Claude Desktop** on the capture side, but any of the four file-based v0.1 connectors work: `claude-desktop`, `claude-code`, `cursor`, `codex`. Pick whichever matches your daily-driver AI tool. Pass multiple ids in one command to connect several at once, or use `all` as sugar for every file-based client (ChatGPT is separate because it uses the URL-exchange flow covered in Stage 4):
 
 ```bash
+# Connect only the client you'll capture from on camera.
 tessera connect claude-desktop --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
+
+# Equivalent for Claude Code users:
+# tessera connect claude-code --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
+
+# Or connect every file-based client at once (what a thorough demo does):
+# tessera connect all --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
 ```
 
-On-camera action: open **Claude Desktop**, Cmd-Q, re-open. The MCP tool menu should show `capture`, `recall`, `show`, `list_facets`, `stats`, `forget` as available tools under "Tessera".
+On-camera action: open the chosen client (for Claude Desktop that's Cmd-Q + reopen; Claude Code restarts the next time you start the CLI; Cursor + Codex pick up the MCP server on next launch). The MCP tool menu should show `capture`, `recall`, `show`, `list_facets`, `stats`, `forget` as available tools under "Tessera".
 
-**Pass gate:** six tools visible in Claude's MCP panel. If only the HTTP URL appears without tools, the token was mis-pasted — re-run `tessera connect` and restart Claude.
+**Pass gate:** six tools visible in the client's MCP panel. If only the HTTP URL appears without tools, the token was mis-pasted or the daemon is not running — re-run `tessera connect <client>` after verifying `tessera daemon status` returns a vault_id.
 
 ## Stage 2 — Capture four facets in Claude (4 min)
 

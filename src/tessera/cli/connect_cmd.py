@@ -94,31 +94,84 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     disconnect.set_defaults(handler=_cmd_disconnect)
 
 
+# ``all`` expands to every file-based client. ChatGPT stays out of the
+# expansion because its handler path is the URL-exchange flow (needs a
+# running daemon + user-interactive paste), not a config-file write.
+_ALL_FILE_BASED_CLIENTS = ("claude-desktop", "claude-code", "cursor", "codex")
+_ALL_META = "all"
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "client",
-        choices=available_clients(),
-        help="client id; one of %(choices)s",
+        nargs="+",
+        choices=[*available_clients(), _ALL_META],
+        help=(
+            "one or more client ids; pass multiple (e.g. "
+            "`claude-desktop claude-code cursor codex`) or `all` as a "
+            "sugar for every file-based client (all except chatgpt)"
+        ),
     )
     parser.add_argument("--vault", type=Path, required=True)
     parser.add_argument("--passphrase", default=None)
     parser.add_argument("--socket", type=Path, default=None, help="daemon control socket")
 
 
-def _cmd_connect(args: argparse.Namespace) -> int:
-    try:
-        connector = get_connector(args.client)
-    except UnknownClientError as exc:
-        return fail(str(exc))
+def _expand_clients(raw: list[str]) -> list[str]:
+    """Expand the ``all`` meta into the file-based clients; dedup order.
 
-    if isinstance(connector, ChatGptConnector):
-        return _connect_chatgpt(args)
-    return _connect_file_based(args, connector)
+    Preserves the caller's order otherwise so the output matches what
+    the user typed. ``all`` inserted at any position expands in place;
+    duplicates collapse to the first occurrence.
+    """
+
+    seen: set[str] = set()
+    resolved: list[str] = []
+    for entry in raw:
+        if entry == _ALL_META:
+            for client in _ALL_FILE_BASED_CLIENTS:
+                if client not in seen:
+                    seen.add(client)
+                    resolved.append(client)
+            continue
+        if entry not in seen:
+            seen.add(entry)
+            resolved.append(entry)
+    return resolved
+
+
+def _cmd_connect(args: argparse.Namespace) -> int:
+    clients = _expand_clients(args.client)
+    overall = 0
+    for client_id in clients:
+        try:
+            connector = get_connector(client_id)
+        except UnknownClientError as exc:
+            fail(str(exc))
+            overall = 1
+            continue
+        if isinstance(connector, ChatGptConnector):
+            rc = _connect_chatgpt(args)
+        else:
+            rc = _connect_file_based(args, connector)
+        if rc != 0:
+            overall = rc
+    return overall
 
 
 def _cmd_disconnect(args: argparse.Namespace) -> int:
+    clients = _expand_clients(args.client)
+    overall = 0
+    for client_id in clients:
+        rc = _disconnect_one(args, client_id)
+        if rc != 0:
+            overall = rc
+    return overall
+
+
+def _disconnect_one(args: argparse.Namespace, client_id: str) -> int:
     try:
-        connector = get_connector(args.client)
+        connector = get_connector(client_id)
     except UnknownClientError as exc:
         return fail(str(exc))
     if isinstance(connector, ChatGptConnector):
