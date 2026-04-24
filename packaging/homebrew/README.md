@@ -97,9 +97,19 @@ brew test tessera
 
 - **Not suitable for `homebrew-core` submission.** Homebrew's main repo requires every transitive Python dependency to be listed as a `resource` block with its own pinned sha256 — a maintenance cost that isn't justified for a pre-release tap. If Tessera reaches wider distribution and core inclusion becomes worth the overhead, the formula can be regenerated with `homebrew-pypi-poet` or `brew update-python-resources`.
 - **Not a reproducibility guarantee.** Without resource pinning, the transitive dep graph is resolved at install time. Pip's resolver is deterministic for a given `pyproject.toml` pin set, so the practical reproducibility is high; the theoretical guarantee is lower than `homebrew-core`'s.
-- **Not a Linux packaging path.** Homebrew formulas target macOS primarily; Homebrew-on-Linux works but Tessera's Linux distribution story is planned to route through `.deb` / `.rpm` packaging (v0.1.x packaging, pending strategy pick) rather than Homebrew.
+- **Not a Linux packaging path.** Homebrew formulas target macOS primarily. Tessera's Linux install path is `pip install --pre tessera-context` — native `.deb`/`.rpm` packaging was evaluated and deferred (decision 2026-04-25, per `docs/release-spec.md §v0.1.x — Stabilization`). Homebrew-on-Linux is technically supported by the formula but isn't the recommended route.
 
 ## Adjacent packaging work
 
-- `.deb` and `.rpm` packages for Linux — separate decision point per `docs/release-spec.md §v0.1.x — Stabilization`.
-- PEP 541 reclaim for the short `tessera` PyPI name — out-of-session, tracked in `docs/v0.1-dod-audit.md §Follow-ups`. When the reclaim lands, the formula `url` + `pip_install` arguments change from `tessera-context` to `tessera`; the formula class name and CLI binary name stay the same.
+- **`.deb` / `.rpm` for Linux** — **not pursued.** `pip install --pre tessera-context` is the v0.1.x Linux install path. Decision recorded 2026-04-25 in `docs/release-spec.md §v0.1.x — Stabilization`; re-evaluate at v0.3.
+- **Direct-URL install (no tap)** — users can install from the raw formula file on GitHub without adding a tap:
+  ```bash
+  brew install https://raw.githubusercontent.com/Mathews-Tom/Tessera/main/packaging/homebrew/Formula/tessera.rb
+  ```
+  Trades the clean `brew install tessera` ergonomic for zero new-repo overhead. Good fit for the v0.1.x audience; the tap-repo bootstrap above remains available for later.
+- **Single-repo tap alternative** — if the dedicated `homebrew-tessera` repo feels like unnecessary separation, `brew tap` can consume the Tessera repo directly with the explicit-URL form:
+  ```bash
+  brew tap Mathews-Tom/Tessera https://github.com/Mathews-Tom/Tessera.git
+  ```
+  This requires moving the formula to `Formula/tessera.rb` at repo root (Homebrew doesn't search subdirectories). The cost is that `brew update` pulls the entire Tessera repo on every refresh — negligible at current audience size, a concern at scale. Not implemented today.
+- **PEP 541 reclaim** for the short `tessera` PyPI name — out-of-session, tracked in `docs/v0.1-dod-audit.md §Follow-ups`. When the reclaim lands, the formula `url` + `pip_install` arguments change from `tessera-context` to `tessera`; the formula class name and CLI binary name stay the same.
