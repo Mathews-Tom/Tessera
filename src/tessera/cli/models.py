@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
 from pathlib import Path
 
 import sqlcipher3
@@ -20,6 +19,7 @@ import sqlcipher3
 from tessera.adapters import models_registry
 from tessera.adapters.ollama_embedder import OllamaEmbedder
 from tessera.adapters.registry import list_embedders, list_rerankers
+from tessera.cli._ui import EMOJI, console, error, report_table, status, success
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, load_salt
 
@@ -60,9 +60,14 @@ def _make_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_list() -> int:
-    print("python adapters:")
-    print(f"  embedders: {list_embedders()}")
-    print(f"  rerankers: {list_rerankers()}")
+    table = report_table(
+        "python adapters",
+        ["role", "registered"],
+        emoji=EMOJI["models"],
+    )
+    table.add_row("embedders", ", ".join(list_embedders()) or "(none)")
+    table.add_row("rerankers", ", ".join(list_rerankers()) or "(none)")
+    console.print(table)
     return 0
 
 
@@ -71,28 +76,33 @@ def _cmd_set(args: argparse.Namespace) -> int:
     try:
         salt = load_salt(args.vault)
     except FileNotFoundError:
-        print(
-            f"no KDF salt sidecar for {args.vault}; initialise the vault first",
-            file=sys.stderr,
-        )
+        error(f"no KDF salt sidecar for {args.vault}; initialise the vault first")
         return 1
-    with derive_key(passphrase, salt) as key, VaultConnection.open(args.vault, key) as vc:
+    with (
+        status(f"registering {args.name} ({args.dim}-dim)", emoji=EMOJI["models"]),
+        derive_key(passphrase, salt) as key,
+        VaultConnection.open(args.vault, key) as vc,
+    ):
         conn: sqlcipher3.Connection = vc.connection
         model = models_registry.register_embedding_model(
             conn, name=args.name, dim=args.dim, activate=args.activate
         )
-    print(f"registered: id={model.id} name={model.name} dim={model.dim} active={model.is_active}")
+    success(
+        f"registered id={model.id} name={model.name} dim={model.dim} active={model.is_active}",
+        emoji=EMOJI["models"],
+    )
     return 0
 
 
 def _cmd_test(args: argparse.Namespace) -> int:
     embedder = OllamaEmbedder(model_name=args.model, dim=args.dim, host=args.host)
-    try:
-        asyncio.run(embedder.health_check())
-    except Exception as exc:  # CLI top-level boundary: classify and exit non-zero
-        print(f"health_check failed: {exc}", file=sys.stderr)
-        return 1
-    print(f"ollama reachable; model {args.model!r} is present")
+    with status(f"probing ollama for {args.model!r}", emoji=EMOJI["models"]):
+        try:
+            asyncio.run(embedder.health_check())
+        except Exception as exc:  # CLI top-level boundary: classify and exit non-zero
+            error(f"health_check failed: {exc}")
+            return 1
+    success(f"ollama reachable; model {args.model!r} is present", emoji=EMOJI["models"])
     return 0
 
 

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from tessera.cli._common import CliError, fail, resolve_passphrase
+from tessera.cli._ui import EMOJI, info, kv_panel, status, success
 from tessera.daemon.config import resolve_config
 from tessera.daemon.control import ControlError, call_control
 from tessera.daemon.supervisor import run_daemon
@@ -59,6 +60,7 @@ def _cmd_start_fg(args: argparse.Namespace) -> int:
         http_port=args.port,
         passphrase=bytes(passphrase),
     )
+    info(f"starting daemon (foreground) against {args.vault}", emoji=EMOJI["daemon_up"])
     try:
         asyncio.run(run_daemon(config))
     except Exception as exc:
@@ -69,26 +71,33 @@ def _cmd_start_fg(args: argparse.Namespace) -> int:
 def _cmd_stop(args: argparse.Namespace) -> int:
     del args
     config = resolve_config()
-    try:
-        asyncio.run(call_control(config.socket_path, method="stop"))
-    except (ConnectionError, ControlError) as exc:
-        return fail(f"stop failed: {exc}")
-    print("stop signal sent")
+    with status("sending stop signal", emoji=EMOJI["daemon_down"]):
+        try:
+            asyncio.run(call_control(config.socket_path, method="stop"))
+        except (ConnectionError, ControlError) as exc:
+            return fail(f"stop failed: {exc}")
+    success("stop signal sent", emoji=EMOJI["daemon_down"])
     return 0
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
     del args
     config = resolve_config()
-    try:
-        response = asyncio.run(call_control(config.socket_path, method="status"))
-    except ConnectionError as exc:
-        return fail(f"daemon not running (socket: {exc})")
-    except ControlError as exc:
-        return fail(f"status failed: {exc}")
-    for key in ("vault_id", "vault_path", "schema_version", "active_model_id"):
-        value = response.get(key, "?")
-        print(f"{key}: {value}")
+    with status("querying daemon", emoji=EMOJI["daemon_up"]):
+        try:
+            response = asyncio.run(call_control(config.socket_path, method="status"))
+        except ConnectionError as exc:
+            return fail(f"daemon not running (socket: {exc})")
+        except ControlError as exc:
+            return fail(f"status failed: {exc}")
+    kv_panel(
+        "daemon status",
+        {
+            key: str(response.get(key, "?"))
+            for key in ("vault_id", "vault_path", "schema_version", "active_model_id")
+        },
+        emoji=EMOJI["daemon_up"],
+    )
     return 0
 
 
@@ -104,24 +113,30 @@ def _cmd_install(args: argparse.Namespace) -> int:
             log_path=home / ".tessera" / "run" / "tesserad.log",
         )
         _write_unit(path, body)
-        print(f"wrote {path}")
-        print(f"Load via: launchctl bootstrap gui/$(id -u) {path}")
+        success(f"wrote {path}", emoji=EMOJI["daemon_up"])
+        info(f"load via: launchctl bootstrap gui/$(id -u) {path}")
         return 0
     path = systemd_unit_path(home)
     body = systemd_unit(python_executable=python_exe, vault_path=args.vault)
     _write_unit(path, body)
-    print(f"wrote {path}")
-    print("Enable via: systemctl --user daemon-reload && systemctl --user enable --now tesserad")
+    success(f"wrote {path}", emoji=EMOJI["daemon_up"])
+    info(
+        "enable via: systemctl --user daemon-reload && systemctl --user enable --now tesserad",
+    )
     return 0
 
 
 def _cmd_uninstall(args: argparse.Namespace) -> int:
     del args
     home = Path(os.path.expanduser("~"))
+    removed_any = False
     for path in (launchd_plist_path(home), systemd_unit_path(home)):
         if path.exists():
             path.unlink()
-            print(f"removed {path}")
+            success(f"removed {path}", emoji=EMOJI["forget"])
+            removed_any = True
+    if not removed_any:
+        info("no installed units found")
     return 0
 
 

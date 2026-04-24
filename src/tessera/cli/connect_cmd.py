@@ -19,6 +19,7 @@ from pathlib import Path
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope
 from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._ui import EMOJI, info, kv_panel, status, success
 from tessera.connectors import (
     Connector,
     UnknownClientError,
@@ -105,10 +106,11 @@ def _cmd_disconnect(args: argparse.Namespace) -> int:
     except UnknownClientError as exc:
         return fail(str(exc))
     if isinstance(connector, ChatGptConnector):
-        print(
+        info(
             "ChatGPT Developer Mode has no on-disk config. "
             "Revoke the session token with `tessera tokens revoke --token-id <id>` "
-            "— this is the only way to cut access."
+            "— this is the only way to cut access.",
+            emoji=EMOJI["connect"],
         )
         return 0
     try:
@@ -117,11 +119,14 @@ def _cmd_disconnect(args: argparse.Namespace) -> int:
         return fail(f"{connector.display_name}: {exc}")
     result = connector.remove(path)
     if result.no_op:
-        print(f"{connector.display_name}: no Tessera entry at {result.path}")
+        info(f"{connector.display_name}: no Tessera entry at {result.path}", emoji=EMOJI["connect"])
         return 0
-    print(f"{connector.display_name}: removed Tessera entry from {result.path}")
+    success(
+        f"{connector.display_name}: removed Tessera entry from {result.path}",
+        emoji=EMOJI["forget"],
+    )
     if result.backup_path is not None:
-        print(f"  backup: {result.backup_path}")
+        info(f"backup: {result.backup_path}")
     return 0
 
 
@@ -130,32 +135,39 @@ def _connect_file_based(args: argparse.Namespace, connector: Connector) -> int:
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
-    try:
-        raw_token = _mint_token(
-            vault=args.vault,
-            passphrase=passphrase,
-            agent_id=args.agent_id,
-            client_id=connector.client_id,
-            token_class=args.token_class,
-        )
-    except Exception as exc:
-        return fail(f"token mint failed: {exc}")
-    try:
-        path = args.path or connector.default_path()
-    except Exception as exc:
-        return fail(f"{connector.display_name}: {exc}")
-    spec = McpServerSpec(url=args.url, token=raw_token)
-    try:
-        result = connector.apply(path, spec)
-    except Exception as exc:
-        return fail(f"{connector.display_name}: config write failed: {exc}")
+    with status(f"minting token + writing {connector.display_name} config", emoji=EMOJI["connect"]):
+        try:
+            raw_token = _mint_token(
+                vault=args.vault,
+                passphrase=passphrase,
+                agent_id=args.agent_id,
+                client_id=connector.client_id,
+                token_class=args.token_class,
+            )
+        except Exception as exc:
+            return fail(f"token mint failed: {exc}")
+        try:
+            path = args.path or connector.default_path()
+        except Exception as exc:
+            return fail(f"{connector.display_name}: {exc}")
+        spec = McpServerSpec(url=args.url, token=raw_token)
+        try:
+            result = connector.apply(path, spec)
+        except Exception as exc:
+            return fail(f"{connector.display_name}: config write failed: {exc}")
     if result.no_op:
-        print(f"{connector.display_name}: config already has the Tessera entry at {result.path}")
+        info(
+            f"{connector.display_name}: config already has the Tessera entry at {result.path}",
+            emoji=EMOJI["connect"],
+        )
     else:
-        print(f"{connector.display_name}: wrote Tessera entry to {result.path}")
+        success(
+            f"{connector.display_name}: wrote Tessera entry to {result.path}",
+            emoji=EMOJI["connect"],
+        )
         if result.backup_path is not None:
-            print(f"  backup: {result.backup_path}")
-    print(f"  restart {connector.display_name} to pick up the new MCP server.")
+            info(f"backup: {result.backup_path}")
+    info(f"restart {connector.display_name} to pick up the new MCP server.")
     return 0
 
 
@@ -194,14 +206,14 @@ def _connect_chatgpt(args: argparse.Namespace) -> int:
     # POSTs the nonce back (one-time-use, 30-second TTL). Keep the
     # URL host/port in sync with the daemon's HTTP MCP bind.
     exchange_url = f"http://{DEFAULT_HTTP_HOST}:{DEFAULT_HTTP_PORT}/mcp/exchange?nonce={nonce}"
-    print("ChatGPT Developer Mode bootstrap URL:")
-    print(f"  {exchange_url}")
+    panel_items = {"bootstrap URL": exchange_url}
     if isinstance(expires_at, int):
         now = int(datetime.now(UTC).timestamp())
         remaining = max(0, expires_at - now)
-        print(f"  expires in ~{remaining}s (one-time-use)")
-    print(
-        "  paste the URL into ChatGPT Dev Mode's Add tool dialog; "
+        panel_items["expires in"] = f"~{remaining}s (one-time-use)"
+    kv_panel("ChatGPT Developer Mode", panel_items, emoji=EMOJI["connect"])
+    info(
+        "paste the URL into ChatGPT Dev Mode's Add tool dialog; "
         "the daemon will hand over a scoped session token on the first request."
     )
     return 0

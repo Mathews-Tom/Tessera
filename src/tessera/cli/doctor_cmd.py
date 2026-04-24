@@ -10,6 +10,16 @@ from pathlib import Path
 from tessera import __version__ as TESSERA_VERSION
 from tessera.adapters import models_registry
 from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._ui import (
+    EMOJI,
+    console,
+    info,
+    report_table,
+    status,
+    status_cell,
+    success,
+    warn,
+)
 from tessera.daemon.config import resolve_config
 from tessera.daemon.doctor import DoctorStatus, run_all
 from tessera.observability.bundle import BundleSpec, build_bundle, review_instructions
@@ -40,27 +50,30 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     if args.collect is not None:
         return _cmd_collect(args)
     config = resolve_config(vault_path=args.vault)
-    if args.vault is None:
-        # Vault-dependent checks downgrade to WARN; run without opening.
-        report = asyncio.run(run_all(config))
-    else:
-        try:
-            passphrase = resolve_passphrase(args.passphrase)
-        except CliError as exc:
-            return fail(str(exc))
-        with open_vault(args.vault, passphrase) as vc:
-            report = asyncio.run(run_all(config, conn=vc.connection))
-    symbol = {
-        DoctorStatus.OK: "[OK]  ",
-        DoctorStatus.WARN: "[WARN]",
-        DoctorStatus.ERROR: "[FAIL]",
-    }
+    with status("running health checks", emoji=EMOJI["doctor"]):
+        if args.vault is None:
+            # Vault-dependent checks downgrade to WARN; run without opening.
+            report = asyncio.run(run_all(config))
+        else:
+            try:
+                passphrase = resolve_passphrase(args.passphrase)
+            except CliError as exc:
+                return fail(str(exc))
+            with open_vault(args.vault, passphrase) as vc:
+                report = asyncio.run(run_all(config, conn=vc.connection))
+    table = report_table("doctor report", ["check", "status", "detail"], emoji=EMOJI["doctor"])
     for result in report.results:
-        print(f"{symbol[result.status]} {result.name:16} {result.detail}")
-    print(f"\nverdict: {report.verdict.value}")
-    if report.verdict is DoctorStatus.ERROR:
-        return 1
-    return 0
+        table.add_row(result.name, status_cell(result.status.value), result.detail)
+    console.print(table)
+    verdict = report.verdict
+    if verdict is DoctorStatus.OK:
+        success("all checks green", emoji=EMOJI["ok"])
+        return 0
+    if verdict is DoctorStatus.WARN:
+        warn("one or more checks reported WARN; review the table above")
+        return 0
+    # ERROR: non-zero exit so CI / scripts catch it.
+    return fail("one or more checks reported ERROR; see table above")
 
 
 def _cmd_collect(args: argparse.Namespace) -> int:
@@ -88,9 +101,12 @@ def _cmd_collect(args: argparse.Namespace) -> int:
         # Missing or unreadable events.db is not a showstopper — the
         # bundle just reports an empty recent_events file. Surface a
         # one-liner so the operator understands the reduced content.
-        print(f"(events.db unavailable: {type(exc).__name__}; recent_events will be empty)")
+        warn(f"events.db unavailable: {type(exc).__name__}; recent_events will be empty")
     try:
-        with open_vault(args.vault, passphrase) as vc:
+        with (
+            status("collecting diagnostic bundle", emoji=EMOJI["export"]),
+            open_vault(args.vault, passphrase) as vc,
+        ):
             active_models = tuple(
                 m.name for m in models_registry.list_models(vc.connection) if m.is_active
             )
@@ -108,5 +124,6 @@ def _cmd_collect(args: argparse.Namespace) -> int:
     finally:
         if event_log is not None:
             event_log.close()
-    print(review_instructions(result))
+    success(f"bundle written: {result.tarball_path}", emoji=EMOJI["export"])
+    info(review_instructions(result))
     return 0

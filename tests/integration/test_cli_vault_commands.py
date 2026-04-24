@@ -142,6 +142,13 @@ def test_doctor_runs_without_vault(
     # Exit code is 0 or 1 depending on whether ollama / bind checks pass.
     rc = args.handler(args)
     assert rc in (0, 1)
-    out = capsys.readouterr().out
-    assert "verdict:" in out
-    assert "[WARN] vault" in out or "[OK]  vault" in out or "[FAIL]" in out
+    # Rich-rendered doctor report now lives in a table; the status
+    # tokens OK/WARN/ERROR remain grep-stable per the UI module's
+    # stability contract. The vault check is what we can reliably
+    # assert on across CI / local runs.
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "doctor report" in combined
+    assert "vault" in combined
+    # At least one of the three status tokens must appear.
+    assert any(token in combined for token in ("OK", "WARN", "ERROR"))

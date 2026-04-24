@@ -8,6 +8,7 @@ from pathlib import Path
 from ulid import ULID
 
 from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._ui import EMOJI, console, raw, report_table, success
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -43,10 +44,12 @@ def _cmd_list(args: argparse.Namespace) -> int:
             "SELECT external_id, name, created_at FROM agents ORDER BY id"
         ).fetchall()
     if not rows:
-        print("(no agents)")
+        console.print("[tessera.dim](no agents)[/]")
         return 0
+    table = report_table("agents", ["external_id", "name", "created_at"], emoji=EMOJI["agent"])
     for row in rows:
-        print(f"{row[0]}\t{row[1]}\t{row[2]}")
+        table.add_row(str(row[0]), str(row[1]), str(row[2]))
+    console.print(table)
     return 0
 
 
@@ -61,7 +64,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
             "INSERT INTO agents(external_id, name, created_at) VALUES (?, ?, strftime('%s','now'))",
             (external_id, args.name),
         )
-    print(external_id)
+    # The ULID is the machine-readable output of this command. Scripts
+    # pipe it to downstream consumers (e.g. ``id=$(tessera agents
+    # create --vault X --name foo)``). Emit through raw() on stdout
+    # with nothing else — the absence of a red ✗ is itself the success
+    # signal on the TTY side.
+    raw(external_id)
     return 0
 
 
@@ -74,5 +82,5 @@ def _cmd_delete(args: argparse.Namespace) -> int:
         cur = vc.connection.execute("DELETE FROM agents WHERE external_id = ?", (args.external_id,))
         if cur.rowcount == 0:
             return fail(f"no agent with external_id={args.external_id!r}")
-    print(f"deleted {args.external_id}")
+    success(f"deleted {args.external_id}", emoji=EMOJI["forget"])
     return 0

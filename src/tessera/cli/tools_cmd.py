@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from tessera.cli._common import fail
+from tessera.cli._ui import EMOJI, console, report_table, status, success
 from tessera.daemon.config import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
 from tessera.vault.facets import V0_1_FACET_TYPES
 
@@ -101,15 +102,33 @@ def _call(args: argparse.Namespace, method: str, payload: dict[str, Any]) -> dic
     return result
 
 
+def _print_json(result: dict[str, Any]) -> None:
+    """Render an MCP response as indented JSON with Rich syntax highlighting on TTY.
+
+    The actual bytes on a pipe are still ``json.dumps(..., indent=2)`` so
+    downstream ``| jq`` keeps working; only the TTY path gets colour.
+    """
+
+    from rich.syntax import Syntax
+
+    payload = json.dumps(result, indent=2)
+    if console.is_terminal:
+        console.print(Syntax(payload, "json", theme="ansi_dark", background_color="default"))
+    else:
+        console.print(payload, markup=False, highlight=False)
+
+
 def _cmd_capture(args: argparse.Namespace) -> int:
     payload = {"content": args.content, "facet_type": args.facet_type}
     if args.source_tool:
         payload["source_tool"] = args.source_tool
-    try:
-        result = _call(args, "capture", payload)
-    except SystemExit as exc:
-        return fail(str(exc))
-    print(json.dumps(result, indent=2))
+    with status(f"capturing {args.facet_type} facet", emoji=EMOJI["capture"]):
+        try:
+            result = _call(args, "capture", payload)
+        except SystemExit as exc:
+            return fail(str(exc))
+    _print_json(result)
+    success(f"captured {args.facet_type}", emoji=EMOJI["capture"])
     return 0
 
 
@@ -117,29 +136,62 @@ def _cmd_recall(args: argparse.Namespace) -> int:
     payload: dict[str, Any] = {"query_text": args.query, "k": args.k}
     if args.facet_types:
         payload["facet_types"] = [t.strip() for t in args.facet_types.split(",")]
-    try:
-        result = _call(args, "recall", payload)
-    except SystemExit as exc:
-        return fail(str(exc))
-    print(json.dumps(result, indent=2))
+    with status(f"recall (k={args.k})", emoji=EMOJI["recall"]):
+        try:
+            result = _call(args, "recall", payload)
+        except SystemExit as exc:
+            return fail(str(exc))
+    matches = result.get("matches")
+    if isinstance(matches, list) and console.is_terminal:
+        table = report_table(
+            f"recall results (query={args.query!r})",
+            ["rank", "facet_type", "score", "external_id", "snippet"],
+            emoji=EMOJI["recall"],
+        )
+        for i, m in enumerate(matches):
+            if not isinstance(m, dict):
+                continue
+            table.add_row(
+                str(i + 1),
+                str(m.get("facet_type", "")),
+                f"{m.get('score', 0):.3f}" if isinstance(m.get("score"), int | float) else "",
+                str(m.get("external_id", "")),
+                str(m.get("snippet", ""))[:80],
+            )
+        console.print(table)
+    else:
+        _print_json(result)
     return 0
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
-    try:
-        result = _call(args, "show", {"external_id": args.external_id})
-    except SystemExit as exc:
-        return fail(str(exc))
-    print(json.dumps(result, indent=2))
+    with status(f"show {args.external_id}", emoji=EMOJI["recall"]):
+        try:
+            result = _call(args, "show", {"external_id": args.external_id})
+        except SystemExit as exc:
+            return fail(str(exc))
+    _print_json(result)
     return 0
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:
-    try:
-        result = _call(args, "stats", {})
-    except SystemExit as exc:
-        return fail(str(exc))
-    print(json.dumps(result, indent=2))
+    with status("gathering vault stats", emoji=EMOJI["vault"]):
+        try:
+            result = _call(args, "stats", {})
+        except SystemExit as exc:
+            return fail(str(exc))
+    by_type = result.get("by_facet_type")
+    if isinstance(by_type, dict) and console.is_terminal:
+        table = report_table("vault stats", ["facet_type", "count"], emoji=EMOJI["vault"])
+        for k in sorted(by_type.keys()):
+            table.add_row(str(k), str(by_type[k]))
+        console.print(table)
+        # Render any extra top-level fields (totals, vault_id) below the table.
+        extras = {k: v for k, v in result.items() if k != "by_facet_type"}
+        if extras:
+            _print_json(extras)
+    else:
+        _print_json(result)
     return 0
 
 
@@ -147,9 +199,11 @@ def _cmd_forget(args: argparse.Namespace) -> int:
     payload: dict[str, Any] = {"external_id": args.external_id}
     if args.reason:
         payload["reason"] = args.reason
-    try:
-        result = _call(args, "forget", payload)
-    except SystemExit as exc:
-        return fail(str(exc))
-    print(json.dumps(result, indent=2))
+    with status(f"forgetting {args.external_id}", emoji=EMOJI["forget"]):
+        try:
+            result = _call(args, "forget", payload)
+        except SystemExit as exc:
+            return fail(str(exc))
+    _print_json(result)
+    success(f"forgot {args.external_id}", emoji=EMOJI["forget"])
     return 0

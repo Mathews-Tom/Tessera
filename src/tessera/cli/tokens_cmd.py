@@ -9,6 +9,7 @@ from pathlib import Path
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope
 from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._ui import EMOJI, console, kv_panel, report_table, success, warn
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -73,11 +74,23 @@ def _cmd_list(args: argparse.Namespace) -> int:
         sql += " ORDER BY id"
         rows = vc.connection.execute(sql, params).fetchall()
     if not rows:
-        print("(no tokens)")
+        console.print("[tessera.dim](no tokens)[/]")
         return 0
-    print("id\tagent\tclient\tclass\texpires_at\trevoked")
+    table = report_table(
+        "capability tokens",
+        ["id", "agent", "client", "class", "expires_at", "revoked"],
+        emoji=EMOJI["token"],
+    )
     for r in rows:
-        print(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5] or ''}")
+        table.add_row(
+            str(r[0]),
+            str(r[1]),
+            str(r[2]),
+            str(r[3]),
+            str(r[4]),
+            str(r[5]) if r[5] is not None else "",
+        )
+    console.print(table)
     return 0
 
 
@@ -97,13 +110,16 @@ def _cmd_create(args: argparse.Namespace) -> int:
             scope=scope,
             now_epoch=now_epoch,
         )
-    print(f"token_id: {issued.token_id}")
-    print(f"access_token: {issued.raw_token}")
+    panel_items = {
+        "token_id": str(issued.token_id),
+        "access_token": issued.raw_token,
+        "expires_at": str(issued.expires_at),
+    }
     if issued.raw_refresh_token is not None:
-        print(f"refresh_token: {issued.raw_refresh_token}")
-    print(f"expires_at: {issued.expires_at}")
-    print(
-        "Store these values now — the access and refresh tokens are not recoverable from the vault."
+        panel_items["refresh_token"] = issued.raw_refresh_token
+    kv_panel("token issued", panel_items, emoji=EMOJI["token"])
+    warn(
+        "store these values now — the raw tokens are not recoverable from the vault",
     )
     return 0
 
@@ -123,5 +139,5 @@ def _cmd_revoke(args: argparse.Namespace) -> int:
         )
     if not changed:
         return fail(f"token {args.token_id} is already revoked or does not exist")
-    print(f"revoked token {args.token_id}")
+    success(f"revoked token {args.token_id}", emoji=EMOJI["forget"])
     return 0

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import contextlib
 import os
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 
+from tessera.cli._ui import error as _ui_error
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import ProtectedKey, derive_key, load_salt
 
@@ -57,7 +57,13 @@ def open_vault(vault_path: Path, passphrase: bytearray) -> Iterator[VaultConnect
 
 
 def fail(message: str) -> int:
-    print(message, file=sys.stderr)
+    """Emit a red ✗ ERROR line to stderr and return exit code 1.
+
+    The literal ``ERROR`` token is preserved so ``grep`` scripts keep
+    working; the ✗ and colour layer on top for TTY readability.
+    """
+
+    _ui_error(message)
     return 1
 
 

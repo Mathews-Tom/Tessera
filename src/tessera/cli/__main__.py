@@ -44,7 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(handler(args))
     except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
+        from tessera.cli._ui import warn
+
+        warn("interrupted")
         return 130
 
 
