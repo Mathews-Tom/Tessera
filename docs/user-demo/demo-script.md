@@ -144,10 +144,20 @@ tessera daemon stop
 
 If any row fires, **stop recording and reset**. Do not ship a video with a recovery path visible — the real-user test then can't distinguish product issues from recording issues.
 
-## Teardown after recording
+## Teardown after recording (or before re-recording)
+
+The documented way to reset every artifact the demo creates — vault, salt sidecar, daemon runtime (pid / log / socket / events.db), and the per-client MCP config entries — is a single script:
 
 ```bash
-tessera daemon stop || true
-rm ~/.tessera/demo.db ~/.tessera/demo.db.salt
-unset TESSERA_PASSPHRASE
+scripts/demo_reset.sh
+# or, against a non-default vault path:
+scripts/demo_reset.sh ~/.tessera/other.db
+```
+
+The script is idempotent: running it twice is safe, running it against state where some artifacts are already absent is safe. It stops the daemon (if running), removes vault + salt + runtime files, and calls `tessera disconnect` for `claude-desktop`, `claude-code`, `cursor`, and `codex`. It leaves Ollama untouched (model stays pulled) and does not uninstall a persistent launchd/systemd unit (use `tessera daemon uninstall` separately).
+
+Afterwards, clear the shell env var yourself (the script cannot modify the parent shell):
+
+```bash
+unset TESSERA_PASSPHRASE TESSERA_TOKEN
 ```

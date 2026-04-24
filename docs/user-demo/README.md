@@ -14,6 +14,7 @@ Everything here is a **contract with a human operator**. The demo itself is a 10
 | I want to record my own walkthrough on macOS right now | [`demo-script.md`](demo-script.md) → then [`macos-recording-guide.md`](macos-recording-guide.md) |
 | I have a tester coming in and need to hand them a packet | [`tester-kit.md`](tester-kit.md) |
 | My recording session kept failing because of setup | Run `scripts/demo_smoke.sh` first; the script flags the environment issue in under 30 seconds |
+| My last demo run left artifacts and I want a clean slate | Run `scripts/demo_reset.sh` — stops daemon, removes vault + salt + runtime files, disconnects every v0.1 MCP client |
 | I want to understand the demo narrative before the session | [`demo-script.md`](demo-script.md) top section (the 60-second briefing) |
 
 ## The 30-second pre-flight
