@@ -52,6 +52,14 @@ _REFRESH_TTL_SECONDS: Final[dict[TokenClass, int]] = {
     "service": 7 * 24 * 60 * 60,
 }
 
+# Maximum access-token TTL exposed to the CLI via ``--token-ttl-days``.
+# 90 days balances "set and forget" ergonomics on a single-user demo
+# machine against the blast radius of a leaked token. Beyond this the
+# right answer is a refresh-rotation flow (v0.3+), not a longer
+# static TTL. Callers that try to exceed it get a ValueError before
+# any vault row is written.
+MAX_ACCESS_TTL_SECONDS: Final[int] = 90 * 24 * 60 * 60
+
 _TOKEN_PREFIX: Final[str] = "tessera"
 _TOKEN_BODY_BYTES: Final[int] = 15  # 120 bits → 24 base32 chars, no padding
 _TOKEN_BODY_CHARS: Final[int] = 24
@@ -135,6 +143,7 @@ def issue(
     scope: Scope,
     now_epoch: int,
     actor: str = "system",
+    access_ttl_seconds: int | None = None,
 ) -> IssuedToken:
     """Mint and persist a new capability pair.
 
@@ -143,12 +152,27 @@ def issue(
     hashes, and writes a ``token_issued`` audit row. Returns the raw
     strings exactly once — callers must hand them to the client and then
     drop the references.
+
+    ``access_ttl_seconds`` overrides the class-default TTL when the
+    caller needs a longer-lived token (demo-machine installs, service
+    accounts that tolerate longer blast radius). Must be positive and
+    at most :data:`MAX_ACCESS_TTL_SECONDS`. Passing ``None`` (default)
+    preserves existing behaviour — every pre-existing test that pins
+    the 30-min / 24-hr / 15-min defaults is unaffected.
     """
 
     if token_class not in _VALID_CLASSES:
         raise ValueError(f"unknown token class {token_class!r}")
+    ttl = access_ttl_seconds if access_ttl_seconds is not None else _ACCESS_TTL_SECONDS[token_class]
+    if ttl <= 0:
+        raise ValueError(f"access_ttl_seconds must be positive; got {ttl}")
+    if ttl > MAX_ACCESS_TTL_SECONDS:
+        raise ValueError(
+            f"access_ttl_seconds must be ≤ {MAX_ACCESS_TTL_SECONDS} "
+            f"({MAX_ACCESS_TTL_SECONDS // 86400} days); got {ttl}"
+        )
     raw_token, token_hash, salt = _mint(token_class)
-    access_expires = now_epoch + _ACCESS_TTL_SECONDS[token_class]
+    access_expires = now_epoch + ttl
     refresh_ttl = _REFRESH_TTL_SECONDS.get(token_class)
     if refresh_ttl is None:
         raw_refresh: str | None = None

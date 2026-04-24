@@ -135,11 +135,12 @@ def test_tokens_create_accepts_demo_script_flags(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Regression guard for the exact invocation documented in
-    # docs/user-demo/demo-script.md §Stage 0: --read-scope /
-    # --write-scope as comma-separated lists, no --agent-id (single
-    # default agent is auto-selected). Without this test the demo
-    # script can silently drift out of sync with the CLI surface.
+    # Regression guard for the invocation pattern the internal demo
+    # kit uses (lives in the gitignored .docs/user-demo/ path on the
+    # maintainer's machine, not tracked): --read-scope / --write-scope
+    # as comma-separated lists, no --agent-id (single default agent is
+    # auto-selected). Without this test the demo script can silently
+    # drift out of sync with the CLI surface.
     monkeypatch.setenv("TESSERA_PASSPHRASE", "demo")
     vault = short_tmp / "v.db"
     parser = _build_parser()
@@ -167,6 +168,104 @@ def test_tokens_create_accepts_demo_script_flags(
     assert rc == 0
     combined = capsys.readouterr().out + capsys.readouterr().err
     assert "tessera_session_" in combined
+
+
+@pytest.mark.integration
+def test_tokens_create_accepts_extended_ttl(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # --token-ttl-days extends the access-token TTL beyond the class
+    # default (24h for service). Regression guard for the "set and
+    # forget" demo-install flow: a 30-day TTL must reach the vault's
+    # capabilities.expires_at column intact.
+    import sqlcipher3
+
+    from tessera.vault.encryption import derive_key, load_salt
+
+    monkeypatch.setenv("TESSERA_PASSPHRASE", "demo")
+    vault = short_tmp / "v.db"
+    parser = _build_parser()
+    parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"]).handler(
+        parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"])
+    )
+    capsys.readouterr()
+    create_args = parser.parse_args(
+        [
+            "tokens",
+            "create",
+            "--vault",
+            str(vault),
+            "--client-name",
+            "demo",
+            "--token-class",
+            "service",
+            "--read",
+            "style",
+            "--token-ttl-days",
+            "30",
+        ]
+    )
+    import time as _time
+
+    before = int(_time.time())
+    rc = create_args.handler(create_args)
+    after = int(_time.time())
+    assert rc == 0
+    # Read the expires_at directly from the vault.
+    salt = load_salt(vault)
+    with derive_key(bytearray(b"demo"), salt) as key:
+        conn = sqlcipher3.connect(str(vault), isolation_level=None)
+        try:
+            conn.execute(f"PRAGMA key = {key.as_pragma_literal()}")
+            expires_at = int(
+                conn.execute("SELECT expires_at FROM capabilities LIMIT 1").fetchone()[0]
+            )
+        finally:
+            conn.close()
+    thirty_days = 30 * 24 * 60 * 60
+    # expires_at should land within the 30-day window, accounting for
+    # the few seconds of wall-clock drift the test took to execute.
+    assert before + thirty_days - 5 <= expires_at <= after + thirty_days + 5
+
+
+@pytest.mark.integration
+def test_tokens_create_rejects_ttl_above_cap(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # 91 days > MAX_ACCESS_TTL_SECONDS (90d). issue() raises; the CLI
+    # surfaces it as exit 1 with a readable ERROR line citing the cap.
+    monkeypatch.setenv("TESSERA_PASSPHRASE", "demo")
+    vault = short_tmp / "v.db"
+    parser = _build_parser()
+    parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"]).handler(
+        parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"])
+    )
+    capsys.readouterr()
+    create_args = parser.parse_args(
+        [
+            "tokens",
+            "create",
+            "--vault",
+            str(vault),
+            "--client-name",
+            "demo",
+            "--token-class",
+            "service",
+            "--read",
+            "style",
+            "--token-ttl-days",
+            "91",
+        ]
+    )
+    rc = create_args.handler(create_args)
+    assert rc == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "90" in combined  # the cap shows up in the error message
 
 
 @pytest.mark.integration

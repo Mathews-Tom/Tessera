@@ -25,6 +25,7 @@ from tessera.cli._common import (
     resolve_passphrase,
 )
 from tessera.cli._ui import EMOJI, info, kv_panel, status, success
+from tessera.cli.tokens_cmd import _resolve_ttl_seconds
 from tessera.connectors import (
     Connector,
     UnknownClientError,
@@ -70,6 +71,18 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         choices=["session", "service"],
         default="service",
         help="service tokens are multi-use and long-lived; session tokens expire quickly",
+    )
+    connect.add_argument(
+        "--token-ttl-days",
+        type=float,
+        default=None,
+        help=(
+            "override the class-default access-token TTL (capped at 90 days). "
+            "Use for demo installs that need 'set and forget' — with the "
+            "default service TTL of 24h, the client config needs to be "
+            "refreshed daily via another `tessera connect` run. Set to e.g. "
+            "30 for a month-long token."
+        ),
     )
     connect.add_argument(
         "--path",
@@ -202,6 +215,7 @@ def _connect_file_based(args: argparse.Namespace, connector: Connector) -> int:
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
+    access_ttl_seconds = _resolve_ttl_seconds(args.token_ttl_days)
     with status(f"minting token + writing {connector.display_name} config", emoji=EMOJI["connect"]):
         try:
             raw_token = _mint_token(
@@ -210,6 +224,7 @@ def _connect_file_based(args: argparse.Namespace, connector: Connector) -> int:
                 agent_id=args.agent_id,
                 client_id=connector.client_id,
                 token_class=args.token_class,
+                access_ttl_seconds=access_ttl_seconds,
             )
         except Exception as exc:
             return fail(f"token mint failed: {exc}")
@@ -259,8 +274,7 @@ def _connect_chatgpt(args: argparse.Namespace) -> int:
        equivalent for ChatGPT's HTTP side.
 
     All three close in v0.1.x. Until they do, the T-shape demo uses
-    **Claude Code** as the recall-side client — see
-    ``docs/user-demo/demo-script.md §Stage 4``.
+    **Claude Code** as the recall-side client.
 
     We still mint a token on the v0.1 invocation so the infrastructure
     is warmed up and the user has a token in hand for the day the
@@ -273,6 +287,7 @@ def _connect_chatgpt(args: argparse.Namespace) -> int:
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
+    access_ttl_seconds = _resolve_ttl_seconds(args.token_ttl_days)
     try:
         raw_token = _mint_token(
             vault=args.vault,
@@ -280,6 +295,7 @@ def _connect_chatgpt(args: argparse.Namespace) -> int:
             agent_id=args.agent_id,
             client_id="chatgpt",
             token_class=args.token_class,
+            access_ttl_seconds=access_ttl_seconds,
         )
     except Exception as exc:
         return fail(f"token mint failed: {exc}")
@@ -309,10 +325,7 @@ def _connect_chatgpt(args: argparse.Namespace) -> int:
         "Tessera's /mcp speaks a custom {method, args} envelope. Needs a "
         "server-side bridge equivalent to `tessera stdio`."
     )
-    info(
-        "For the v0.1 T-shape demo, use Claude Code as the recall-side client "
-        "instead (see `docs/user-demo/demo-script.md §Stage 4`)."
-    )
+    info("For the v0.1 T-shape demo, use Claude Code as the recall-side client instead.")
     return 0
 
 
@@ -323,12 +336,17 @@ def _mint_token(
     agent_id: int | None,
     client_id: str,
     token_class: str,
+    access_ttl_seconds: int | None = None,
 ) -> str:
     """Mint a capability token for ``client_id`` against the vault's agent.
 
     When ``agent_id`` is None, :func:`resolve_agent_id` auto-selects the
     sole agent in the vault. The resolution happens inside the vault
     unlock so the caller does not have to open the vault twice.
+
+    ``access_ttl_seconds`` overrides the token-class default TTL; pass
+    None to keep the class default. Validation lives inside
+    :func:`tokens.issue`, which caps at 90 days.
     """
 
     now_epoch = int(datetime.now(UTC).timestamp())
@@ -342,6 +360,7 @@ def _mint_token(
             token_class=token_class,  # type: ignore[arg-type]
             scope=scope,
             now_epoch=now_epoch,
+            access_ttl_seconds=access_ttl_seconds,
         )
     return issued.raw_token
 

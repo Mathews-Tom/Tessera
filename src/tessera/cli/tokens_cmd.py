@@ -77,6 +77,17 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         default=None,
         help="comma-separated facet_types for write scope (alternative to repeated --write)",
     )
+    create_p.add_argument(
+        "--token-ttl-days",
+        type=float,
+        default=None,
+        help=(
+            "override the class-default access-token TTL. Capped at 90 days. "
+            "Use for demo-machine installs that need 'set and forget' without "
+            "a daily rotation. Omit to use the class default "
+            "(session=30min, service=24h, subagent=15min)."
+        ),
+    )
     create_p.set_defaults(handler=_cmd_create)
 
     revoke_p = sub.add_parser("revoke", help="revoke a token by id")
@@ -132,19 +143,24 @@ def _cmd_create(args: argparse.Namespace) -> int:
     read_list = _merge_scope_args(args.read, args.read_scope)
     write_list = _merge_scope_args(args.write, args.write_scope)
     scope = build_scope(read=read_list, write=write_list)
+    access_ttl_seconds = _resolve_ttl_seconds(args.token_ttl_days)
     with open_vault(args.vault, passphrase) as vc:
         try:
             agent_id = resolve_agent_id(vc.connection, args.agent_id)
         except CliError as exc:
             return fail(str(exc))
-        issued = tokens.issue(
-            vc.connection,
-            agent_id=agent_id,
-            client_name=args.client_name,
-            token_class=args.token_class,
-            scope=scope,
-            now_epoch=now_epoch,
-        )
+        try:
+            issued = tokens.issue(
+                vc.connection,
+                agent_id=agent_id,
+                client_name=args.client_name,
+                token_class=args.token_class,
+                scope=scope,
+                now_epoch=now_epoch,
+                access_ttl_seconds=access_ttl_seconds,
+            )
+        except ValueError as exc:
+            return fail(str(exc))
     panel_items = {
         "token_id": str(issued.token_id),
         "access_token": issued.raw_token,
@@ -176,6 +192,20 @@ def _cmd_revoke(args: argparse.Namespace) -> int:
         return fail(f"token {args.token_id} is already revoked or does not exist")
     success(f"revoked token {args.token_id}", emoji=EMOJI["forget"])
     return 0
+
+
+def _resolve_ttl_seconds(ttl_days: float | None) -> int | None:
+    """Convert ``--token-ttl-days`` to seconds; None preserves the class default.
+
+    Accepts fractional days (``--token-ttl-days 0.5`` = 12 hours) so
+    operators have granularity without a second flag. Validation
+    (positive, ≤ 90 days) is re-run inside :func:`tokens.issue` so this
+    helper stays a pure unit converter.
+    """
+
+    if ttl_days is None:
+        return None
+    return int(ttl_days * 24 * 60 * 60)
 
 
 def _merge_scope_args(repeated: list[str], comma_separated: str | None) -> list[str]:

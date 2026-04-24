@@ -151,7 +151,7 @@ cat <<EOF
 
 Next steps:
   - Clear env vars in your shell:  unset TESSERA_PASSPHRASE TESSERA_TOKEN
-  - Re-run the demo from docs/user-demo/demo-script.md (Stage 0).
+  - Re-run the demo from the maintainer's internal demo-script (.docs/user-demo/).
 
 If you had installed a persistent daemon unit:
   - macOS:  launchctl bootout gui/\$(id -u)/com.tessera.tesserad 2>/dev/null
