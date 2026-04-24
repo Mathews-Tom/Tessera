@@ -239,28 +239,34 @@ def _connect_file_based(args: argparse.Namespace, connector: Connector) -> int:
 
 
 def _connect_chatgpt(args: argparse.Namespace) -> int:
-    """Print the two fields ChatGPT Developer Mode's "New App" dialog needs.
+    """Report that ChatGPT Developer Mode is a v0.1.x follow-up, with rationale.
 
-    Per https://developers.openai.com/api/docs/guides/developer-mode the
-    UI shape is:
+    Three stacked blockers surfaced when wiring the "New App (Beta)"
+    flow during P14 recording prep:
 
-      Name               — free-text (e.g. "Tessera")
-      MCP Server URL     — the Tessera daemon's /mcp endpoint
-      Authentication     — dropdown, pick "Bearer" and paste the token
+    1. **HTTPS required.** ChatGPT Developer Mode rejects
+       ``http://127.0.0.1:...`` URLs with "Unsafe URL". v0.1 does not
+       ship a TLS front for the local daemon.
+    2. **No Bearer auth mode.** The dialog's Authentication dropdown
+       offers only ``OAuth``, ``Mixed``, ``No Auth``. Tessera's
+       capability-token model is not OAuth; Bearer-in-URL is blocked
+       by the HTTPS check above.
+    3. **Protocol mismatch.** ChatGPT's MCP client speaks canonical
+       MCP JSON-RPC 2.0 (``initialize``, ``tools/list``, ``tools/call``).
+       Tessera's ``/mcp`` endpoint speaks a custom ``{"method": X,
+       "args": Y}`` envelope. The same gap ``tessera stdio`` closes
+       for Claude Desktop's stdio side needs a server-side
+       equivalent for ChatGPT's HTTP side.
 
-    The nonce-exchange flow this handler used to print (via the
-    daemon's /mcp/exchange endpoint) pre-dates ChatGPT's current UI
-    and is not consumable by "New App". Keep the exchange endpoint
-    on the daemon for programmatic flows; the CLI now prints the
-    explicit URL + Bearer token so the user can paste each into its
-    own field.
+    All three close in v0.1.x. Until they do, the T-shape demo uses
+    **Claude Code** as the recall-side client — see
+    ``docs/user-demo/demo-script.md §Stage 4``.
 
-    Known integration gap flagged in the demo script: ChatGPT's MCP
-    client will speak canonical MCP JSON-RPC 2.0 against the URL,
-    while Tessera's ``/mcp`` endpoint speaks a custom shape. Full
-    ChatGPT interop requires a server-side adaptation equivalent to
-    what ``tessera stdio`` does for Claude Desktop. Tracked as a
-    v0.1.x follow-up.
+    We still mint a token on the v0.1 invocation so the infrastructure
+    is warmed up and the user has a token in hand for the day the
+    integration lands. The token is printed alongside the paste-values
+    that *would* go into "New App" so a user retrying against a future
+    daemon that speaks proper MCP over HTTPS has everything ready.
     """
 
     try:
@@ -280,25 +286,32 @@ def _connect_chatgpt(args: argparse.Namespace) -> int:
 
     mcp_url = f"http://{DEFAULT_HTTP_HOST}:{DEFAULT_HTTP_PORT}/mcp"
     kv_panel(
-        "ChatGPT Developer Mode — paste into the New App dialog",
+        "ChatGPT Developer Mode — v0.1.x follow-up (values printed for future use)",
         {
             "Name": "Tessera",
             "MCP Server URL": mcp_url,
-            "Authentication": "Bearer",
             "Bearer token": raw_token,
+            "Status": "deferred to v0.1.x — see notes below",
         },
         emoji=EMOJI["connect"],
     )
+    info("ChatGPT Developer Mode is not yet consumable by Tessera v0.1. Three blockers:")
     info(
-        "ChatGPT → Settings → Developer Mode → New App → paste each value "
-        "into its field, tick the safety checkbox, Create."
+        "  1) HTTPS required — http://127.0.0.1:... rejected as 'Unsafe URL'. "
+        "Needs a TLS front (mkcert-backed local CA or a tunnel like ngrok)."
     )
     info(
-        "Protocol note: ChatGPT's MCP client speaks canonical MCP JSON-RPC 2.0. "
-        "Tessera's v0.1 /mcp endpoint speaks a custom shape — if ChatGPT reports "
-        "a connection / initialize failure, the integration gap is tracked as a "
-        "v0.1.x follow-up; the daemon needs a server-side bridge equivalent to "
-        "`tessera stdio` for the HTTP side."
+        "  2) No Bearer auth mode in the 'New App' dropdown (only OAuth / Mixed / "
+        "No Auth). Tessera's capability-token model is not OAuth."
+    )
+    info(
+        "  3) Protocol mismatch — ChatGPT speaks canonical MCP JSON-RPC 2.0; "
+        "Tessera's /mcp speaks a custom {method, args} envelope. Needs a "
+        "server-side bridge equivalent to `tessera stdio`."
+    )
+    info(
+        "For the v0.1 T-shape demo, use Claude Code as the recall-side client "
+        "instead (see `docs/user-demo/demo-script.md §Stage 4`)."
     )
     return 0
 

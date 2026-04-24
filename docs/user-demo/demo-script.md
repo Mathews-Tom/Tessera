@@ -14,7 +14,7 @@ Close every app that writes to `~/.tessera/` except the terminal you'll record. 
 
 ## The 60-second briefing (read on-camera first)
 
-> "Tessera is a portable context layer for T-shaped AI-native users. I'm going to capture four facets in Claude — my preferences, a workflow, a project note, a style sample — then open ChatGPT and have it draft a LinkedIn post using those captured facets as the context. The vault is on-disk, sqlcipher-encrypted, talks to both clients over MCP. All-local: no cloud keys, no telemetry. The whole thing should take under 10 minutes."
+> "Tessera is a portable context layer for T-shaped AI-native users. I'm going to capture four facets in Claude Desktop — my preferences, a workflow, a project note, a style sample — then switch to Claude Code and have it draft a LinkedIn post using those captured facets as the context. Two distinct client surfaces, one shared vault. The vault is on-disk, sqlcipher-encrypted, talks to every client over MCP. All-local: no cloud keys, no telemetry. The whole thing should take under 10 minutes."
 
 ## Time budget
 
@@ -24,8 +24,8 @@ Close every app that writes to `~/.tessera/` except the terminal you'll record. 
 | 1. Connect capture-side client | 1:00–1:30 | `tessera connect <client>` (any of claude-desktop, claude-code, cursor, codex), restart, verify MCP tool surface |
 | 2. Capture four facets in the client | 1:30–5:30 | Client conversation: four `capture` calls |
 | 3. Verify vault state | 5:30–6:00 | Client invokes the `list_facets` MCP tool, displays the four captured facets |
-| 4. ChatGPT connect | 6:00–7:00 | ChatGPT → Developer Mode → New App: Name / MCP Server URL / Authentication=Bearer / Bearer token |
-| 5. Cross-facet recall + draft | 7:00–9:30 | ChatGPT: `recall(facet_types=all)`, then a draft request |
+| 4. Recall-side client connect | 6:00–7:00 | `tessera connect claude-code` + confirm the Tessera MCP server appears. (ChatGPT Dev Mode deferred to v0.1.x — see Stage 4 notes.) |
+| 5. Cross-facet recall + draft | 7:00–9:30 | Second Claude client: `recall(facet_types=all)`, then a draft request |
 | 6. Close and verify | 9:30–10:00 | terminal: `tessera doctor`, `tessera daemon stop` |
 
 ## Stage 0 — Bootstrap (1 min)
@@ -66,7 +66,7 @@ tessera daemon status
 
 ## Stage 1 — Connect the capture-side client (30 sec)
 
-The recording uses **Claude Desktop** on the capture side, but any of the four file-based v0.1 connectors work: `claude-desktop`, `claude-code`, `cursor`, `codex`. Pick whichever matches your daily-driver AI tool. Pass multiple ids in one command to connect several at once, or use `all` as sugar for every file-based client (ChatGPT is separate because it uses the Developer Mode "New App" paste flow covered in Stage 4):
+The recording uses **Claude Desktop** on the capture side, but any of the four file-based v0.1 connectors work: `claude-desktop`, `claude-code`, `cursor`, `codex`. Pick whichever matches your daily-driver AI tool. Pass multiple ids in one command to connect several at once, or use `all` as sugar for every file-based client (ChatGPT Dev Mode is deferred to v0.1.x — see Stage 4 "Why not ChatGPT Developer Mode for v0.1"):
 
 ```bash
 # Connect only the client you'll capture from on camera.
@@ -113,41 +113,46 @@ The tool returns a structured list of the four captured facets. This is the evid
 
 **Pass gate:** all four facets listed with their external-IDs (via the MCP tool output or the terminal variant).
 
-## Stage 4 — ChatGPT Developer Mode connect (1 min)
+## Stage 4 — Connect the recall-side client (1 min)
 
-Follow [OpenAI's Developer Mode guide](https://developers.openai.com/api/docs/guides/developer-mode). The "New App (Beta)" dialog takes four fields; `tessera connect chatgpt` prints exactly the values to paste into each.
+The demo needs **two distinct AI clients** sharing one vault — that's the cross-tool narrative. Stage 1 wired the capture-side client (Claude Desktop in the recording). Stage 4 wires a second, distinct client that will run the `recall` in Stage 5.
+
+**Recording default: Claude Code.** Claude Desktop captures; Claude Code recalls and drafts in the user's voice. Two Anthropic UIs, one underlying model family, one vault — the cleanest "portable context" demonstration and what the v0.1 `tessera stdio` bridge supports end-to-end.
 
 ```bash
-tessera connect chatgpt --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
-# prints a kv-panel with:
-#   Name            Tessera
-#   MCP Server URL  http://127.0.0.1:5710/mcp
-#   Authentication  Bearer
-#   Bearer token    tessera_service_...
+tessera connect claude-code --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
 ```
 
-On-camera action:
+On-camera action: open the `claude` CLI (or your Claude Code IDE extension). Verify the `tessera` MCP server shows up via `/mcp` in the CLI, or in the tool palette in the IDE. Expect the same six tools (`capture`, `recall`, `show`, `list_facets`, `stats`, `forget`).
 
-1. ChatGPT → **Settings** → **Developer Mode** → **New App**.
-2. Paste the four values from the panel into their matching fields. `Name` is free-text; `MCP Server URL` and `Bearer token` come verbatim; `Authentication` dropdown → select `Bearer`.
-3. Tick "**I understand and want to continue**" (OpenAI's safety warning is boilerplate for custom MCP servers).
-4. Click **Create**.
+**Pass gate:** Claude Code recognises the Tessera server and exposes the six tools.
 
-**Pass gate:** ChatGPT shows `capture`, `recall`, `show`, `list_facets`, `stats`, `forget` under the `Tessera` app in the tool-picker sidebar.
+### Why not ChatGPT Developer Mode for v0.1
 
-**⚠ Known integration gap to watch for.** ChatGPT's MCP client speaks canonical MCP JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`). Tessera's `/mcp` endpoint currently speaks a custom `{"method": X, "args": Y}` shape — the same protocol gap that hit Claude Desktop and that `tessera stdio` solves for the stdio side. If ChatGPT reports a connection error or the tools do not appear, the HTTP-side bridge is the v0.1.x follow-up that closes this. Flag the gap in the recording notes rather than ship a broken take.
+ChatGPT Developer Mode's "New App (Beta)" dialog imposes three constraints that v0.1 doesn't satisfy:
+
+1. **HTTPS-only.** `http://127.0.0.1:5710/mcp` is rejected as "Unsafe URL". Workaround requires a TLS termination (mkcert-signed local CA or a tunnel like ngrok).
+2. **No Bearer auth mode** — the dropdown offers only `OAuth`, `Mixed`, `No Auth`. Tessera's capability-token model is not OAuth.
+3. **Protocol mismatch.** ChatGPT's MCP client speaks canonical MCP JSON-RPC 2.0; Tessera's `/mcp` endpoint speaks a custom `{"method": X, "args": Y}` envelope (the same gap `tessera stdio` solves for stdio on the Claude Desktop side).
+
+Closing all three is v0.1.x scope:
+- HTTPS via a first-party local TLS setup or documented ngrok recipe.
+- URL-embedded token support or a dedicated OAuth surface on the daemon.
+- Server-side HTTP bridge equivalent to `tessera stdio`.
+
+The `tessera connect chatgpt` command still exists and prints a clear "requires v0.1.x" notice with the individual paste-values for the day the integration lands. For v0.1 recording sessions, stay on Claude Code.
 
 ## Stage 5 — Cross-facet recall + draft (2.5 min)
 
-Read to ChatGPT:
+Read to Claude Code (or whichever second client you connected in Stage 4):
 
 > "Call the Tessera `recall` tool with `facet_types=all` and the query 'LinkedIn post about v0.1 shipping with measured latency numbers'. Then draft a LinkedIn post for me using what you got back."
 
 Watch the tool-call panel:
 - `recall` returns a bundle with at least one facet from each of `preference`, `workflow`, `project`, `style`.
-- ChatGPT's draft should reflect the **preference** (terse, no hedging, no emoji), the **project** (v0.1 shipping), and the **style** (numeric-first, structural diagnosis).
+- The draft should reflect the **preference** (terse, no hedging, no emoji), the **project** (v0.1 shipping), and the **style** (numeric-first, structural diagnosis).
 
-**Pass gate:** a single LinkedIn post ChatGPT wrote that a reader could mistake for Tom's own voice. This is the moment the demo is trying to produce. If the draft is generic or hedge-heavy, SWCR lost the coherence bundle — stop and capture the observed bundle for debugging.
+**Pass gate:** a single LinkedIn post the second client wrote that a reader could mistake for Tom's own voice. This is the moment the demo is trying to produce. If the draft is generic or hedge-heavy, SWCR lost the coherence bundle — stop and capture the observed bundle for debugging.
 
 ## Stage 6 — Close and verify (30 sec)
 
@@ -165,7 +170,7 @@ tessera daemon stop
 | `daemon status` shows empty `vault_id` | Warm-up failed | `tail ~/.tessera/run/tesserad.log`; common: missing nomic-embed-text → `ollama pull nomic-embed-text` |
 | Claude doesn't see Tessera tools | Claude cached old config | `tessera disconnect claude-desktop`, then `tessera connect claude-desktop`, full restart |
 | `recall` returns empty result set | No facets captured yet, or active model mismatch | Ask the client to call the `list_facets` MCP tool — if empty, loop back to Stage 2. (There is no `tessera list_facets` CLI subcommand; the verb only exists as an MCP tool.) |
-| ChatGPT MCP panel says "can't reach server" | Token TTL expired, or protocol gap (ChatGPT speaks canonical MCP JSON-RPC 2.0; Tessera's `/mcp` speaks custom shape) | Re-run `tessera connect chatgpt` to mint a fresh token. If the fresh token still fails, the server-side HTTP bridge is a v0.1.x follow-up — flag and continue to terminal-side verification instead. |
+| ChatGPT Developer Mode rejects the URL ("Unsafe URL") or the auth dropdown has no Bearer option | Three stacked blockers: ChatGPT requires HTTPS, offers only OAuth/Mixed/No-Auth modes (no Bearer), and speaks canonical MCP JSON-RPC 2.0 against a server that speaks Tessera's custom envelope | All three are v0.1.x. For the v0.1 recording, use **Claude Code** as the recall-side client (Stage 4 default). |
 | p99 spike > 3 s on a `recall` | Ollama cold-reload | Wait 30 s and re-run — `keep_alive=-1` should prevent repeat |
 
 If any row fires, **stop recording and reset**. Do not ship a video with a recovery path visible — the real-user test then can't distinguish product issues from recording issues.
