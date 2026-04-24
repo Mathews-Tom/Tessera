@@ -1,0 +1,76 @@
+name: Security audit
+
+# Scheduled dependency vulnerability scan. Runs outside the PR-gating
+# CI so a newly-disclosed CVE can't strand an unrelated PR: this
+# workflow flags vulnerabilities to the maintainer via GitHub's
+# built-in failed-workflow notification, and fixes land as their own
+# PRs on the normal PR-gating CI path.
+#
+# Per docs/security-standards.md §Dependency scanning:
+#   Maximum 7-day SLA to patch critical vulnerabilities, 30-day for high.
+#
+# Per docs/v0.1-dod-audit.md §Follow-ups: "pip-audit on a weekly CI cron".
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC. Chosen so a Monday-morning vuln
+    # disclosure doesn't sit in the queue all week.
+    - cron: "0 8 * * 1"
+  workflow_dispatch: {}
+  # Also run on push to this workflow file so edits get validated
+  # without waiting for the schedule to fire.
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/security.yml"
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_CACHE_DIR: /tmp/.uv-cache
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  pip-audit:
+    name: pip-audit (runtime deps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen
+      - name: Export runtime requirements from uv.lock
+        # --no-dev drops the dev-group entries; --no-emit-project drops
+        # the tessera-context source install entry (pip-audit can't
+        # resolve an editable install from a bare requirements line).
+        # The remaining lines are the transitive runtime dep graph that
+        # ships to PyPI and end-user vaults.
+        run: uv export --frozen --no-dev --no-emit-project --format requirements-txt > requirements-runtime.txt
+      - name: Audit runtime requirements
+        # --disable-pip tells pip-audit to resolve via resolvelib
+        # instead of bootstrapping a sub-venv with ensurepip; uv's
+        # managed Python distributions ship without a functioning
+        # ensurepip, which would otherwise crash pip-audit on its
+        # sub-venv creation step.
+        #
+        # Non-zero exit on any vulnerability in the runtime graph —
+        # these are the deps that end up installed with
+        # `pip install tessera-context`, so a vulnerability here is
+        # the maintainer's SLA. pip-audit queries the PyPI advisory
+        # database (OSV mirror) and returns PYSEC / CVE entries.
+        run: uvx pip-audit --requirement requirements-runtime.txt --disable-pip
+      - name: Export full dep graph (runtime + dev)
+        run: uv export --frozen --no-emit-project --format requirements-txt > requirements-all.txt
+      - name: Audit full dep graph (continue-on-error)
+        # Dev deps (mypy, ruff, pytest, coverage) ship only to
+        # contributor machines and CI. A vuln here warrants a bump
+        # but is not user-facing, so it reports without blocking the
+        # workflow status.
+        continue-on-error: true
+        run: uvx pip-audit --requirement requirements-all.txt --disable-pip
