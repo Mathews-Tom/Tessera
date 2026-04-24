@@ -170,6 +170,82 @@ def test_tokens_create_accepts_demo_script_flags(
 
 
 @pytest.mark.integration
+def test_connect_auto_selects_single_agent(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Regression guard for the demo-script invocation:
+    #   tessera connect claude-desktop --vault X --passphrase Y
+    # (no --agent-id). The handler must auto-select the sole agent
+    # that `tessera init` created, mint the token, and write the
+    # client config at --path.
+    monkeypatch.setenv("TESSERA_PASSPHRASE", "demo")
+    vault = short_tmp / "v.db"
+    config_path = short_tmp / "claude_desktop_config.json"
+    parser = _build_parser()
+    parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"]).handler(
+        parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"])
+    )
+    capsys.readouterr()
+    connect_args = parser.parse_args(
+        [
+            "connect",
+            "claude-desktop",
+            "--vault",
+            str(vault),
+            "--path",
+            str(config_path),
+        ]
+    )
+    rc = connect_args.handler(connect_args)
+    assert rc == 0
+    assert config_path.is_file()
+    # The config file should now contain a Tessera MCP entry.
+    assert "tessera" in config_path.read_text()
+
+
+@pytest.mark.integration
+def test_connect_fails_loud_with_multiple_agents(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # --agent-id auto-select on `tessera connect` must refuse to guess
+    # when the vault holds more than one agent, same contract as
+    # `tessera tokens create`.
+    monkeypatch.setenv("TESSERA_PASSPHRASE", "demo")
+    vault = short_tmp / "v.db"
+    config_path = short_tmp / "claude_desktop_config.json"
+    parser = _build_parser()
+    parser.parse_args(["init", "--vault", str(vault), "--agent-name", "first"]).handler(
+        parser.parse_args(["init", "--vault", str(vault), "--agent-name", "first"])
+    )
+    capsys.readouterr()
+    parser.parse_args(["agents", "create", "--vault", str(vault), "--name", "second"]).handler(
+        parser.parse_args(["agents", "create", "--vault", str(vault), "--name", "second"])
+    )
+    capsys.readouterr()
+    connect_args = parser.parse_args(
+        [
+            "connect",
+            "claude-desktop",
+            "--vault",
+            str(vault),
+            "--path",
+            str(config_path),
+        ]
+    )
+    rc = connect_args.handler(connect_args)
+    assert rc == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "2 agents" in combined
+    assert "--agent-id" in combined
+    assert not config_path.exists()
+
+
+@pytest.mark.integration
 def test_tokens_create_fails_loud_with_multiple_agents(
     short_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -6,11 +6,15 @@ import argparse
 from datetime import UTC, datetime
 from pathlib import Path
 
-import sqlcipher3
-
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope
-from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._common import (
+    CliError,
+    fail,
+    open_vault,
+    resolve_agent_id,
+    resolve_passphrase,
+)
 from tessera.cli._ui import EMOJI, console, kv_panel, report_table, success, warn
 
 
@@ -130,7 +134,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
     scope = build_scope(read=read_list, write=write_list)
     with open_vault(args.vault, passphrase) as vc:
         try:
-            agent_id = _resolve_agent_id(vc.connection, args.agent_id)
+            agent_id = resolve_agent_id(vc.connection, args.agent_id)
         except CliError as exc:
             return fail(str(exc))
         issued = tokens.issue(
@@ -190,26 +194,6 @@ def _merge_scope_args(repeated: list[str], comma_separated: str | None) -> list[
     return merged
 
 
-def _resolve_agent_id(conn: sqlcipher3.Connection, explicit: int | None) -> int:
-    """Pick the target agent id for token issuance.
-
-    When ``explicit`` is given (``--agent-id N`` on the CLI), trust it
-    — issuing against a non-existent agent_id fails the foreign-key
-    constraint in :func:`tessera.auth.tokens.issue` loudly anyway, so
-    the handler does not need to re-validate here.
-
-    When ``explicit`` is None, auto-select the single agent in the
-    vault. This is the common case after ``tessera init`` creates its
-    one default agent. Fail loud on zero or more-than-one agents, so
-    the operator knows why the default is ambiguous.
-    """
-
-    if explicit is not None:
-        return explicit
-    rows = conn.execute("SELECT id FROM agents ORDER BY id").fetchall()
-    if not rows:
-        raise CliError("vault has no agents; run `tessera agents create --vault X --name Y` first")
-    if len(rows) > 1:
-        ids = ", ".join(str(r[0]) for r in rows)
-        raise CliError(f"vault has {len(rows)} agents ({ids}); pass --agent-id to pick one")
-    return int(rows[0][0])
+# ``resolve_agent_id`` lives in tessera.cli._common now so `tessera
+# connect` shares the same "one agent = auto-select, many =
+# disambiguate" contract.

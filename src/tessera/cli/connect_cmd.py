@@ -18,7 +18,13 @@ from pathlib import Path
 
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope
-from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._common import (
+    CliError,
+    fail,
+    open_vault,
+    resolve_agent_id,
+    resolve_passphrase,
+)
 from tessera.cli._ui import EMOJI, info, kv_panel, status, success
 from tessera.connectors import (
     Connector,
@@ -45,7 +51,17 @@ _DEFAULT_WRITE = ("preference", "workflow", "project", "style")
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
     connect = subparsers.add_parser("connect", help="connect an MCP client to the running tesserad")
     _add_common_args(connect)
-    connect.add_argument("--agent-id", type=int, required=True)
+    # --agent-id is optional. When omitted, the handler auto-selects
+    # the single agent in the vault (the common case after
+    # ``tessera init`` creates exactly one default agent). Fails loud
+    # on zero or >1 agents so the operator knows why the default is
+    # ambiguous. Matches the contract ``tessera tokens create`` uses.
+    connect.add_argument(
+        "--agent-id",
+        type=int,
+        default=None,
+        help="agent id; defaults to the sole agent when the vault has exactly one",
+    )
     connect.add_argument(
         "--url",
         default=f"http://{DEFAULT_HTTP_HOST}:{DEFAULT_HTTP_PORT}/mcp",
@@ -223,16 +239,24 @@ def _mint_token(
     *,
     vault: Path,
     passphrase: bytearray,
-    agent_id: int,
+    agent_id: int | None,
     client_id: str,
     token_class: str,
 ) -> str:
+    """Mint a capability token for ``client_id`` against the vault's agent.
+
+    When ``agent_id`` is None, :func:`resolve_agent_id` auto-selects the
+    sole agent in the vault. The resolution happens inside the vault
+    unlock so the caller does not have to open the vault twice.
+    """
+
     now_epoch = int(datetime.now(UTC).timestamp())
     scope = build_scope(read=list(_DEFAULT_READ), write=list(_DEFAULT_WRITE))
     with open_vault(vault, passphrase) as vc:
+        resolved_agent_id = resolve_agent_id(vc.connection, agent_id)
         issued = tokens.issue(
             vc.connection,
-            agent_id=agent_id,
+            agent_id=resolved_agent_id,
             client_name=client_id,
             token_class=token_class,  # type: ignore[arg-type]
             scope=scope,
