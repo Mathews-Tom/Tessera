@@ -95,7 +95,7 @@ async def _do_recall(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, A
     resp = await mcp.recall(
         tctx,
         query_text=_require_str(args, "query_text"),
-        k=_require_int(args, "k"),
+        k=_optional_int(args, "k", default=10),
         facet_types=tuple(facet_types) if isinstance(facet_types, list) else None,
         requested_budget_tokens=args.get("requested_budget_tokens"),
     )
@@ -190,6 +190,12 @@ def _require_int(args: dict[str, Any], key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise mcp.ValidationError(f"{key} must be an integer")
     return value
+
+
+def _optional_int(args: dict[str, Any], key: str, *, default: int) -> int:
+    if key not in args:
+        return default
+    return _require_int(args, key)
 
 
 def _match_to_json(m: mcp.RecallMatchView) -> dict[str, Any]:

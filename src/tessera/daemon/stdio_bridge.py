@@ -17,10 +17,9 @@ This bridge does two things:
    Tessera-native envelope, then wraps the response back into MCP
    ``TextContent``.
 
-The tool surface is hardcoded because Tessera's v0.1 MCP surface is a
-closed six-tool set and Claude Desktop needs the schemas at bridge
-startup. When a v0.3+ expansion adds tools, the catalogue in
-:data:`_TOOLS` grows in step.
+The tool surface is generated from
+``tessera.mcp_surface.tools.MCP_TOOL_CONTRACTS`` so Claude Desktop's
+startup schema and the daemon's validation contract stay in sync.
 
 Environment variables:
 - ``TESSERA_STDIO_BRIDGE_DEBUG=1`` — print full traceback to stderr
@@ -41,93 +40,15 @@ from mcp.server.lowlevel.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-# The v0.1 tool catalogue. Schemas are intentionally permissive
-# (``"type": "object"``) because argument validation happens at the
-# daemon's tool dispatch layer — the bridge's job is translation, not
-# schema enforcement. Descriptions mirror the user-facing MCP tool
-# help so Claude Desktop's tool picker renders useful hovers.
-_TOOLS: tuple[Tool, ...] = (
+from tessera.mcp_surface.tools import MCP_TOOL_CONTRACTS
+
+_TOOLS: tuple[Tool, ...] = tuple(
     Tool(
-        name="capture",
-        description=(
-            "Capture a new facet into the vault. Required args: "
-            "content (string), facet_type (identity|preference|workflow|"
-            "project|style). Optional: source_tool (string)."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "content": {"type": "string"},
-                "facet_type": {
-                    "type": "string",
-                    "enum": ["identity", "preference", "workflow", "project", "style"],
-                },
-                "source_tool": {"type": "string"},
-            },
-            "required": ["content", "facet_type"],
-        },
-    ),
-    Tool(
-        name="recall",
-        description=(
-            "Hybrid recall over the vault. Required: query_text (string). "
-            "Optional: k (int, default 10), facet_types (array of facet_type)."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "query_text": {"type": "string"},
-                "k": {"type": "integer", "minimum": 1, "maximum": 100},
-                "facet_types": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-            },
-            "required": ["query_text"],
-        },
-    ),
-    Tool(
-        name="show",
-        description="Return a single facet by external_id.",
-        inputSchema={
-            "type": "object",
-            "properties": {"external_id": {"type": "string"}},
-            "required": ["external_id"],
-        },
-    ),
-    Tool(
-        name="list_facets",
-        description=(
-            "List facets by type with simple filters. Optional args: facet_type, agent_id, limit."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "facet_type": {"type": "string"},
-                "agent_id": {"type": "integer"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
-            },
-        },
-    ),
-    Tool(
-        name="stats",
-        description="Return vault statistics (facet counts by type, etc).",
-        inputSchema={"type": "object", "properties": {}},
-    ),
-    Tool(
-        name="forget",
-        description=(
-            "Soft-delete a facet by external_id. Required: external_id. Optional: reason (string)."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "external_id": {"type": "string"},
-                "reason": {"type": "string"},
-            },
-            "required": ["external_id"],
-        },
-    ),
+        name=contract.name,
+        description=contract.description,
+        inputSchema=contract.input_schema,
+    )
+    for contract in MCP_TOOL_CONTRACTS
 )
 
 
@@ -148,7 +69,12 @@ async def _call_tessera(
     if not isinstance(body, dict):
         raise RuntimeError(f"daemon returned non-object body: {body!r}")
     if not body.get("ok"):
-        raise RuntimeError(body.get("error") or "daemon returned error without detail")
+        error = body.get("error")
+        if isinstance(error, dict):
+            code = error.get("code", "unknown")
+            message = error.get("message", "")
+            raise RuntimeError(f"{code}: {message}".rstrip())
+        raise RuntimeError(error or "daemon returned error without detail")
     result = body.get("result", {})
     if not isinstance(result, dict):
         raise RuntimeError(f"daemon returned non-object result: {result!r}")

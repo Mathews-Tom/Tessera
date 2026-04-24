@@ -156,6 +156,17 @@ async def test_dispatch_recall(open_vault: VaultConnection, vault_path: Path) ->
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_dispatch_recall_uses_contract_default_k(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, verified = await _bootstrap(open_vault, vault_path)
+    result = await dispatch_tool_call(state, verified, "recall", {"query_text": "voice"})
+    assert "matches" in result
+    assert len(result["matches"]) <= 10
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_dispatch_recall_with_facet_types_list(
     open_vault: VaultConnection, vault_path: Path
 ) -> None:
