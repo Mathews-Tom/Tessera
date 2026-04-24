@@ -46,10 +46,17 @@ tessera tokens create \
     --client-name demo --token-class session \
     --read-scope identity,preference,workflow,project,style \
     --write-scope identity,preference,workflow,project,style
-# Copy the printed raw token; you'll paste it into Claude Desktop's config.
+# --agent-id is auto-selected because `tessera init` created exactly
+# one default agent. If the vault has >1 agents, add `--agent-id N`.
+# Copy the printed access_token value; you'll paste it into Claude's config.
 
-# 4. Start the daemon.
-tessera daemon start --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
+# 4. Start the daemon in the foreground (open a second terminal tab, or
+# background with `&` if you want to keep this one free). For a hands-off
+# persistent daemon use `tessera daemon install` instead (launchd on
+# macOS, systemd --user on Linux) — but that's for after the demo.
+tessera daemon start-fg --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE" &
+# Once you see the "daemon_warmed" audit line in stderr, the daemon is
+# ready. Verify via:
 tessera daemon status
 # Expect: vault_id=<ulid>  active_model_id=1  schema_version=2
 ```

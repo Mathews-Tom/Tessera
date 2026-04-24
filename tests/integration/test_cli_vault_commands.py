@@ -130,6 +130,86 @@ def test_tokens_create_list_revoke_round_trip(
 
 
 @pytest.mark.integration
+def test_tokens_create_accepts_demo_script_flags(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Regression guard for the exact invocation documented in
+    # docs/user-demo/demo-script.md §Stage 0: --read-scope /
+    # --write-scope as comma-separated lists, no --agent-id (single
+    # default agent is auto-selected). Without this test the demo
+    # script can silently drift out of sync with the CLI surface.
+    monkeypatch.setenv("TESSERA_PASSPHRASE", "demo")
+    vault = short_tmp / "v.db"
+    parser = _build_parser()
+    parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"]).handler(
+        parser.parse_args(["init", "--vault", str(vault), "--agent-name", "default"])
+    )
+    capsys.readouterr()
+    create_args = parser.parse_args(
+        [
+            "tokens",
+            "create",
+            "--vault",
+            str(vault),
+            "--client-name",
+            "demo",
+            "--token-class",
+            "session",
+            "--read-scope",
+            "identity,preference,workflow,project,style",
+            "--write-scope",
+            "identity,preference,workflow,project,style",
+        ]
+    )
+    rc = create_args.handler(create_args)
+    assert rc == 0
+    combined = capsys.readouterr().out + capsys.readouterr().err
+    assert "tessera_session_" in combined
+
+
+@pytest.mark.integration
+def test_tokens_create_fails_loud_with_multiple_agents(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # --agent-id auto-select refuses to guess when the vault holds more
+    # than one agent. The error message must surface the agent ids so
+    # the operator can pick one explicitly.
+    monkeypatch.setenv("TESSERA_PASSPHRASE", "demo")
+    vault = short_tmp / "v.db"
+    parser = _build_parser()
+    parser.parse_args(["init", "--vault", str(vault), "--agent-name", "first"]).handler(
+        parser.parse_args(["init", "--vault", str(vault), "--agent-name", "first"])
+    )
+    capsys.readouterr()
+    parser.parse_args(["agents", "create", "--vault", str(vault), "--name", "second"]).handler(
+        parser.parse_args(["agents", "create", "--vault", str(vault), "--name", "second"])
+    )
+    capsys.readouterr()
+    create_args = parser.parse_args(
+        [
+            "tokens",
+            "create",
+            "--vault",
+            str(vault),
+            "--client-name",
+            "demo",
+            "--read",
+            "style",
+        ]
+    )
+    rc = create_args.handler(create_args)
+    assert rc == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "2 agents" in combined
+    assert "--agent-id" in combined
+
+
+@pytest.mark.integration
 def test_doctor_runs_without_vault(
     short_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -6,6 +6,8 @@ import argparse
 from datetime import UTC, datetime
 from pathlib import Path
 
+import sqlcipher3
+
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope
 from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
@@ -29,24 +31,47 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         "create", help="issue a new token (access + refresh for session/service)"
     )
     _add_vault_args(create_p)
-    create_p.add_argument("--agent-id", type=int, required=True)
+    # --agent-id is optional. When omitted, the handler auto-selects the
+    # single agent in the vault (the common case after `tessera init`,
+    # which creates exactly one default agent). When the vault has zero
+    # or >1 agents, the handler fails loud.
+    create_p.add_argument(
+        "--agent-id",
+        type=int,
+        default=None,
+        help="agent id; defaults to the sole agent when the vault has exactly one",
+    )
     create_p.add_argument("--client-name", required=True)
     create_p.add_argument(
         "--token-class",
         choices=["session", "service", "subagent"],
         default="session",
     )
+    # Two parallel syntaxes for scope specification:
+    #   --read X --read Y           (repeatable; backwards-compatible)
+    #   --read-scope X,Y            (comma-separated; what the demo script uses)
+    # Both forms feed into the same scope object; the handler concatenates.
     create_p.add_argument(
         "--read",
         action="append",
         default=[],
-        help="facet_type grantable for read; repeat or pass * for all",
+        help="facet_type grantable for read; repeat flag or pass * for all",
     )
     create_p.add_argument(
         "--write",
         action="append",
         default=[],
-        help="facet_type grantable for write; repeat or pass * for all",
+        help="facet_type grantable for write; repeat flag or pass * for all",
+    )
+    create_p.add_argument(
+        "--read-scope",
+        default=None,
+        help="comma-separated facet_types for read scope (alternative to repeated --read)",
+    )
+    create_p.add_argument(
+        "--write-scope",
+        default=None,
+        help="comma-separated facet_types for write scope (alternative to repeated --write)",
     )
     create_p.set_defaults(handler=_cmd_create)
 
@@ -100,11 +125,17 @@ def _cmd_create(args: argparse.Namespace) -> int:
     except CliError as exc:
         return fail(str(exc))
     now_epoch = int(datetime.now(UTC).timestamp())
-    scope = build_scope(read=args.read or [], write=args.write or [])
+    read_list = _merge_scope_args(args.read, args.read_scope)
+    write_list = _merge_scope_args(args.write, args.write_scope)
+    scope = build_scope(read=read_list, write=write_list)
     with open_vault(args.vault, passphrase) as vc:
+        try:
+            agent_id = _resolve_agent_id(vc.connection, args.agent_id)
+        except CliError as exc:
+            return fail(str(exc))
         issued = tokens.issue(
             vc.connection,
-            agent_id=args.agent_id,
+            agent_id=agent_id,
             client_name=args.client_name,
             token_class=args.token_class,
             scope=scope,
@@ -141,3 +172,44 @@ def _cmd_revoke(args: argparse.Namespace) -> int:
         return fail(f"token {args.token_id} is already revoked or does not exist")
     success(f"revoked token {args.token_id}", emoji=EMOJI["forget"])
     return 0
+
+
+def _merge_scope_args(repeated: list[str], comma_separated: str | None) -> list[str]:
+    """Merge the two scope-specification forms into one list.
+
+    The CLI accepts ``--read X --read Y`` (repeatable) and
+    ``--read-scope X,Y`` (comma-separated) as equivalents; this helper
+    accepts both and concatenates. Leading/trailing whitespace inside
+    the comma-separated form is trimmed. Empty entries are dropped so
+    ``--read-scope ""`` does not silently grant empty scope.
+    """
+
+    merged: list[str] = list(repeated or [])
+    if comma_separated:
+        merged.extend(item.strip() for item in comma_separated.split(",") if item.strip())
+    return merged
+
+
+def _resolve_agent_id(conn: sqlcipher3.Connection, explicit: int | None) -> int:
+    """Pick the target agent id for token issuance.
+
+    When ``explicit`` is given (``--agent-id N`` on the CLI), trust it
+    — issuing against a non-existent agent_id fails the foreign-key
+    constraint in :func:`tessera.auth.tokens.issue` loudly anyway, so
+    the handler does not need to re-validate here.
+
+    When ``explicit`` is None, auto-select the single agent in the
+    vault. This is the common case after ``tessera init`` creates its
+    one default agent. Fail loud on zero or more-than-one agents, so
+    the operator knows why the default is ambiguous.
+    """
+
+    if explicit is not None:
+        return explicit
+    rows = conn.execute("SELECT id FROM agents ORDER BY id").fetchall()
+    if not rows:
+        raise CliError("vault has no agents; run `tessera agents create --vault X --name Y` first")
+    if len(rows) > 1:
+        ids = ", ".join(str(r[0]) for r in rows)
+        raise CliError(f"vault has {len(rows)} agents ({ids}); pass --agent-id to pick one")
+    return int(rows[0][0])
