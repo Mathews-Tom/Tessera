@@ -117,33 +117,47 @@ def build_server_entry(server: McpServerSpec) -> Mapping[str, object]:
     }
 
 
-def build_stdio_via_mcp_remote_entry(server: McpServerSpec) -> Mapping[str, object]:
-    """Return a stdio entry that bridges an HTTP MCP server via ``mcp-remote``.
+def build_stdio_via_tessera_bridge_entry(server: McpServerSpec) -> Mapping[str, object]:
+    """Return a stdio entry that bridges via Tessera's built-in ``stdio`` command.
 
-    Claude Desktop's MCP loader supports stdio transport only. To
-    connect an HTTP MCP server you invoke ``mcp-remote`` (the canonical
-    Node.js stdio↔HTTP bridge published at
-    https://github.com/geelen/mcp-remote) via ``npx``. The bridge
-    itself speaks stdio on one side and tunnels every request to the
-    configured HTTP URL on the other, applying the ``Authorization``
-    header on each request.
+    Claude Desktop's MCP loader supports stdio transport only. Tessera
+    ships a first-party stdio ↔ HTTP bridge (``tessera stdio --url X
+    --token Y``) that does exactly this translation. It replaces the
+    earlier ``mcp-remote`` approach because current mcp-remote
+    versions enforce OAuth 2.0 dynamic client registration before a
+    Bearer token is accepted — Tessera's capability-token model is
+    not OAuth, so mcp-remote's registration attempt 500s against the
+    daemon. Adding OAuth to the daemon is v0.3+ scope.
 
-    Requires Node.js / ``npx`` on the user's ``PATH``. The alternative
-    is shipping a compiled native bridge binary, which complicates the
-    install surface without meaningful benefit for the v0.1 audience
-    (T-shaped engineers who almost always have Node installed).
+    The invocation uses ``sys.executable -m tessera.cli`` rather than
+    the ``tessera`` script shim because Claude Desktop's spawn
+    environment does not inherit the user's shell ``PATH``. Resolving
+    the Python interpreter via :data:`sys.executable` at config-write
+    time pins the bridge to the Tessera install that minted the token,
+    which is the install that speaks to the running daemon.
     """
 
+    # stdlib import kept local so this module does not pull sys at
+    # cold-path import time.
+    import sys
+
     return {
-        "command": "npx",
+        "command": sys.executable,
         "args": [
-            "-y",
-            "mcp-remote",
+            "-m",
+            "tessera.cli",
+            "stdio",
+            "--url",
             server.url,
-            "--header",
-            f"Authorization: Bearer {server.token}",
+            "--token",
+            server.token,
         ],
     }
+
+
+# Backwards-compat alias. Callers upgrading across v0.1.x keep working
+# while the rename propagates.
+build_stdio_via_mcp_remote_entry = build_stdio_via_tessera_bridge_entry
 
 
 __all__ = [
@@ -156,4 +170,5 @@ __all__ = [
     "UnsupportedConfigShapeError",
     "build_server_entry",
     "build_stdio_via_mcp_remote_entry",
+    "build_stdio_via_tessera_bridge_entry",
 ]

@@ -81,21 +81,27 @@ def test_connect_claude_desktop_writes_entry(
     loaded = json.loads(config_path.read_text())
     assert TESSERA_SERVER_NAME in loaded["mcpServers"]
     entry = loaded["mcpServers"][TESSERA_SERVER_NAME]
-    # Claude Desktop's MCP loader speaks stdio transport only, so the
-    # connector emits an `npx mcp-remote <url> --header "Authorization:
-    # Bearer <token>"` wrapper rather than the native `"type": "http"`
-    # shape. The shape has been through two bugs on this PR: first
-    # `"transport": "http"` (silently ignored), then `"type": "http"`
-    # (rejected because Claude Desktop expects stdio). This assertion
-    # regression-guards the stdio-via-mcp-remote form.
-    assert entry["command"] == "npx"
-    assert "mcp-remote" in entry["args"]
-    # URL comes right after the mcp-remote positional.
-    url_idx = entry["args"].index("mcp-remote") + 1
+    # Claude Desktop's MCP loader speaks stdio transport only. The
+    # connector now emits a ``python -m tessera.cli stdio`` invocation
+    # that runs Tessera's first-party bridge. The shape has been
+    # through three bugs on this PR: `"transport": "http"` (silently
+    # ignored), `"type": "http"` (rejected because Claude Desktop
+    # expects stdio), and `npx mcp-remote` (OAuth enforcement
+    # incompatible with capability tokens). This assertion regression-
+    # guards the stdio-via-tessera-bridge form.
+    import sys as _sys
+
+    assert entry["command"] == _sys.executable
+    assert entry["args"][:3] == ["-m", "tessera.cli", "stdio"]
+    # URL arrives as a named `--url` flag.
+    url_idx = entry["args"].index("--url") + 1
     assert entry["args"][url_idx].startswith("http://127.0.0.1:")
-    # Authorization is a `--header "Name: Value"` pair.
-    header_idx = entry["args"].index("--header") + 1
-    assert entry["args"][header_idx].startswith("Authorization: Bearer tessera_service_")
+    # Token arrives as a named `--token` flag.
+    token_idx = entry["args"].index("--token") + 1
+    assert entry["args"][token_idx].startswith("tessera_service_")
+    # No npx, no mcp-remote, no native-HTTP keys.
+    assert "npx" not in entry["args"]
+    assert "mcp-remote" not in entry["args"]
     assert "type" not in entry
     assert "transport" not in entry
     assert "url" not in entry
