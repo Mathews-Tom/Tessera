@@ -98,13 +98,21 @@ class Connector(Protocol):
 def build_server_entry(server: McpServerSpec) -> Mapping[str, object]:
     """Return the per-entry payload JSON connectors write under their map.
 
-    The shape is the MCP-over-HTTP convention shared by Claude Desktop,
-    Claude Code, Cursor, and Codex (TOML-serialised). ChatGPT Dev Mode
-    uses a different shape handled by its own connector.
+    Claude Desktop's MCP schema keys the transport on ``type``, not
+    ``transport``. An earlier version of this connector emitted
+    ``"transport": "http"``, which Claude Desktop silently ignored and
+    then rejected the whole entry as "not a valid MCP server
+    configuration" because it looked like a stdio entry missing a
+    ``command`` field. The modern MCP spec uses ``type`` with
+    ``"http"`` / ``"sse"`` / ``"stdio"`` as the three transport modes;
+    Claude Code, Cursor, and Codex all accept the same shape.
+
+    ChatGPT Dev Mode uses a different shape entirely (no config file,
+    URL-embedded bootstrap nonce) handled by its own connector.
     """
 
     return {
-        "transport": "http",
+        "type": "http",
         "url": server.url,
         "headers": {
             "Authorization": f"Bearer {server.token}",

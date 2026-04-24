@@ -81,7 +81,12 @@ def test_connect_claude_desktop_writes_entry(
     loaded = json.loads(config_path.read_text())
     assert TESSERA_SERVER_NAME in loaded["mcpServers"]
     entry = loaded["mcpServers"][TESSERA_SERVER_NAME]
-    assert entry["transport"] == "http"
+    # Claude Desktop's MCP schema keys the transport on `type` (values
+    # "http" / "sse" / "stdio"), not `transport`. Regression guard
+    # against the old `"transport": "http"` emission that Claude Desktop
+    # silently rejected as "not a valid MCP server configuration".
+    assert entry["type"] == "http"
+    assert "transport" not in entry
     assert entry["url"].startswith("http://127.0.0.1:")
     assert entry["headers"]["Authorization"].startswith("Bearer tessera_service_")
     out = capsys.readouterr().out
