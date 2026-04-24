@@ -174,8 +174,8 @@ The releases between v0.1 and v0.3 are stabilization, not feature work. The bar 
 ### Scope
 
 - Stdio MCP bridge for clients that don't speak HTTP MCP cleanly
-- Homebrew tap (`brew install tessera`)
-- `.deb` and `.rpm` releases for Linux
+- Homebrew formula for macOS. Delivery path TBD — either a dedicated `Mathews-Tom/homebrew-tessera` tap or a single-repo tap against the Tessera repo itself. The canonical formula lives in-tree at `packaging/homebrew/Formula/tessera.rb` either way; it's installable today via `brew install --build-from-source` or a direct raw-URL install while the delivery decision settles.
+- **Linux: `pip install --pre tessera-context` is the v0.1.x install path.** Native `.deb` and `.rpm` packaging is not in scope. Decision recorded 2026-04-25: the adoption signal required to justify the `nfpm` / `fpm` build pipeline (plus the apt/yum repo hosting that makes `apt install tessera` actually work) isn't present at v0.1.x. Any Linux user with Python 3.12 can install via PyPI today; users without Python 3.12 are currently outside the v0.1 target audience. Re-evaluate at v0.3 against real Linux adoption data.
 - Bug fixes from real-user reports
 - Performance work surfaced by real vaults
 - Documentation expansion (real-world examples, troubleshooting)
