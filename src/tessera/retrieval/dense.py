@@ -51,11 +51,42 @@ async def search(
     stripped = query_text.strip()
     if not stripped:
         return []
-    ensure_vec_loaded(conn)
     vectors = await embedder.embed([stripped])
     if not vectors:
         return []
-    query_vec = vectors[0]
+    return await search_with_vector(
+        conn,
+        query_vec=vectors[0],
+        vec_table=vec_table,
+        agent_id=agent_id,
+        facet_type=facet_type,
+        limit=limit,
+    )
+
+
+async def search_with_vector(
+    conn: sqlcipher3.Connection,
+    *,
+    query_vec: list[float],
+    vec_table: str,
+    agent_id: int,
+    facet_type: str,
+    limit: int = 50,
+) -> list[DenseCandidate]:
+    """sqlite-vec knn query with a pre-computed query embedding.
+
+    Preferred over :func:`search` when multiple facet-type queries
+    share a single query embedding — re-embedding per facet type is
+    pure overhead because the embedder returns the same vector for
+    the same input. The pipeline's ``_gather_candidates`` embeds once
+    and fans this call out across every requested facet type.
+    """
+
+    if limit <= 0:
+        raise ValueError(f"limit must be positive; got {limit}")
+    if not query_vec:
+        return []
+    ensure_vec_loaded(conn)
     serialized = _serialize_vector(query_vec)
     rows = conn.execute(
         f"""

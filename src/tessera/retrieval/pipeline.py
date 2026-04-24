@@ -27,6 +27,7 @@ layer can surface slow-query events per
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import time
@@ -302,29 +303,60 @@ async def _gather_candidates(
     ctx: PipelineContext, query_text: str
 ) -> tuple[dict[str, list[bm25.BM25Candidate]], dict[str, list[dense.DenseCandidate]]]:
     # sqlcipher3 connections are not thread-safe, so BM25 runs on the event
-    # loop thread. Dense search awaits on the embedder before the vec query
-    # runs on the same connection.
-    bm25_by_type: dict[str, list[bm25.BM25Candidate]] = {}
-    for ftype in ctx.facet_types:
-        bm25_by_type[ftype] = bm25.search(
+    # loop thread. BM25 is synchronous and cheap relative to dense; keep
+    # the serial loop.
+    bm25_by_type: dict[str, list[bm25.BM25Candidate]] = {
+        ftype: bm25.search(
             ctx.conn,
             query_text=query_text,
             agent_id=ctx.agent_id,
             facet_type=ftype,
             limit=ctx.candidates_per_list,
         )
-    dense_by_type: dict[str, list[dense.DenseCandidate]] = {}
-    for ftype in ctx.facet_types:
-        dense_by_type[ftype] = await dense.search(
-            ctx.conn,
-            embedder=ctx.embedder,
-            vec_table=ctx.vec_table,
-            query_text=query_text,
-            agent_id=ctx.agent_id,
-            facet_type=ftype,
-            limit=ctx.candidates_per_list,
-        )
+        for ftype in ctx.facet_types
+    }
+    dense_by_type = await _gather_dense_by_type(ctx, query_text)
     return bm25_by_type, dense_by_type
+
+
+async def _gather_dense_by_type(
+    ctx: PipelineContext, query_text: str
+) -> dict[str, list[dense.DenseCandidate]]:
+    """Embed once, fan the vec queries out across facet types.
+
+    Each call to :func:`dense.search` used to re-embed the same query
+    text per facet type — N facet types meant N identical embedder
+    round-trips, each adding Ollama / sentence-transformers latency to
+    the critical path. Embedding once and reusing the vector collapses
+    that to a single call; ``asyncio.gather`` then dispatches the
+    per-type vec queries concurrently. The vec queries themselves are
+    synchronous against the shared sqlcipher3 connection and will not
+    truly parallelise on that bottleneck, but the structure stages the
+    work correctly for a future per-type connection split and keeps
+    the critical path free of serialised awaits.
+    """
+
+    stripped = query_text.strip()
+    if not stripped:
+        return {ftype: [] for ftype in ctx.facet_types}
+    vectors = await ctx.embedder.embed([stripped])
+    if not vectors:
+        return {ftype: [] for ftype in ctx.facet_types}
+    query_vec = vectors[0]
+    results = await asyncio.gather(
+        *(
+            dense.search_with_vector(
+                ctx.conn,
+                query_vec=query_vec,
+                vec_table=ctx.vec_table,
+                agent_id=ctx.agent_id,
+                facet_type=ftype,
+                limit=ctx.candidates_per_list,
+            )
+            for ftype in ctx.facet_types
+        )
+    )
+    return dict(zip(ctx.facet_types, results, strict=True))
 
 
 def _iter_all_candidates(
