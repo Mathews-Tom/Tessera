@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import socket
+import stat
 import tempfile
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -158,6 +160,16 @@ async def test_supervisor_starts_serves_and_stops(
     daemon_task = asyncio.create_task(supervisor.run_daemon(config, stop_event=stop, ready=ready))
     try:
         await asyncio.wait_for(ready.wait(), timeout=10.0)
+        # Threat-model coverage: the control socket must be owner-only
+        # (0600) at the lifecycle layer, not merely at the unit-test
+        # layer. Asserting against st_mode here catches regressions
+        # that would swap in a different bind implementation or
+        # re-order the chmod against the asyncio.start_unix_server
+        # call — scenarios where the unit test would still pass.
+        mode = stat.S_IMODE(os.stat(config.socket_path).st_mode)
+        assert mode == 0o600, (
+            f"control socket mode must be 0600 for owner-only access; got {oct(mode)}"
+        )
         # Control-plane status round-trip.
         status = await call_control(config.socket_path, method="status")
         assert status["vault_id"]
