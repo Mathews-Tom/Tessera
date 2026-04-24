@@ -70,6 +70,7 @@ The lead user is the AI-native developer who wants durable context across Claude
 | Know what ships in v0.1, v0.3, v0.5, v1.0 | [`docs/release-spec.md`](docs/release-spec.md) |
 | Know what will never ship | [`docs/non-goals.md`](docs/non-goals.md) |
 | Review the load-bearing decisions | [`docs/adr/`](docs/adr/) |
+| Fix an install failure, bad first run, or a broken connector | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
 
 ## Posture
 
