@@ -8,7 +8,7 @@ and the determinism contract, not on provider behaviour.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 import pytest
@@ -214,3 +214,123 @@ async def test_pipeline_degraded_rerank_emits_audit_event(
         ).fetchone()[0]
     )
     assert degraded_rows >= 1
+
+
+@dataclass
+class _CountingEmbedder:
+    """Fake embedder that records each call to :meth:`embed`.
+
+    Used to verify that the pipeline embeds the query text once per
+    :func:`recall` invocation, regardless of how many facet types are
+    in scope. Before the _gather_dense_by_type refactor, the pipeline
+    called :func:`dense.search` per facet type, which embedded the
+    same query N times.
+    """
+
+    name: ClassVar[str] = "counting"
+    model_name: str = "counting-fake"
+    dim: int = 8
+    calls: list[list[str]] = field(default_factory=list)
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        import hashlib
+
+        self.calls.append(list(texts))
+        out: list[list[float]] = []
+        for text in texts:
+            digest = hashlib.sha256(text.encode()).digest()
+            out.append([digest[i] / 255.0 for i in range(self.dim)])
+        return out
+
+    async def health_check(self) -> None:
+        return None
+
+
+async def _bootstrap_multi_type_vault(
+    open_vault: VaultConnection,
+) -> tuple[int, PipelineContext, _CountingEmbedder]:
+    cur = open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('01MULTI', 'a', 0)"
+    )
+    agent_id = int(cur.lastrowid) if cur.lastrowid is not None else 0
+    embedder = _CountingEmbedder()
+    reranker = _StaticReranker()
+    model = models_registry.register_embedding_model(
+        open_vault.connection, name="ollama", dim=embedder.dim, activate=True
+    )
+    facet_types = ("identity", "preference", "workflow", "project", "style")
+    for ftype in facet_types:
+        for i in range(3):
+            capture.capture(
+                open_vault.connection,
+                agent_id=agent_id,
+                facet_type=ftype,
+                content=f"{ftype} fact {i} about retrieval pipeline",
+                source_tool="test",
+            )
+    await embed_worker.run_pass(
+        open_vault.connection,
+        embedder,
+        active_model_id=model.id,
+        batch_size=64,
+        now_epoch=100,
+    )
+    # Reset the call log so we only count embed calls made during recall.
+    embedder.calls.clear()
+    ctx = PipelineContext(
+        conn=open_vault.connection,
+        embedder=embedder,
+        reranker=reranker,
+        active_model_id=model.id,
+        vec_table=models_registry.vec_table_name(model.id),
+        vault_id="01VAULTMULTI",
+        agent_id=agent_id,
+        config=RetrievalConfig(
+            rerank_model="length-score",
+            mmr_lambda=0.7,
+            max_candidates=50,
+            retrieval_mode="rerank_only",
+        ),
+        tool_budget_tokens=400,
+        k=10,
+        facet_types=facet_types,
+    )
+    return agent_id, ctx, embedder
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_pipeline_embeds_query_once_regardless_of_facet_type_count(
+    open_vault: VaultConnection,
+) -> None:
+    _, ctx, embedder = await _bootstrap_multi_type_vault(open_vault)
+    assert len(ctx.facet_types) == 5
+
+    await recall(ctx, query_text="retrieval pipeline")
+
+    # The working-set embedding stage runs its own embed pass over
+    # candidate content for MMR / SWCR cosine — that call is
+    # orthogonal to the dense-fanout fix. The regression-critical
+    # invariant is: the *query text* itself is embedded once per
+    # recall, not once per facet type. Before the _gather_dense_by_type
+    # refactor this was 5 calls for a 5-type recall.
+    query_embed_calls = [call for call in embedder.calls if call == ["retrieval pipeline"]]
+    assert len(query_embed_calls) == 1, (
+        f"expected the query text to be embedded exactly once; got "
+        f"{len(query_embed_calls)} calls matching, full log: {embedder.calls!r}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_pipeline_multi_facet_type_recall_surfaces_every_type(
+    open_vault: VaultConnection,
+) -> None:
+    _, ctx, _ = await _bootstrap_multi_type_vault(open_vault)
+    result = await recall(ctx, query_text="retrieval pipeline")
+    types_seen = {m.facet_type for m in result.matches}
+    # With 3 facets per type and k=10, the budget-trimmed top-k should
+    # span most or all of the 5 types; require at minimum 3 distinct
+    # types to guard against accidental single-type collapse from the
+    # refactor.
+    assert len(types_seen) >= 3, f"expected ≥3 types in recall; got {types_seen}"
