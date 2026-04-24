@@ -8,6 +8,7 @@ client calls — no live daemon required.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -112,10 +113,35 @@ def test_recall_unknown_host_returns_nonzero(monkeypatch: pytest.MonkeyPatch) ->
     assert args.handler(args) == 1
 
 
+def _patch_socket_path_to_existing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Route ``resolve_config`` at an existing tmp_path socket stub.
+
+    _cmd_status and _cmd_stop short-circuit on
+    ``config.socket_path.exists()`` — tests that assert on the
+    control-plane round-trip need the pre-check to pass so the
+    monkeypatched ``call_control`` is reached.
+    """
+
+    import dataclasses
+
+    from tessera.daemon.config import resolve_config
+
+    socket_path = tmp_path / "tessera.sock"
+    socket_path.touch()
+    real_config = resolve_config()
+    fake_config = dataclasses.replace(real_config, socket_path=socket_path)
+    monkeypatch.setattr(daemon_cmd, "resolve_config", lambda: fake_config)
+    return socket_path
+
+
 @pytest.mark.unit
 def test_daemon_status_prints_control_response(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
+    _patch_socket_path_to_existing(monkeypatch, tmp_path)
+
     async def _fake_call(
         path: Any, *, method: str, args: Any = None, timeout_seconds: float = 10.0
     ) -> dict[str, Any]:
@@ -138,19 +164,28 @@ def test_daemon_status_prints_control_response(
 
 
 @pytest.mark.unit
-def test_daemon_status_reports_missing_socket(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _boom(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        del args, kwargs
-        raise ConnectionError("no socket")
+def test_daemon_status_reports_missing_socket(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Point at a socket path that does NOT exist. _cmd_status's
+    # pre-check should return exit 1 with a "daemon not running"
+    # message without ever dialing call_control.
+    import dataclasses
 
-    monkeypatch.setattr(daemon_cmd, "call_control", _boom)
+    from tessera.daemon.config import resolve_config
+
+    real_config = resolve_config()
+    fake_config = dataclasses.replace(real_config, socket_path=tmp_path / "ghost.sock")
+    monkeypatch.setattr(daemon_cmd, "resolve_config", lambda: fake_config)
     parser = _build_parser()
     args = parser.parse_args(["daemon", "status"])
     assert args.handler(args) == 1
 
 
 @pytest.mark.unit
-def test_daemon_stop_returns_success(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_daemon_stop_returns_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _patch_socket_path_to_existing(monkeypatch, tmp_path)
+
     async def _ok(*args: Any, **kwargs: Any) -> dict[str, Any]:
         del args, kwargs
         return {"stopping": True}
@@ -162,7 +197,34 @@ def test_daemon_stop_returns_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
-def test_daemon_stop_reports_control_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_daemon_stop_is_idempotent_when_already_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    # Fresh behaviour: stop against an absent socket returns 0 with a
+    # "daemon already stopped" info line, matching systemctl/launchctl
+    # conventions. Before the fix, this path returned exit 1 with a
+    # "control socket not found" ERROR line that confused idempotent
+    # teardown scripts.
+    import dataclasses
+
+    from tessera.daemon.config import resolve_config
+
+    real_config = resolve_config()
+    fake_config = dataclasses.replace(real_config, socket_path=tmp_path / "ghost.sock")
+    monkeypatch.setattr(daemon_cmd, "resolve_config", lambda: fake_config)
+    parser = _build_parser()
+    args = parser.parse_args(["daemon", "stop"])
+    assert args.handler(args) == 0
+    out = capsys.readouterr().out
+    assert "already stopped" in out
+
+
+@pytest.mark.unit
+def test_daemon_stop_reports_control_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _patch_socket_path_to_existing(monkeypatch, tmp_path)
+
     async def _err(*args: Any, **kwargs: Any) -> dict[str, Any]:
         del args, kwargs
         raise ControlError("refused")

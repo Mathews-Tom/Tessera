@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._ui import EMOJI, kv_panel, status, success
 from tessera.vault.connection import VaultConnection
 from tessera.vault.export import (
     ExportSummary,
@@ -82,14 +83,17 @@ def _cmd_export(args: argparse.Namespace) -> int:
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
-    with open_vault(args.vault, passphrase) as vault:
+    with (
+        status(f"exporting vault to {args.format}", emoji=EMOJI["export"]),
+        open_vault(args.vault, passphrase) as vault,
+    ):
         try:
             summary = _dispatch_export(
                 args.format, vault, args.output, include_deleted=args.include_deleted
             )
         except ValueError as exc:
             return fail(str(exc))
-    print(_render_summary(summary))
+    _render_summary(summary, action_emoji=EMOJI["export"])
     return 0
 
 
@@ -100,7 +104,10 @@ def _cmd_import(args: argparse.Namespace) -> int:
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
-    with open_vault(args.vault, passphrase) as vault:
+    with (
+        status(f"importing from {args.input}", emoji=EMOJI["import"]),
+        open_vault(args.vault, passphrase) as vault,
+    ):
         try:
             summary = import_json(
                 vault,
@@ -109,7 +116,7 @@ def _cmd_import(args: argparse.Namespace) -> int:
             )
         except (ValueError, KeyError) as exc:
             return fail(f"import failed: {exc}")
-    print(_render_summary(summary))
+    _render_summary(summary, action_emoji=EMOJI["import"])
     return 0
 
 
@@ -144,9 +151,16 @@ def _dispatch_export(
     raise ValueError(f"unknown format: {format_name!r}")
 
 
-def _render_summary(summary: ExportSummary) -> str:
+def _render_summary(summary: ExportSummary, *, action_emoji: str) -> None:
     by_type = ", ".join(f"{t}={c}" for t, c in sorted(summary.facets_by_type.items())) or "none"
-    return (
-        f"wrote {summary.format} export to {summary.output_path}\n"
-        f"agents={summary.agents} facets={summary.facets} ({by_type})"
+    success(f"{summary.format} at {summary.output_path}", emoji=action_emoji)
+    kv_panel(
+        f"{summary.format} summary",
+        {
+            "agents": str(summary.agents),
+            "facets": str(summary.facets),
+            "by_type": by_type,
+            "path": str(summary.output_path),
+        },
+        emoji=action_emoji,
     )

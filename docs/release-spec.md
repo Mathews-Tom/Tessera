@@ -63,12 +63,12 @@ The windows above are estimates, not commitments. A version ships when its Defin
 All five are query-time only. The `mode` field in the schema is populated (`query_time`) but never exposed to users.
 
 **Six MCP tools shipping**
-- `capture(content, facet_type, source?, metadata?)`
-- `recall(query, facet_types? = all, k=5)` — **cross-facet by default**
-- `show(id, include_metadata=false)`
-- `list_facets(facet_type?, limit=10, since?)`
+- `capture(content, facet_type, source_tool?, metadata?)`
+- `recall(query_text, facet_types? = all readable facets, k=10, requested_budget_tokens?)` — **cross-facet by default**
+- `show(external_id)`
+- `list_facets(facet_type, limit=20, since?)`
 - `stats()`
-- `forget(id, reason?)`
+- `forget(external_id, reason?)`
 
 **CLI**
 - `tessera init` — vault + daemon + default user
@@ -79,7 +79,6 @@ All five are query-time only. The `mode` field in the schema is populated (`quer
 - `tessera capture "..." [--facet-type X]`
 - `tessera recall "..." [--facet-types X,Y]`
 - `tessera show <external_id>`
-- `tessera list [--facet-type X] [--limit N]`
 - `tessera forget <external_id>`
 - `tessera stats`
 - `tessera config [get|set] <key> [<value>]`
@@ -124,13 +123,15 @@ All five are query-time only. The `mode` field in the schema is populated (`quer
 - Claude Code
 - Cursor
 - Codex (`~/.codex/config.toml`)
-- ChatGPT (Developer Mode, URL-embedded token)
+- ChatGPT Developer Mode is deferred to v0.1.x until HTTPS, auth-mode, and canonical HTTP MCP compatibility are implemented.
 
 ### Definition of Done for v0.1
 
+v0.1 is a **developer preview**. It is not a general release until clean-VM install and external-user demo gates pass.
+
 Per-item evidence tracked in `docs/v0.1-dod-audit.md` (last audit: 2026-04-24 at commit `32b7395`). Checkboxes below reflect audit state at that commit.
 
-- [ ] Fresh install on clean macOS, Ubuntu, Windows: init → Ollama setup → connect Claude Desktop → capture preference/workflow/project/style in Claude → open ChatGPT → `recall` returns coherent cross-facet bundle → ChatGPT drafts in Tom's voice using right structure. **Under 10 minutes end-to-end.** *(Pending: cross-platform smoke, P14 task 4.)*
+- [ ] Fresh install on clean macOS, Ubuntu, Windows: init → Ollama setup → connect Claude Desktop or Claude Code → capture preference/workflow/project/style → `recall` returns coherent cross-facet bundle → fresh client session drafts in Tom's voice using right structure. **Under 10 minutes end-to-end.** *(Pending: cross-platform smoke, P14 task 4. ChatGPT Developer Mode is v0.1.x.)*
 - [x] All-local mode (no cloud keys) passes the same demo. *(Code path is all-local by default; cross-platform recording tracked under the previous item.)*
 - [x] `tessera doctor` correctly diagnoses: missing Ollama, port 5710 conflict, broken `sqlite-vec`, missing model, vault schema mismatch, expired token, empty facet types. *(All seven checks in `src/tessera/daemon/doctor.py`, tests in `tests/integration/test_daemon_doctor_vault.py` + `tests/unit/test_daemon_doctor.py`.)*
 - [x] Test coverage ≥ 80% on `vault/`, `retrieval/`, `adapters/`, `auth/`, `daemon/`. *(Critical-dir roll-up 91.58% at audit commit.)*

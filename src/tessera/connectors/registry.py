@@ -7,7 +7,11 @@ here.
 
 from __future__ import annotations
 
-from tessera.connectors.base import Connector, UnknownClientError
+from tessera.connectors.base import (
+    Connector,
+    UnknownClientError,
+    build_stdio_via_tessera_bridge_entry,
+)
 from tessera.connectors.chatgpt import ChatGptConnector
 from tessera.connectors.json_connector import (
     JsonConnector,
@@ -20,10 +24,17 @@ from tessera.connectors.toml_connector import TomlConnector, codex_paths
 
 def _build_connectors() -> dict[str, Connector]:
     registry: dict[str, Connector] = {}
+    # Claude Desktop's MCP loader speaks stdio only; the stdio-via-
+    # tessera-bridge builder emits a ``python -m tessera.cli stdio``
+    # command that tunnels stdio ↔ HTTP using Tessera's first-party
+    # bridge. Every other JSON-based client (Claude Code, Cursor)
+    # speaks HTTP MCP natively and uses the default native-HTTP entry
+    # builder.
     registry["claude-desktop"] = JsonConnector(
         client_id="claude-desktop",
         display_name="Claude Desktop",
         paths=claude_desktop_paths(),
+        entry_builder=build_stdio_via_tessera_bridge_entry,
     )
     registry["claude-code"] = JsonConnector(
         client_id="claude-code",

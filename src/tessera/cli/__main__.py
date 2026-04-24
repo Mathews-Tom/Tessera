@@ -44,7 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(handler(args))
     except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
+        from tessera.cli._ui import warn
+
+        warn("interrupted")
         return 130
 
 
@@ -76,9 +78,20 @@ def _build_parser() -> argparse.ArgumentParser:
     vault_parser.set_defaults(handler=_delegate(vault_cli.run))
 
     stdio_parser = subparsers.add_parser(
-        "stdio", help="stdio MCP bridge (stub; full impl at v0.1.x)"
+        "stdio",
+        help="stdio ↔ HTTP MCP bridge (used by Claude Desktop; speaks stdio to the parent, forwards over HTTP to the Tessera daemon)",
     )
-    stdio_parser.set_defaults(handler=_run_stdio_stub)
+    stdio_parser.add_argument(
+        "--url",
+        required=True,
+        help="Tessera daemon HTTP MCP endpoint, e.g. http://127.0.0.1:5710/mcp",
+    )
+    stdio_parser.add_argument(
+        "--token",
+        required=True,
+        help="bearer token minted by `tessera tokens create` or `tessera connect`",
+    )
+    stdio_parser.set_defaults(handler=_run_stdio_bridge)
 
     return parser
 
@@ -95,11 +108,10 @@ def _delegate(run_fn: _DelegateRun) -> Callable[[argparse.Namespace], int]:
     return _handler
 
 
-def _run_stdio_stub(args: argparse.Namespace) -> int:
-    del args
-    from tessera.daemon.stdio_bridge import run_stub
+def _run_stdio_bridge(args: argparse.Namespace) -> int:
+    from tessera.daemon.stdio_bridge import run
 
-    return run_stub()
+    return run(args.url, args.token)
 
 
 if __name__ == "__main__":

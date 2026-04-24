@@ -1,6 +1,6 @@
-# Tessera — The soul that outlives the substrate.
+# Tessera — Portable context for AI tools
 
-> Persistent agent identity that survives every model change. Memory, voice, and skills that travel with your agent — across Claude, GPT, Gemini, local Qwen, or whatever ships next month.
+> A local-first context layer for agents and AI tools. Tessera stores durable user and project context in an encrypted SQLite vault, exposes it through a scoped MCP surface, and retrieves cross-facet bundles with hybrid search, rerank, SWCR, and token budgeting.
 
 > Open source. Local-first. Apache 2.0.
 
@@ -8,13 +8,38 @@
 
 ## Status
 
-Tessera is in pre-alpha design. Code has not been written yet; the current focus is finishing the foundational specifications against which v0.1 will be built. See [`docs/release-spec.md`](docs/release-spec.md) for the shipping plan.
+Tessera is a **developer preview**, not a general release. The repo contains the packaged Python CLI, encrypted vault, daemon, HTTP MCP endpoint, stdio bridge, connector writers, retrieval pipeline, and test suite. v0.1 remains gated on clean-VM install and an external-user demo. See [`docs/release-spec.md`](docs/release-spec.md) for the release bar.
+
+Install from source during the preview:
+
+```bash
+uv sync --dev
+uv run tessera --help
+```
+
+Core local flow:
+
+```bash
+uv run tessera init --vault ~/.tessera/vault.db
+uv run tessera daemon start --vault ~/.tessera/vault.db
+uv run tessera connect claude-code --vault ~/.tessera/vault.db
+```
+
+ChatGPT Developer Mode is deferred to v0.1.x because the current ChatGPT flow requires HTTPS/OAuth/canonical HTTP MCP compatibility that Tessera v0.1 does not yet ship.
 
 ## What is Tessera
 
-A substrate-independent identity layer for AI agents. A local daemon owns a single-file SQLite vault that holds the agent's identity — episodic memory, semantic knowledge, voice and writing style, learned skills, working relationships. Any MCP-capable agent connects with a scoped capability token and reads or writes its identity. When the underlying model changes, the new substrate calls `assume_identity()`, gets back a curated bundle of who-this-agent-is, and behaves continuously with the prior one.
+A local daemon owns a single-file SQLite vault that holds five v0.1 context facets:
 
-The lead user is the agent. The human is one of the agents.
+- `identity` — stable user facts
+- `preference` — behavioral rules and tool preferences
+- `workflow` — repeated procedures
+- `project` — active work context
+- `style` — writing voice samples
+
+MCP-capable tools connect with scoped capability tokens and call six tools: `capture`, `recall`, `show`, `list_facets`, `stats`, and `forget`. A bare `recall` searches every facet type the token can read, then returns a budgeted cross-facet bundle.
+
+The lead user is the AI-native developer who wants durable context across Claude Code, Claude Desktop, Cursor, Codex, local model workflows, and custom harnesses without handing memory to a hosted service.
 
 ## Where to read, by role
 

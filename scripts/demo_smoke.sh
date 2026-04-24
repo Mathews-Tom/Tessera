@@ -14,8 +14,8 @@
 #   1  a check failed; see stderr for the first failure reason
 #
 # What the script does NOT do:
-# - Record video (see docs/user-demo/macos-recording-guide.md)
-# - Start or configure MCP clients (see docs/user-demo/demo-script.md)
+# - Record video (see the internal demo kit under .docs/user-demo/, not tracked)
+# - Start or configure MCP clients (see the internal demo kit)
 # - Test against a real Ollama model download (only pings /api/tags)
 
 set -euo pipefail
@@ -139,4 +139,4 @@ pass "daemon stop"
 
 echo
 echo "OK — environment ready for demo recording."
-echo "Next: open docs/user-demo/demo-script.md and follow the 10-min walkthrough."
+echo "Next: follow the maintainer's internal demo-script walkthrough (.docs/user-demo/)."

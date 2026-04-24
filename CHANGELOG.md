@@ -78,7 +78,8 @@ Re-embed at 10K facets: 442.7 s wall / 22.6 facets/s throughput (`docs/benchmark
 - **CUDA reranker path shipped but unmeasured** — auto-detection priority is CUDA > MPS > CPU; no CUDA hardware has been benchmarked yet. The code path reuses sentence-transformers' existing CUDA integration, so the determinism and correctness story is the same as MPS.
 - **HMAC-chained audit log** is v0.3 scope. v0.1 audit integrity relies on vault encryption-at-rest to make tampering detectable via passphrase loss, not a cryptographic chain.
 - **Dependency CVE scanning** is manual via `uv lock` review. Automated `pip-audit` in CI is v0.1.x follow-up.
-- **stdio MCP bridge** is a stub; HTTP MCP is the v0.1 transport. stdio bridge lands in v0.1.x.
+- **stdio MCP bridge** lands in v0.1 as `tessera stdio`, used by Claude Desktop. Speaks canonical MCP JSON-RPC 2.0 on the stdio side and translates to Tessera's custom HTTP envelope. No external bridge (`mcp-remote` / `mcp-proxy`) required.
+- **ChatGPT Developer Mode integration deferred to v0.1.x.** Three stacked blockers: (a) `http://127.0.0.1:...` rejected as "Unsafe URL" — needs HTTPS front, (b) no Bearer auth mode in the "New App" dialog dropdown (only OAuth / Mixed / No Auth), (c) the same protocol-shape mismatch `tessera stdio` solves for stdio needs a server-side HTTP equivalent. Workaround for v0.1: use **Claude Code** as the second client on the recall side. Two Anthropic clients sharing one vault still demonstrates the "portable context" story.
 
 ### What v0.1 explicitly does NOT ship
 

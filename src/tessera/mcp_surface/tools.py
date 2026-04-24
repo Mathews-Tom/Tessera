@@ -162,6 +162,149 @@ class ToolContext:
     event_log: EventLog | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ToolContract:
+    """Executable contract for one public MCP tool.
+
+    The stdio bridge and contract tests consume this directly so the
+    tool catalogue, defaults, and JSON schemas cannot drift from the
+    implementation without a test failure.
+    """
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    response_budget_tokens: int
+
+
+MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
+    ToolContract(
+        name="capture",
+        description=(
+            "Capture a new facet into the vault. Required args: content, facet_type. "
+            "Optional args: source_tool, metadata."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "maxLength": _MAX_CONTENT_CHARS},
+                "facet_type": {
+                    "type": "string",
+                    "enum": sorted(vault_facets.V0_1_FACET_TYPES),
+                },
+                "source_tool": {
+                    "type": "string",
+                    "pattern": _SOURCE_TOOL_PATTERN.pattern,
+                },
+                "metadata": {
+                    "type": "object",
+                    "maxProperties": _MAX_METADATA_KEYS,
+                },
+            },
+            "required": ["content", "facet_type"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=CAPTURE_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="recall",
+        description=(
+            "Hybrid recall over every facet type the token can read unless facet_types "
+            "is supplied. Optional k defaults to 10."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query_text": {"type": "string", "maxLength": _MAX_QUERY_CHARS},
+                "k": {
+                    "type": "integer",
+                    "minimum": _MIN_K,
+                    "maximum": _MAX_K,
+                    "default": 10,
+                },
+                "facet_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": sorted(vault_facets.V0_1_FACET_TYPES),
+                    },
+                },
+                "requested_budget_tokens": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": RECALL_RESPONSE_BUDGET,
+                },
+            },
+            "required": ["query_text"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=RECALL_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="show",
+        description="Return one facet by external_id.",
+        input_schema={
+            "type": "object",
+            "properties": {"external_id": {"type": "string", "pattern": _ULID_PATTERN.pattern}},
+            "required": ["external_id"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=SHOW_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="list_facets",
+        description="List facets for one facet type. Optional limit defaults to 20.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "facet_type": {
+                    "type": "string",
+                    "enum": sorted(vault_facets.V0_1_FACET_TYPES),
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": _MIN_LIMIT,
+                    "maximum": _MAX_LIMIT,
+                    "default": 20,
+                },
+                "since": {
+                    "type": "integer",
+                    "minimum": _MIN_SINCE_EPOCH,
+                    "maximum": _MAX_SINCE_EPOCH,
+                },
+            },
+            "required": ["facet_type"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=LIST_FACETS_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="stats",
+        description="Return vault statistics, embedding health, and active model metadata.",
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        response_budget_tokens=STATS_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="forget",
+        description="Soft-delete one facet by external_id. Optional reason records audit context.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "external_id": {"type": "string", "pattern": _ULID_PATTERN.pattern},
+                "reason": {"type": "string", "maxLength": _MAX_REASON_CHARS},
+            },
+            "required": ["external_id"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=FORGET_RESPONSE_BUDGET,
+    ),
+)
+
+
 # ---- Response dataclasses -----------------------------------------------
 
 
@@ -710,6 +853,7 @@ __all__ = [
     "CAPTURE_RESPONSE_BUDGET",
     "FORGET_RESPONSE_BUDGET",
     "LIST_FACETS_RESPONSE_BUDGET",
+    "MCP_TOOL_CONTRACTS",
     "RECALL_RESPONSE_BUDGET",
     "SHOW_RESPONSE_BUDGET",
     "STATS_RESPONSE_BUDGET",
@@ -727,6 +871,7 @@ __all__ = [
     "StatsResponse",
     "StorageError",
     "ToolContext",
+    "ToolContract",
     "ToolError",
     "ValidationError",
     "capture",

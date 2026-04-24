@@ -81,11 +81,68 @@ def test_connect_claude_desktop_writes_entry(
     loaded = json.loads(config_path.read_text())
     assert TESSERA_SERVER_NAME in loaded["mcpServers"]
     entry = loaded["mcpServers"][TESSERA_SERVER_NAME]
-    assert entry["transport"] == "http"
-    assert entry["url"].startswith("http://127.0.0.1:")
-    assert entry["headers"]["Authorization"].startswith("Bearer tessera_service_")
+    # Claude Desktop's MCP loader speaks stdio transport only. The
+    # connector now emits a ``python -m tessera.cli stdio`` invocation
+    # that runs Tessera's first-party bridge. The shape has been
+    # through three bugs on this PR: `"transport": "http"` (silently
+    # ignored), `"type": "http"` (rejected because Claude Desktop
+    # expects stdio), and `npx mcp-remote` (OAuth enforcement
+    # incompatible with capability tokens). This assertion regression-
+    # guards the stdio-via-tessera-bridge form.
+    import sys as _sys
+
+    assert entry["command"] == _sys.executable
+    assert entry["args"][:3] == ["-m", "tessera.cli", "stdio"]
+    # URL arrives as a named `--url` flag.
+    url_idx = entry["args"].index("--url") + 1
+    assert entry["args"][url_idx].startswith("http://127.0.0.1:")
+    # Token arrives as a named `--token` flag.
+    token_idx = entry["args"].index("--token") + 1
+    assert entry["args"][token_idx].startswith("tessera_service_")
+    # No npx, no mcp-remote, no native-HTTP keys.
+    assert "npx" not in entry["args"]
+    assert "mcp-remote" not in entry["args"]
+    assert "type" not in entry
+    assert "transport" not in entry
+    assert "url" not in entry
     out = capsys.readouterr().out
     assert "wrote Tessera entry" in out
+
+
+@pytest.mark.integration
+def test_connect_claude_code_uses_native_http(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Claude Code speaks HTTP MCP natively and takes the `type: http`
+    # entry shape. Regression guard against accidentally emitting the
+    # stdio-via-mcp-remote wrapper (which would add an `npx` dep for
+    # no reason on a client that doesn't need it).
+    vault, agent_id = _init_vault(short_tmp, monkeypatch)
+    config_path = short_tmp / "claude_code.json"
+    parser = _build_parser()
+    connect_args = parser.parse_args(
+        [
+            "connect",
+            "claude-code",
+            "--vault",
+            str(vault),
+            "--agent-id",
+            str(agent_id),
+            "--path",
+            str(config_path),
+        ]
+    )
+    assert connect_args.handler(connect_args) == 0
+    loaded = json.loads(config_path.read_text())
+    entry = loaded["mcpServers"][TESSERA_SERVER_NAME]
+    assert entry["type"] == "http"
+    assert entry["url"].startswith("http://127.0.0.1:")
+    assert entry["headers"]["Authorization"].startswith("Bearer tessera_service_")
+    # Explicit: Claude Code does NOT get the mcp-remote stdio wrapper.
+    assert "command" not in entry
+    assert "args" not in entry
 
 
 @pytest.mark.integration

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import contextlib
 import os
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 
+import sqlcipher3
+
+from tessera.cli._ui import error as _ui_error
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import ProtectedKey, derive_key, load_salt
 
@@ -57,13 +59,49 @@ def open_vault(vault_path: Path, passphrase: bytearray) -> Iterator[VaultConnect
 
 
 def fail(message: str) -> int:
-    print(message, file=sys.stderr)
+    """Emit a red ✗ ERROR line to stderr and return exit code 1.
+
+    The literal ``ERROR`` token is preserved so ``grep`` scripts keep
+    working; the ✗ and colour layer on top for TTY readability.
+    """
+
+    _ui_error(message)
     return 1
+
+
+def resolve_agent_id(conn: sqlcipher3.Connection, explicit: int | None) -> int:
+    """Pick the target agent id for per-agent CLI operations.
+
+    When ``explicit`` is provided (``--agent-id N`` on the CLI), trust
+    it — operations against a non-existent agent_id hit foreign-key
+    errors at the vault layer, which surface as loud CLI failures
+    anyway.
+
+    When ``explicit`` is None, auto-select the single agent in the
+    vault. This is the common case after ``tessera init`` creates its
+    one default agent. Fail loud on zero or more-than-one agents so
+    the caller knows why the default is ambiguous.
+
+    Used by ``tessera tokens create`` and ``tessera connect``; both
+    share the "one agent = auto-select, many = disambiguate" contract
+    per the P14 demo-script ergonomic fixes.
+    """
+
+    if explicit is not None:
+        return explicit
+    rows = conn.execute("SELECT id FROM agents ORDER BY id").fetchall()
+    if not rows:
+        raise CliError("vault has no agents; run `tessera agents create --vault X --name Y` first")
+    if len(rows) > 1:
+        ids = ", ".join(str(r[0]) for r in rows)
+        raise CliError(f"vault has {len(rows)} agents ({ids}); pass --agent-id to pick one")
+    return int(rows[0][0])
 
 
 __all__ = [
     "CliError",
     "fail",
     "open_vault",
+    "resolve_agent_id",
     "resolve_passphrase",
 ]
