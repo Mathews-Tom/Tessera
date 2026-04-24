@@ -16,6 +16,8 @@
 | C | `swcr` | B + SWCR coherence reweighting between rerank and MMR. |
 | D | *(skipped)* | Cohere rerank v3 — requires licensed API key; out of scope here. |
 
+The next serious run adds a `vector_only` arm. The current harness does not implement that mode.
+
 ## Dataset (S1, v0.1)
 
 Seed-controlled synthetic vault. `dataset/generate.py` produces `s1.json` with N facets across 5 personas. The current generator produces three facet types; the generator will be updated to the v0.1 facet vocabulary (identity, preference, workflow, project, style) when the harness is re-aligned with the reframe. Each persona has a disjoint entity vocabulary; 30 % of facets also carry one of four ambient entities (`python`, `2026`, `slack`, `github`) that appear across personas as noise. The v0.1.x harder variant introduces cross-persona entity overlap to probe the regime SWCR targets.
@@ -91,6 +93,11 @@ Results land under `results/<utc-timestamp>.json`. The harness refuses to overwr
 **What a better ablation would change.**
 
 - **Harder dataset.** Introduce cross-persona entity overlap (e.g. two personas both use `python` as a primary entity, not just ambient). Produce near-duplicate content across facet types within a persona so the rerank-alone pipeline is forced to pick one. Mix personas at query time (a query that belongs to two personas partially).
+- **Cross-facet ambiguity.** Include queries where `style`, `project`, and `workflow` each point to plausible but different bundles, and score whether the final bundle coheres around the intended task rather than the nearest isolated fact.
+- **Conflicting facts.** Include contradictory style and project facts with timestamps and provenance, then score whether retrieval prefers the newer or higher-scope fact without deleting evidence of the conflict.
+- **Stale project context.** Include superseded project rows that remain semantically close to the query. The correct bundle should avoid stale project context when fresher context exists.
+- **Multi-tool preference propagation.** Capture a preference from one tool (`claude-code`, `codex`, or `cursor`) and query from another. Score whether the preference survives the tool boundary and appears in the retrieved bundle when relevant.
+- **Win-rate reporting.** Track pairwise bundle wins for SWCR against `vector_only`, `rrf_only`, and `rerank_only`, not only aggregate MRR/nDCG. SWCR's product claim is bundle coherence, so the eval needs a direct win-rate readout.
 - **Human raters.** 3 blind raters × 50 `recall(facet_types=all)` bundles × 5-point scale on "does this hang together as one user's operating model across facet types?" per the reframed swcr-spec. This is the gate the automated proxies were designed to approximate; without it, the definitive evidence is absent.
 - **Separate latency concern.** Real-adapter arm B at p95 = 1121 ms on 2K facets is already above the v0.1 DoD target of < 1 s at 10K. That is a scaling risk independent of SWCR — P12 benchmarks need to unpack whether the bottleneck is Ollama, the cross-encoder, or the pipeline orchestration.
 

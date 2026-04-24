@@ -240,12 +240,12 @@ Six tools. The heavy lifting is done by `recall`, which is cross-facet by defaul
 
 | Tool | Args | Returns | Token budget | Notes |
 |---|---|---|---|---|
-| `capture` | `content: str`, `facet_type: str`, `source: str?`, `metadata: dict?` | `{external_id, summary}` | 200 | Dedups by content hash; embedding happens async |
-| `recall` | `query: str`, `facet_types: list[str]? = all`, `k: int = 5` | `{bundle: {facet_type: [matches]}, total_found}` | 2000 | **Cross-facet by default.** SWCR coherence weighting. |
-| `show` | `id: str`, `include_metadata: bool = false` | full facet content + metadata | 4000 | Drill-down |
-| `list_facets` | `facet_type: str?`, `limit: int = 10`, `since: str?` | array of summaries | 1000 | Browse mode |
-| `stats` | (none) | `{total_per_facet, by_source_tool, vault_size, active_models}` | 500 | Corpus overview |
-| `forget` | `id: str`, `reason: str?` | `{external_id, deleted_at}` | 100 | Soft delete; writes audit entry |
+| `capture` | `content: str`, `facet_type: str`, `source_tool: str?`, `metadata: dict?` | `{external_id, is_duplicate, facet_type}` | 512 | Dedups by content hash; embedding happens async |
+| `recall` | `query_text: str`, `facet_types: list[str]? = all readable facets`, `k: int = 10`, `requested_budget_tokens: int?` | `{matches, warnings, seed, truncated, rerank_degraded, total_tokens}` | 6000 | **Cross-facet by default.** SWCR coherence weighting. |
+| `show` | `external_id: str` | facet snippet + provenance fields | 2048 | Drill-down |
+| `list_facets` | `facet_type: str`, `limit: int = 20`, `since: int?` | array of summaries | 2048 | Browse mode |
+| `stats` | (none) | `{embed_health, by_source, vault_size, active_models, facet_count}` | 1024 | Corpus overview |
+| `forget` | `external_id: str`, `reason: str?` | `{external_id, facet_type, deleted_at}` | 256 | Soft delete; writes audit entry |
 
 **Why `recall` is the load-bearing tool.** Almost every real user query crosses facets. Drafting a LinkedIn post needs style (LinkedIn voice) + workflow (5-act) + project (what the post is about) + preference (length, no emojis). A Reddit comment needs style (Reddit register) + preference (4-sentence cap) + project (topic context). The default retrieval mode has to be cross-facet or the product doesn't land for its target user.
 
