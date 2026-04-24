@@ -289,12 +289,43 @@ def _cmd_start_fg(args: argparse.Namespace) -> int:
 
 
 def _cmd_stop(args: argparse.Namespace) -> int:
+    """Stop a running daemon. Idempotent — a stopped daemon returns exit 0.
+
+    Matches systemctl/launchctl conventions: calling ``stop`` against an
+    already-stopped unit is a success, not an error. Without this
+    tolerance, idempotent teardown scripts (``scripts/demo_reset.sh``,
+    pre-recording cleanup steps) would have to shell-quote the error or
+    prefix ``|| true`` everywhere.
+    """
+
     del args
     config = resolve_config()
+    # Fast path: if the socket doesn't even exist, the daemon isn't
+    # running. Skip the control-plane dial entirely and report the
+    # desired state as achieved.
+    if not config.socket_path.exists():
+        info("daemon already stopped (no control socket)", emoji=EMOJI["daemon_down"])
+        return 0
+
     with status("sending stop signal", emoji=EMOJI["daemon_down"]):
         try:
             asyncio.run(call_control(config.socket_path, method="stop"))
-        except (ConnectionError, ControlError) as exc:
+        except OSError:
+            # Every failure mode below means "daemon not reachable, so
+            # it's already stopped":
+            #   - FileNotFoundError (ENOENT): socket file gone
+            #   - ConnectionRefusedError (ECONNREFUSED): stale socket
+            #   - OSError with ENOTSOCK: a non-socket file sitting at
+            #     the path (leftover from an earlier crash of a
+            #     different kind)
+            # All three are subclasses of OSError, so one except
+            # clause covers the "stop against already-stopped" case.
+            # Clean up any stale file sitting at the socket path so a
+            # follow-up ``daemon start`` does not trip on it.
+            config.socket_path.unlink(missing_ok=True)
+            info("daemon already stopped", emoji=EMOJI["daemon_down"])
+            return 0
+        except ControlError as exc:
             return fail(f"stop failed: {exc}")
     success("stop signal sent", emoji=EMOJI["daemon_down"])
     return 0
@@ -303,11 +334,19 @@ def _cmd_stop(args: argparse.Namespace) -> int:
 def _cmd_status(args: argparse.Namespace) -> int:
     del args
     config = resolve_config()
+    # Same tolerance as _cmd_stop: a missing / non-listening / stale
+    # socket means the daemon is not running. Return a clear
+    # "not running" line with exit 1 so shell scripts can branch on
+    # `if tessera daemon status; then ...; fi`, which is the
+    # conventional contract for `status` subcommands.
+    if not config.socket_path.exists():
+        return fail("daemon not running (no control socket)")
+
     with status("querying daemon", emoji=EMOJI["daemon_up"]):
         try:
             response = asyncio.run(call_control(config.socket_path, method="status"))
-        except ConnectionError as exc:
-            return fail(f"daemon not running (socket: {exc})")
+        except OSError:
+            return fail("daemon not running (control socket unreachable)")
         except ControlError as exc:
             return fail(f"status failed: {exc}")
     kv_panel(
