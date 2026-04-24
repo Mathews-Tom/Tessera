@@ -9,7 +9,9 @@ off-nominal branch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
+import json
 import socket
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,6 +26,7 @@ from tessera.adapters import models_registry
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope
 from tessera.daemon.dispatch import dispatch_tool_call
+from tessera.daemon.exchange import NonceStore
 from tessera.daemon.http_mcp import serve_http_mcp
 from tessera.daemon.state import DaemonState
 from tessera.mcp_surface import tools as mcp
@@ -160,6 +163,56 @@ async def _serve_with_dispatch(
         dispatch=dispatch_fn,
         now_epoch_fn=lambda: 1_000_100,
     )
+
+
+async def _serve_with_nonce_store(
+    state: DaemonState,
+    port: int,
+    nonce_store: NonceStore,
+    *,
+    ready: asyncio.Event | None = None,
+) -> asyncio.AbstractServer:
+    async def _dispatch(
+        verified: tokens.VerifiedCapability, method: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await dispatch_tool_call(state, verified, method, args)
+
+    return await serve_http_mcp(
+        host="127.0.0.1",
+        port=port,
+        allowed_origins=frozenset({"http://localhost", "null"}),
+        conn=state.vault.connection,
+        dispatch=_dispatch,
+        now_epoch_fn=lambda: 1_000_100,
+        nonce_store=nonce_store,
+        ready=ready,
+    )
+
+
+async def _raw_exchange(port: int, payload: bytes) -> bytes:
+    """Send raw bytes over TCP and return the full response.
+
+    httpx normalises off-nominal request shapes (malformed request
+    line, invalid content-length, oversized headers) before they reach
+    the server, so those branches require a hand-crafted connection.
+    """
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(payload)
+        await writer.drain()
+        return await reader.read()
+    finally:
+        writer.close()
+        with contextlib.suppress(ConnectionError):
+            await writer.wait_closed()
+
+
+def _parse_raw_response(response: bytes) -> tuple[int, dict[str, Any]]:
+    head, _, body = response.partition(b"\r\n\r\n")
+    status_line = head.split(b"\r\n", 1)[0]
+    status = int(status_line.split(b" ")[1])
+    return status, json.loads(body.decode("utf-8"))
 
 
 @pytest.mark.integration
@@ -435,6 +488,435 @@ async def test_http_mcp_maps_internal_error_without_message_leak(
         assert resp.status_code == 500
         assert _error_code(resp) == "internal_error"
         assert resp.json()["error"]["message"] == "RuntimeError"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_ready_event_is_set_when_bound(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    ready = asyncio.Event()
+
+    async def _noop_dispatch(
+        verified: tokens.VerifiedCapability, method: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        del verified, method, args
+        return {}
+
+    server = await serve_http_mcp(
+        host="127.0.0.1",
+        port=port,
+        allowed_origins=frozenset({"http://localhost"}),
+        conn=state.vault.connection,
+        dispatch=_noop_dispatch,
+        now_epoch_fn=lambda: 1_000_100,
+        ready=ready,
+    )
+    try:
+        assert ready.is_set()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_auth_denied_token(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                json={"method": "stats", "args": {}},
+                headers={"Authorization": "Bearer tessera_session_not-a-real-token"},
+            )
+        assert resp.status_code == 401
+        assert _error_code(resp) == "scope_denied"
+        assert resp.json()["error"]["message"] == "unauthenticated"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_non_object_body(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                content=b"[1, 2, 3]",
+                headers={
+                    "Authorization": f"Bearer {raw_token}",
+                    "Content-Type": "application/json",
+                },
+            )
+        assert resp.status_code == 400
+        assert _error_code(resp) == "invalid_input"
+        assert "object" in resp.json()["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_wrong_method_type(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                json={"method": 42, "args": {}},
+                headers={"Authorization": f"Bearer {raw_token}"},
+            )
+        assert resp.status_code == 400
+        assert _error_code(resp) == "invalid_input"
+        assert "method must be string" in resp.json()["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_wrong_args_type(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                json={"method": "stats", "args": [1, 2]},
+                headers={"Authorization": f"Bearer {raw_token}"},
+            )
+        assert resp.status_code == 400
+        assert _error_code(resp) == "invalid_input"
+        assert "args must be object" in resp.json()["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_exchange_returns_404_when_nonce_store_absent(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post("/mcp/exchange", json={"nonce": "x"})
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "unknown route"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_exchange_happy_path_returns_token(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    store = NonceStore()
+    # Server's now_epoch_fn is pinned at 1_000_100; create the nonce
+    # at 1_000_090 so expires_at (1_000_120 with 30 s TTL) is safely
+    # in the future at consume time.
+    entry = store.create(raw_token=raw_token, now_epoch=1_000_090)
+    server = await _serve_with_nonce_store(state, port, store)
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post("/mcp/exchange", json={"nonce": entry.nonce})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["token"] == raw_token
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_exchange_rejects_non_null_origin(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve_with_nonce_store(state, port, NonceStore())
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp/exchange",
+                json={"nonce": "anything"},
+                headers={"Origin": "http://localhost"},
+            )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "origin not allowed"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_exchange_rejects_invalid_json(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve_with_nonce_store(state, port, NonceStore())
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp/exchange",
+                content=b"not json",
+                headers={"Content-Type": "application/json"},
+            )
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "invalid json body"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_exchange_rejects_non_object_body(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve_with_nonce_store(state, port, NonceStore())
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp/exchange",
+                content=b'"just a string"',
+                headers={"Content-Type": "application/json"},
+            )
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "body must be a JSON object"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_exchange_rejects_missing_nonce(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve_with_nonce_store(state, port, NonceStore())
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post("/mcp/exchange", json={"other": "field"})
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "nonce required"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_exchange_rejects_unknown_nonce(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve_with_nonce_store(state, port, NonceStore())
+    try:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post("/mcp/exchange", json={"nonce": "bogus"})
+        assert resp.status_code == 401
+        assert resp.json()["error"] == "nonce rejected"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_malformed_request_line(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        raw = await _raw_exchange(port, b"POST-only\r\nHost: x\r\n\r\n")
+        status, body = _parse_raw_response(raw)
+        assert status == 400
+        assert body["error"]["code"] == "invalid_input"
+        assert "malformed request line" in body["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_headers_exceeding_limit(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        # 20 KiB of bogus header value trips the _MAX_HEADER_BYTES
+        # gate (16 KiB) while staying under the StreamReader default
+        # limit of 64 KiB; the readuntil returns a large blob and the
+        # explicit len() check rejects it.
+        huge_header = b"X-Filler: " + b"a" * (20 * 1024) + b"\r\n"
+        payload = b"POST /mcp HTTP/1.1\r\nHost: x\r\n" + huge_header + b"\r\n"
+        raw = await _raw_exchange(port, payload)
+        status, body = _parse_raw_response(raw)
+        assert status == 431
+        assert body["error"]["code"] == "invalid_input"
+        assert "headers too large" in body["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_stream_limit_overrun(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        # The asyncio StreamReader default limit is 64 KiB; sending
+        # more than that without a terminating CRLFCRLF trips
+        # LimitOverrunError in readuntil, distinct from the
+        # _MAX_HEADER_BYTES length check that fires post-readuntil.
+        payload = b"POST /mcp HTTP/1.1\r\nX-Filler: " + b"a" * (70 * 1024)
+        raw = await _raw_exchange(port, payload)
+        status, body = _parse_raw_response(raw)
+        assert status == 431
+        assert body["error"]["code"] == "invalid_input"
+        assert "headers too large" in body["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_malformed_header_line(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        payload = b"POST /mcp HTTP/1.1\r\nHost: x\r\nNoColonHere\r\n\r\n"
+        raw = await _raw_exchange(port, payload)
+        status, body = _parse_raw_response(raw)
+        assert status == 400
+        assert body["error"]["code"] == "invalid_input"
+        assert "malformed header line" in body["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_invalid_content_length(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        payload = b"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: not-a-number\r\n\r\n"
+        raw = await _raw_exchange(port, payload)
+        status, body = _parse_raw_response(raw)
+        assert status == 400
+        assert body["error"]["code"] == "invalid_input"
+        assert "invalid content-length" in body["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_rejects_oversized_body(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, _ = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        oversized = 2 * (1 << 20)  # 2 MiB, above the 1 MiB _MAX_BODY_BYTES
+        payload = f"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: {oversized}\r\n\r\n".encode()
+        raw = await _raw_exchange(port, payload)
+        status, body = _parse_raw_response(raw)
+        assert status == 413
+        assert body["error"]["code"] == "invalid_input"
+        assert "body too large" in body["error"]["message"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_http_mcp_handles_incomplete_read_silently(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    state, _, raw_token = await _bootstrap_state(open_vault, vault_path)
+    port = _pick_port()
+    server = await _serve(state, port)
+    try:
+        # Connect and close without sending any request bytes; server
+        # must swallow the IncompleteReadError and stay healthy for
+        # the next client.
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.close()
+        with contextlib.suppress(ConnectionError):
+            await writer.wait_closed()
+        del reader
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            resp = await client.post(
+                "/mcp",
+                json={"method": "stats", "args": {}},
+                headers={"Authorization": f"Bearer {raw_token}"},
+            )
+        assert resp.status_code == 200
     finally:
         server.close()
         await server.wait_closed()
