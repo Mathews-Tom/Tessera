@@ -8,24 +8,39 @@
 
 ## Status
 
-Tessera is a **developer preview**, not a general release. The repo contains the packaged Python CLI, encrypted vault, daemon, HTTP MCP endpoint, stdio bridge, connector writers, retrieval pipeline, and test suite. v0.1 remains gated on clean-VM install and an external-user demo. See [`docs/release-spec.md`](docs/release-spec.md) for the release bar.
+`v0.1.0rc1` is live on PyPI as [`tessera-context`](https://pypi.org/project/tessera-context/0.1.0rc1/). The repo contains the packaged Python CLI, encrypted vault, daemon, HTTP MCP endpoint, first-party stdio MCP bridge, connector writers, retrieval pipeline, and test suite. General availability gates on external-user demo validation and cross-platform install recording — both scoped to the v0.1.x → v0.5 stabilization window per the decision on 2026-04-25. The rc1 is install-stable for technical users; expect real-user feedback to drive a follow-up rc before GA. See [`docs/release-spec.md`](docs/release-spec.md) for the release bar and [`docs/v0.1-dod-audit.md`](docs/v0.1-dod-audit.md) for DoD status.
 
-Install from source during the preview:
+## Install
+
+From PyPI (recommended):
 
 ```bash
-uv sync --dev
+pip install --pre tessera-context
+# or pin explicitly:
+pip install tessera-context==0.1.0rc1
+```
+
+pip's default resolver skips pre-releases, so `--pre` or an explicit version pin is required. The PyPI distribution name is `tessera-context`; the CLI binary and Python import path remain `tessera`. The short `tessera` name on PyPI is held by a 2017-dormant Graphite dashboard project; PEP 541 reclaim is pursued in parallel.
+
+From source (for development):
+
+```bash
+git clone https://github.com/Mathews-Tom/Tessera.git
+cd Tessera && uv sync --dev
 uv run tessera --help
 ```
 
-Core local flow:
+## Core local flow
 
 ```bash
-uv run tessera init --vault ~/.tessera/vault.db
-uv run tessera daemon start --vault ~/.tessera/vault.db
-uv run tessera connect claude-code --vault ~/.tessera/vault.db
+tessera init   --vault ~/.tessera/vault.db
+tessera daemon start --vault ~/.tessera/vault.db
+tessera connect claude-desktop --vault ~/.tessera/vault.db
+# or wire every detected client in one shot:
+tessera connect all --vault ~/.tessera/vault.db
 ```
 
-ChatGPT Developer Mode is deferred to v0.1.x because the current ChatGPT flow requires HTTPS/OAuth/canonical HTTP MCP compatibility that Tessera v0.1 does not yet ship.
+ChatGPT Developer Mode is deferred to v0.1.x because the current ChatGPT flow requires HTTPS/OAuth/canonical HTTP MCP compatibility that Tessera v0.1 does not yet ship. The v0.1 demo flow uses Claude Desktop and Claude Code as the MCP-capable clients.
 
 ## What is Tessera
 
@@ -60,7 +75,7 @@ The lead user is the AI-native developer who wants durable context across Claude
 
 This is a solo-developer craft project by Tom Mathews, paced by evening and weekend velocity while a dissertation on agentic memory systems lands in parallel. The v0.1 commitment is explicit; v0.3 and beyond are contingent on real-user signal. There is no telemetry, no hosted service in v0.1, and no model reselling ever. See `docs/non-goals.md` for the full list of things Tessera will not become.
 
-The reason this exists is that the substrate-change problem is real for a narrow but growing audience (long-running autonomous agents, developers running custom harnesses), the engineering shape is interesting, and the existing products in the space all miss the framing.
+The reason this exists is that the amnesia tax is real for a growing audience — T-shaped users operating across three or more AI tools a week — the engineering shape is interesting, and the adjacent products in the space treat memory as flat blobs in someone else's cloud. Tessera treats it as structured context on disk.
 
 ## License
 
