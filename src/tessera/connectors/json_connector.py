@@ -118,13 +118,21 @@ def claude_desktop_paths() -> dict[str, PathResolver]:
 
 
 def claude_code_paths() -> dict[str, PathResolver]:
-    # Claude Code (the CLI/IDE extension) keeps its MCP config under
-    # ~/.claude on every platform. The config filename is documented
-    # in docs/release-spec.md §v0.1 Scope §Client connectors.
+    # Claude Code reads MCP servers from ~/.claude.json under a
+    # top-level ``mcpServers`` key. Everything else under ~/.claude/
+    # (agents, backups, commands, caches) is runtime artifacts — not
+    # config — and Claude Code ignores any files written there.
+    #
+    # Earlier versions of this connector wrote to
+    # ~/.claude/claude_code_config.json, which Claude Code silently
+    # ignored. The fix points at the real single-file location; the
+    # shared ``_merge_entry`` preserves every other top-level key so
+    # the user's existing Claude Code settings (tipsHistory, usage
+    # counters, UI flags, etc.) are untouched.
     return {
-        "Darwin": lambda: _home() / ".claude" / "claude_code_config.json",
-        "Linux": lambda: _home() / ".claude" / "claude_code_config.json",
-        "Windows": lambda: _home() / ".claude" / "claude_code_config.json",
+        "Darwin": lambda: _home() / ".claude.json",
+        "Linux": lambda: _home() / ".claude.json",
+        "Windows": lambda: _home() / ".claude.json",
     }
 
 
