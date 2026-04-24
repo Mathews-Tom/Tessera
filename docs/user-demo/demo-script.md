@@ -24,7 +24,7 @@ Close every app that writes to `~/.tessera/` except the terminal you'll record. 
 | 1. Connect capture-side client | 1:00–1:30 | `tessera connect <client>` (any of claude-desktop, claude-code, cursor, codex), restart, verify MCP tool surface |
 | 2. Capture four facets in the client | 1:30–5:30 | Client conversation: four `capture` calls |
 | 3. Verify vault state | 5:30–6:00 | Client invokes the `list_facets` MCP tool, displays the four captured facets |
-| 4. ChatGPT connect | 6:00–7:00 | ChatGPT Dev Mode MCP config |
+| 4. ChatGPT connect | 6:00–7:00 | ChatGPT → Developer Mode → New App: Name / MCP Server URL / Authentication=Bearer / Bearer token |
 | 5. Cross-facet recall + draft | 7:00–9:30 | ChatGPT: `recall(facet_types=all)`, then a draft request |
 | 6. Close and verify | 9:30–10:00 | terminal: `tessera doctor`, `tessera daemon stop` |
 
@@ -66,7 +66,7 @@ tessera daemon status
 
 ## Stage 1 — Connect the capture-side client (30 sec)
 
-The recording uses **Claude Desktop** on the capture side, but any of the four file-based v0.1 connectors work: `claude-desktop`, `claude-code`, `cursor`, `codex`. Pick whichever matches your daily-driver AI tool. Pass multiple ids in one command to connect several at once, or use `all` as sugar for every file-based client (ChatGPT is separate because it uses the URL-exchange flow covered in Stage 4):
+The recording uses **Claude Desktop** on the capture side, but any of the four file-based v0.1 connectors work: `claude-desktop`, `claude-code`, `cursor`, `codex`. Pick whichever matches your daily-driver AI tool. Pass multiple ids in one command to connect several at once, or use `all` as sugar for every file-based client (ChatGPT is separate because it uses the Developer Mode "New App" paste flow covered in Stage 4):
 
 ```bash
 # Connect only the client you'll capture from on camera.
@@ -113,16 +113,29 @@ The tool returns a structured list of the four captured facets. This is the evid
 
 **Pass gate:** all four facets listed with their external-IDs (via the MCP tool output or the terminal variant).
 
-## Stage 4 — ChatGPT connect (1 min)
+## Stage 4 — ChatGPT Developer Mode connect (1 min)
 
-Open ChatGPT Developer Mode. In the MCP server configuration:
+Follow [OpenAI's Developer Mode guide](https://developers.openai.com/api/docs/guides/developer-mode). The "New App (Beta)" dialog takes four fields; `tessera connect chatgpt` prints exactly the values to paste into each.
 
-- URL: `http://127.0.0.1:5710/mcp?token=<RAW_TOKEN>` (use the token from Stage 0).
-- Server name: `tessera`.
+```bash
+tessera connect chatgpt --vault ~/.tessera/demo.db --passphrase "$TESSERA_PASSPHRASE"
+# prints a kv-panel with:
+#   Name            Tessera
+#   MCP Server URL  http://127.0.0.1:5710/mcp
+#   Authentication  Bearer
+#   Bearer token    tessera_service_...
+```
 
-On-camera action: paste URL, confirm the six tools appear in ChatGPT's tool list.
+On-camera action:
 
-**Pass gate:** ChatGPT shows `recall`, `capture`, etc. under the `tessera` server.
+1. ChatGPT → **Settings** → **Developer Mode** → **New App**.
+2. Paste the four values from the panel into their matching fields. `Name` is free-text; `MCP Server URL` and `Bearer token` come verbatim; `Authentication` dropdown → select `Bearer`.
+3. Tick "**I understand and want to continue**" (OpenAI's safety warning is boilerplate for custom MCP servers).
+4. Click **Create**.
+
+**Pass gate:** ChatGPT shows `capture`, `recall`, `show`, `list_facets`, `stats`, `forget` under the `Tessera` app in the tool-picker sidebar.
+
+**⚠ Known integration gap to watch for.** ChatGPT's MCP client speaks canonical MCP JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`). Tessera's `/mcp` endpoint currently speaks a custom `{"method": X, "args": Y}` shape — the same protocol gap that hit Claude Desktop and that `tessera stdio` solves for the stdio side. If ChatGPT reports a connection error or the tools do not appear, the HTTP-side bridge is the v0.1.x follow-up that closes this. Flag the gap in the recording notes rather than ship a broken take.
 
 ## Stage 5 — Cross-facet recall + draft (2.5 min)
 
@@ -152,7 +165,7 @@ tessera daemon stop
 | `daemon status` shows empty `vault_id` | Warm-up failed | `tail ~/.tessera/run/tesserad.log`; common: missing nomic-embed-text → `ollama pull nomic-embed-text` |
 | Claude doesn't see Tessera tools | Claude cached old config | `tessera disconnect claude-desktop`, then `tessera connect claude-desktop`, full restart |
 | `recall` returns empty result set | No facets captured yet, or active model mismatch | Ask the client to call the `list_facets` MCP tool — if empty, loop back to Stage 2. (There is no `tessera list_facets` CLI subcommand; the verb only exists as an MCP tool.) |
-| ChatGPT MCP panel says "can't reach server" | Token TTL expired | `tessera tokens create` again; update the ChatGPT URL |
+| ChatGPT MCP panel says "can't reach server" | Token TTL expired, or protocol gap (ChatGPT speaks canonical MCP JSON-RPC 2.0; Tessera's `/mcp` speaks custom shape) | Re-run `tessera connect chatgpt` to mint a fresh token. If the fresh token still fails, the server-side HTTP bridge is a v0.1.x follow-up — flag and continue to terminal-side verification instead. |
 | p99 spike > 3 s on a `recall` | Ollama cold-reload | Wait 30 s and re-run — `keep_alive=-1` should prevent repeat |
 
 If any row fires, **stop recording and reset**. Do not ship a video with a recovery path visible — the real-user test then can't distinguish product issues from recording issues.

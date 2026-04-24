@@ -12,7 +12,6 @@ the user pastes into ChatGPT.
 from __future__ import annotations
 
 import argparse
-import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -34,8 +33,7 @@ from tessera.connectors import (
 )
 from tessera.connectors.base import McpServerSpec
 from tessera.connectors.chatgpt import ChatGptConnector
-from tessera.daemon.config import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, resolve_config
-from tessera.daemon.control import ControlError, call_control
+from tessera.daemon.config import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
 
 # Sensible default scopes for a newly-minted client token. Claude
 # Desktop / Code / Cursor / Codex / ChatGPT all work against the
@@ -241,6 +239,30 @@ def _connect_file_based(args: argparse.Namespace, connector: Connector) -> int:
 
 
 def _connect_chatgpt(args: argparse.Namespace) -> int:
+    """Print the two fields ChatGPT Developer Mode's "New App" dialog needs.
+
+    Per https://developers.openai.com/api/docs/guides/developer-mode the
+    UI shape is:
+
+      Name               — free-text (e.g. "Tessera")
+      MCP Server URL     — the Tessera daemon's /mcp endpoint
+      Authentication     — dropdown, pick "Bearer" and paste the token
+
+    The nonce-exchange flow this handler used to print (via the
+    daemon's /mcp/exchange endpoint) pre-dates ChatGPT's current UI
+    and is not consumable by "New App". Keep the exchange endpoint
+    on the daemon for programmatic flows; the CLI now prints the
+    explicit URL + Bearer token so the user can paste each into its
+    own field.
+
+    Known integration gap flagged in the demo script: ChatGPT's MCP
+    client will speak canonical MCP JSON-RPC 2.0 against the URL,
+    while Tessera's ``/mcp`` endpoint speaks a custom shape. Full
+    ChatGPT interop requires a server-side adaptation equivalent to
+    what ``tessera stdio`` does for Claude Desktop. Tracked as a
+    v0.1.x follow-up.
+    """
+
     try:
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
@@ -255,35 +277,28 @@ def _connect_chatgpt(args: argparse.Namespace) -> int:
         )
     except Exception as exc:
         return fail(f"token mint failed: {exc}")
-    socket_path = args.socket or resolve_config(vault_path=args.vault).socket_path
-    try:
-        response = asyncio.run(
-            call_control(
-                socket_path,
-                method="stash_bootstrap_nonce",
-                args={"raw_token": raw_token},
-            )
-        )
-    except (ConnectionError, ControlError) as exc:
-        return fail(f"daemon control call failed: {exc}")
-    nonce = response.get("nonce")
-    if not isinstance(nonce, str) or not nonce:
-        return fail("daemon did not return a nonce")
-    expires_at = response.get("expires_at")
-    # The URL is the bootstrap transport the user pastes into ChatGPT;
-    # the raw session token never leaves the daemon until ChatGPT
-    # POSTs the nonce back (one-time-use, 30-second TTL). Keep the
-    # URL host/port in sync with the daemon's HTTP MCP bind.
-    exchange_url = f"http://{DEFAULT_HTTP_HOST}:{DEFAULT_HTTP_PORT}/mcp/exchange?nonce={nonce}"
-    panel_items = {"bootstrap URL": exchange_url}
-    if isinstance(expires_at, int):
-        now = int(datetime.now(UTC).timestamp())
-        remaining = max(0, expires_at - now)
-        panel_items["expires in"] = f"~{remaining}s (one-time-use)"
-    kv_panel("ChatGPT Developer Mode", panel_items, emoji=EMOJI["connect"])
+
+    mcp_url = f"http://{DEFAULT_HTTP_HOST}:{DEFAULT_HTTP_PORT}/mcp"
+    kv_panel(
+        "ChatGPT Developer Mode — paste into the New App dialog",
+        {
+            "Name": "Tessera",
+            "MCP Server URL": mcp_url,
+            "Authentication": "Bearer",
+            "Bearer token": raw_token,
+        },
+        emoji=EMOJI["connect"],
+    )
     info(
-        "paste the URL into ChatGPT Dev Mode's Add tool dialog; "
-        "the daemon will hand over a scoped session token on the first request."
+        "ChatGPT → Settings → Developer Mode → New App → paste each value "
+        "into its field, tick the safety checkbox, Create."
+    )
+    info(
+        "Protocol note: ChatGPT's MCP client speaks canonical MCP JSON-RPC 2.0. "
+        "Tessera's v0.1 /mcp endpoint speaks a custom shape — if ChatGPT reports "
+        "a connection / initialize failure, the integration gap is tracked as a "
+        "v0.1.x follow-up; the daemon needs a server-side bridge equivalent to "
+        "`tessera stdio` for the HTTP side."
     )
     return 0
 
