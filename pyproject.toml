@@ -5,7 +5,7 @@
 # pursued in parallel for a future release; v0.1.0 ships as
 # `tessera-context` per `docs/release-spec.md §v0.1 launch`.
 name = "tessera-context"
-version = "0.1.0rc1"
+version = "0.1.0rc2"
 description = "Portable context layer for T-shaped AI-native users. Single-file encrypted SQLite vault served over MCP."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -15,7 +15,7 @@ authors = [
 requires-python = ">=3.12,<3.13"
 keywords = ["mcp", "agent", "memory", "identity", "sqlite", "local-first"]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS",
@@ -78,6 +78,16 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tessera"]
+
+# Exclude the explainer video from the sdist. The MP4 is ~2.2 MiB and
+# inflates the PyPI sdist from ~100 KiB to ~2.3 MiB for zero install
+# value — it's a pitch asset, not something setup.py / hatch needs at
+# build time. The wheel is unaffected; only the sdist channel sees the
+# slim-down. Developers pulling from git still get the file.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "assets/*.mp4",
+]
 
 # ----------------------------------------------------------------------------
 # Ruff — lint + format
