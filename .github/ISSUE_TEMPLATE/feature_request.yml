@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose something new. Check the release spec first — large chunks of the feature space are already committed to specific versions.
+title: "[feature]: "
+labels: ["feature", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: read [`docs/release-spec.md`](../blob/main/docs/release-spec.md) and [`docs/non-goals.md`](../blob/main/docs/non-goals.md). Features already planned for v0.3 / v0.5 / v1.0 are committed scope and don't need a new issue; features on the non-goals list are intentional refusals.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Concrete user story. *"As a {type of user}, I want {capability}, because {outcome}."* Abstract or aesthetic feature requests are unlikely to land.
+      placeholder: "As a T-shaped developer running Claude Code + Cursor + ChatGPT, I want ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: "What it would look like from a user's perspective. Commands, MCP tool signatures, config changes, UX."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: "Other ways this problem could be solved — including existing v0.1 tools you tried and found insufficient."
+
+  - type: dropdown
+    id: target_version
+    attributes:
+      label: Target version
+      description: "Where does this fit in the release trajectory? If unsure, pick the last option and we'll figure out together."
+      options:
+        - v0.1.x (rc / stabilization)
+        - v0.3 (people + skills + importers)
+        - v0.5 (write-time + compiled notebooks + BYO sync)
+        - v1.0 (multi-user + optional GUI + optional hosted sync)
+        - Unsure — open to guidance
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_signal
+    attributes:
+      label: Would you use this, or is this a "might be nice"?
+      description: "Honest answer. v0.1.x gates additions on real-user signal; a 'might be nice' is useful input but less likely to reshape the roadmap than a 'I would install this the day it ships'."
+    validations:
+      required: true

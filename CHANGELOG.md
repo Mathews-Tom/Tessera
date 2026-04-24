@@ -4,6 +4,24 @@ All notable changes to Tessera are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.0rc2] — 2026-04-25 (pre-release, polish)
+
+Release-metadata and repo-ergonomics polish on top of `0.1.0rc1`. No source code changes; the shipped binaries and API surface are identical to rc1.
+
+- **PyPI sdist shrunk from 2.3 MiB to ~100 KiB** by excluding `assets/*.mp4` from the hatch sdist target. The explainer video is a pitch asset, not something setup.py / hatch needs at build time. The wheel is unchanged; only the sdist download channel sees the slim-down. Source-tarball users (`pip download --no-binary :all:` and mirror-builders) get a faster install.
+- **Classifier bumped from `Development Status :: 1 - Planning` to `Development Status :: 4 - Beta`.** An RC-stage pre-release with documented performance tiers and a complete feature set is beyond planning. PyPI's project page now reflects the actual maturity.
+- **Issue templates added** under `.github/ISSUE_TEMPLATE/`: structured YAML bug-report and feature-request forms, plus a `config.yml` that points first-time filers at `docs/troubleshooting.md` before they open a bug and at `docs/release-spec.md` before they open a feature request.
+
+No other changes. If you're already on `0.1.0rc1` and not reporting bugs, there's no reason to upgrade.
+
+### Install
+
+```bash
+pip install --pre tessera-context
+# or pin explicitly
+pip install tessera-context==0.1.0rc2
+```
+
 ## [0.1.0rc1] — 2026-04-25 (pre-release)
 
 Tessera v0.1.0 ships the **T-shape cross-facet synthesis demo** end-to-end: capture a user's identity, preference, workflow, project, and style facets in any MCP-capable AI client, then recall them as a coherent cross-facet bundle in a different client. All-local by default (Ollama + sentence-transformers); zero telemetry; sqlcipher-encrypted vault with capability-scoped per-tool access.

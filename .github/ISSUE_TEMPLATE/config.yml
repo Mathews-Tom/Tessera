@@ -1,0 +1,17 @@
+# Disable the "Open a blank issue" escape hatch so every incoming
+# issue picks up one of the structured forms (bug_report.yml or
+# feature_request.yml). This is the single biggest win for triage
+# quality at low audience size: no more issues that are just a
+# title and a shrug.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Troubleshooting guide (check this first)
+    url: https://github.com/Mathews-Tom/Tessera/blob/main/docs/troubleshooting.md
+    about: Symptom-indexed guide for rc install, first-run, connector, and token issues. Most rc1 reports resolve here without an issue.
+  - name: Release spec (check before feature requests)
+    url: https://github.com/Mathews-Tom/Tessera/blob/main/docs/release-spec.md
+    about: What ships in v0.1, v0.3, v0.5, v1.0 — and what explicitly doesn't. Features outside v0.1.x scope are unlikely to land before their target version.
+  - name: Non-goals (check before scope-critique issues)
+    url: https://github.com/Mathews-Tom/Tessera/blob/main/docs/non-goals.md
+    about: Things Tessera will never do by design. Requests to become those things will be closed with a pointer here.

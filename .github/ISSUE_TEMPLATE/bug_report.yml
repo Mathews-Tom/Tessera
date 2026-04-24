@@ -1,0 +1,59 @@
+name: Bug report
+description: Something that worked doesn't work, or something works differently than documented.
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: scan [`docs/troubleshooting.md`](../blob/main/docs/troubleshooting.md). Most rc1 install, first-run, connector, and token issues are listed there with concrete fixes. If the guide doesn't match your symptom, or the fix doesn't work, this is the right place.
+
+  - type: input
+    id: tessera_version
+    attributes:
+      label: Tessera version
+      description: "Output of `tessera --version`. If install failed before you could run that, say so."
+      placeholder: "0.1.0rc1"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: "OS name + version, Python version, install path (pip / Homebrew / source)."
+      placeholder: "macOS 15.2 (Apple Silicon), Python 3.12.8, pip install --pre"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`tessera doctor` output"
+      description: "Full text, not a summary. If the daemon isn't running, that's still useful — doctor catches a lot without a live daemon."
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Exact command and exact error
+      description: "What you ran. What you saw. Full error, not a paraphrase."
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: bundle
+    attributes:
+      label: Diagnostic bundle (optional, dramatically speeds up triage)
+      description: |
+        Attach the zip produced by `tessera doctor --collect <path>`. Content is scrubbed per [`docs/determinism-and-observability.md §Diagnostic bundle content scrubbing`](../blob/main/docs/determinism-and-observability.md) — no facet content leaves your machine. You can inspect the bundle before attaching if you want to confirm.
