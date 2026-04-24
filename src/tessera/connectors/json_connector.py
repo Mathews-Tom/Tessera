@@ -29,6 +29,8 @@ from tessera.connectors.file_safety import (
     write_safely,
 )
 
+EntryBuilder = Callable[[McpServerSpec], Mapping[str, object]]
+
 _TOP_LEVEL_KEY = "mcpServers"
 
 PathResolver = Callable[[], Path]
@@ -48,6 +50,11 @@ class JsonConnector:
     client_id: str
     display_name: str
     paths: Mapping[str, PathResolver] = field(default_factory=dict)
+    # Per-client entry builder. Defaults to the native HTTP-MCP shape
+    # used by Claude Code, Cursor, and Codex. Claude Desktop overrides
+    # with ``build_stdio_via_mcp_remote_entry`` because its MCP loader
+    # speaks stdio transport only.
+    entry_builder: EntryBuilder = build_server_entry
 
     def default_path(self) -> Path:
         resolver = self.paths.get(platform.system())
@@ -60,7 +67,7 @@ class JsonConnector:
 
     def apply(self, path: Path, server: McpServerSpec) -> ConnectorResult:
         existing = read_json(path)
-        merged = _merge_entry(existing, server)
+        merged = _merge_entry(existing, server, self.entry_builder)
         outcome = write_safely(path, merged, serialiser=json_serialiser)
         return _to_result(outcome)
 
@@ -132,7 +139,11 @@ def cursor_paths() -> dict[str, PathResolver]:
 # ---- Merge helpers -------------------------------------------------------
 
 
-def _merge_entry(existing: dict[str, object], server: McpServerSpec) -> dict[str, object]:
+def _merge_entry(
+    existing: dict[str, object],
+    server: McpServerSpec,
+    entry_builder: EntryBuilder,
+) -> dict[str, object]:
     """Return a copy of ``existing`` with the Tessera entry merged in.
 
     ``existing`` is not mutated. When the file already has a
@@ -140,6 +151,10 @@ def _merge_entry(existing: dict[str, object], server: McpServerSpec) -> dict[str
     ``mcpServers["tessera"]`` is rewritten. When the top-level
     ``mcpServers`` slot exists but isn't a dict, the merge raises
     :class:`UnsupportedConfigShapeError` rather than stomping it.
+
+    ``entry_builder`` produces the per-entry payload; pluggable so
+    Claude Desktop's stdio-via-mcp-remote shape and the native HTTP
+    shape can share the rest of the merge machinery.
     """
 
     merged = dict(existing)
@@ -149,7 +164,7 @@ def _merge_entry(existing: dict[str, object], server: McpServerSpec) -> dict[str
             f"config has {_TOP_LEVEL_KEY!r} = {type(servers_raw).__name__}; expected a JSON object"
         )
     servers = dict(servers_raw)
-    servers[TESSERA_SERVER_NAME] = dict(build_server_entry(server))
+    servers[TESSERA_SERVER_NAME] = dict(entry_builder(server))
     merged[_TOP_LEVEL_KEY] = servers
     return merged
 

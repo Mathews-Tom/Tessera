@@ -96,16 +96,13 @@ class Connector(Protocol):
 
 
 def build_server_entry(server: McpServerSpec) -> Mapping[str, object]:
-    """Return the per-entry payload JSON connectors write under their map.
+    """Return the per-entry payload for clients that speak HTTP MCP natively.
 
-    Claude Desktop's MCP schema keys the transport on ``type``, not
-    ``transport``. An earlier version of this connector emitted
-    ``"transport": "http"``, which Claude Desktop silently ignored and
-    then rejected the whole entry as "not a valid MCP server
-    configuration" because it looked like a stdio entry missing a
-    ``command`` field. The modern MCP spec uses ``type`` with
-    ``"http"`` / ``"sse"`` / ``"stdio"`` as the three transport modes;
-    Claude Code, Cursor, and Codex all accept the same shape.
+    Claude Code, Cursor, and Codex all accept the MCP spec's native
+    HTTP transport shape: ``{"type": "http", "url": ..., "headers": ...}``.
+    Claude Desktop is the exception — see
+    :func:`build_stdio_via_mcp_remote_entry` for its stdio-bridge
+    equivalent.
 
     ChatGPT Dev Mode uses a different shape entirely (no config file,
     URL-embedded bootstrap nonce) handled by its own connector.
@@ -120,6 +117,35 @@ def build_server_entry(server: McpServerSpec) -> Mapping[str, object]:
     }
 
 
+def build_stdio_via_mcp_remote_entry(server: McpServerSpec) -> Mapping[str, object]:
+    """Return a stdio entry that bridges an HTTP MCP server via ``mcp-remote``.
+
+    Claude Desktop's MCP loader supports stdio transport only. To
+    connect an HTTP MCP server you invoke ``mcp-remote`` (the canonical
+    Node.js stdio↔HTTP bridge published at
+    https://github.com/geelen/mcp-remote) via ``npx``. The bridge
+    itself speaks stdio on one side and tunnels every request to the
+    configured HTTP URL on the other, applying the ``Authorization``
+    header on each request.
+
+    Requires Node.js / ``npx`` on the user's ``PATH``. The alternative
+    is shipping a compiled native bridge binary, which complicates the
+    install surface without meaningful benefit for the v0.1 audience
+    (T-shaped engineers who almost always have Node installed).
+    """
+
+    return {
+        "command": "npx",
+        "args": [
+            "-y",
+            "mcp-remote",
+            server.url,
+            "--header",
+            f"Authorization: Bearer {server.token}",
+        ],
+    }
+
+
 __all__ = [
     "TESSERA_SERVER_NAME",
     "Connector",
@@ -129,4 +155,5 @@ __all__ = [
     "UnknownClientError",
     "UnsupportedConfigShapeError",
     "build_server_entry",
+    "build_stdio_via_mcp_remote_entry",
 ]
