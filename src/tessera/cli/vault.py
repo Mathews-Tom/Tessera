@@ -15,7 +15,7 @@ import sqlcipher3
 from tessera.cli._ui import EMOJI, error, status, success
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, load_salt
-from tessera.vault.facets import V0_1_FACET_TYPES
+from tessera.vault.facets import WRITABLE_FACET_TYPES
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -39,7 +39,7 @@ def _make_parser() -> argparse.ArgumentParser:
     repair.add_argument("--passphrase", required=True)
     repair.add_argument(
         "--facet-type",
-        choices=sorted(V0_1_FACET_TYPES),
+        choices=sorted(WRITABLE_FACET_TYPES),
         help="Limit the reset to a single facet type (default: all).",
     )
     return parser
@@ -82,7 +82,7 @@ def repair_embeds(conn: sqlcipher3.Connection, *, facet_type: str | None = None)
             """
         )
     else:
-        if facet_type not in V0_1_FACET_TYPES:
+        if facet_type not in WRITABLE_FACET_TYPES:
             raise ValueError(f"unsupported facet_type: {facet_type!r}")
         cur = conn.execute(
             """

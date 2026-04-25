@@ -65,14 +65,33 @@ def test_insert_dedups_on_same_agent_and_normalized_content(conn: sqlite3.Connec
 
 @pytest.mark.unit
 def test_insert_rejects_unsupported_facet_type(conn: sqlite3.Connection) -> None:
+    # ``compiled_notebook`` is reserved in the schema CHECK but stays
+    # outside the v0.3 writable set until v0.5 activates write-time
+    # compilation.
     with pytest.raises(facets.UnsupportedFacetTypeError):
         facets.insert(
             conn,
             agent_id=_agent_id(conn),
-            facet_type="skill",
+            facet_type="compiled_notebook",
             content="x",
             source_tool="cli",
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("facet_type", ["person", "skill"])
+def test_insert_accepts_v0_3_unlocked_types(conn: sqlite3.Connection, facet_type: str) -> None:
+    external_id, is_new = facets.insert(
+        conn,
+        agent_id=_agent_id(conn),
+        facet_type=facet_type,
+        content=f"test {facet_type}",
+        source_tool="cli",
+    )
+    assert is_new is True
+    fetched = facets.get(conn, external_id)
+    assert fetched is not None
+    assert fetched.facet_type == facet_type
 
 
 @pytest.mark.unit
@@ -200,14 +219,14 @@ def test_insert_after_soft_delete_restores_the_row(conn: sqlite3.Connection) -> 
 
 
 @pytest.mark.unit
-def test_v0_1_facet_types_are_subset_of_schema_check() -> None:
+def test_writable_facet_types_are_subset_of_schema_check() -> None:
     """The application guard must never accept a type the schema rejects."""
 
     conn = sqlite3.connect(":memory:")
     for stmt in schema.all_statements():
         conn.execute(stmt)
     conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('01A', 'a', 1)")
-    for ft in facets.V0_1_FACET_TYPES:
+    for ft in facets.WRITABLE_FACET_TYPES:
         conn.execute(
             """
             INSERT INTO facets(external_id, agent_id, facet_type, content,
@@ -216,3 +235,11 @@ def test_v0_1_facet_types_are_subset_of_schema_check() -> None:
             """,
             (f"01{ft.upper()}", ft, ft),
         )
+
+
+@pytest.mark.unit
+def test_writable_facet_types_equal_v0_3_vocabulary() -> None:
+    """v0.3 unlocks ``person`` and ``skill`` alongside the original five."""
+
+    assert facets.V0_1_FACET_TYPES | {"person", "skill"} == facets.WRITABLE_FACET_TYPES
+    assert "compiled_notebook" not in facets.WRITABLE_FACET_TYPES

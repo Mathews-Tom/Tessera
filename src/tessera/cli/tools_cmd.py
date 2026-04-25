@@ -19,22 +19,22 @@ import httpx
 from tessera.cli._common import fail
 from tessera.cli._ui import EMOJI, console, report_table, status, success
 from tessera.daemon.config import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
-from tessera.vault.facets import V0_1_FACET_TYPES
+from tessera.vault.facets import WRITABLE_FACET_TYPES
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
     capture = subparsers.add_parser("capture", help="capture a facet")
     _add_http_args(capture)
     capture.add_argument("content")
-    # ``--facet-type`` is required. Under the post-reframe five-facet
-    # model (ADR 0010) there is no single sensible default — every
-    # facet type is an explicit user choice between identity /
-    # preference / workflow / project / style.
+    # ``--facet-type`` is required. There is no single sensible default —
+    # every facet type is an explicit user choice across the v0.3
+    # writable vocabulary (identity / preference / workflow / project /
+    # style / person / skill).
     capture.add_argument(
         "--facet-type",
         required=True,
-        choices=sorted(V0_1_FACET_TYPES),
-        help="one of the five v0.1 facet types",
+        choices=sorted(WRITABLE_FACET_TYPES),
+        help="one of the writable facet types",
     )
     capture.add_argument("--source-tool", default=None)
     capture.set_defaults(handler=_cmd_capture)

@@ -190,7 +190,7 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
                 "content": {"type": "string", "maxLength": _MAX_CONTENT_CHARS},
                 "facet_type": {
                     "type": "string",
-                    "enum": sorted(vault_facets.V0_1_FACET_TYPES),
+                    "enum": sorted(vault_facets.WRITABLE_FACET_TYPES),
                 },
                 "source_tool": {
                     "type": "string",
@@ -226,7 +226,7 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
                     "type": "array",
                     "items": {
                         "type": "string",
-                        "enum": sorted(vault_facets.V0_1_FACET_TYPES),
+                        "enum": sorted(vault_facets.WRITABLE_FACET_TYPES),
                     },
                 },
                 "requested_budget_tokens": {
@@ -259,7 +259,7 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
             "properties": {
                 "facet_type": {
                     "type": "string",
-                    "enum": sorted(vault_facets.V0_1_FACET_TYPES),
+                    "enum": sorted(vault_facets.WRITABLE_FACET_TYPES),
                 },
                 "limit": {
                     "type": "integer",
@@ -681,9 +681,9 @@ def _validate_length(field_name: str, value: str, max_chars: int, *, allow_empty
 
 
 def _validate_facet_type(facet_type: str) -> None:
-    if facet_type not in vault_facets.V0_1_FACET_TYPES:
+    if facet_type not in vault_facets.WRITABLE_FACET_TYPES:
         raise ValidationError(
-            f"facet_type {facet_type!r} not in {sorted(vault_facets.V0_1_FACET_TYPES)}"
+            f"facet_type {facet_type!r} not in {sorted(vault_facets.WRITABLE_FACET_TYPES)}"
         )
 
 
