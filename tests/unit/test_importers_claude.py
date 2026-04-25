@@ -10,9 +10,13 @@ from typing import Any
 
 import pytest
 
+from tessera.cli.__main__ import _build_parser
 from tessera.importers import claude as claude_importer
 from tessera.importers._common import MalformedExportError, UnsupportedFacetTypeError
+from tessera.migration import bootstrap
 from tessera.vault import schema
+from tessera.vault.connection import VaultConnection
+from tessera.vault.encryption import derive_key, new_salt, save_salt
 
 
 @pytest.fixture
@@ -331,3 +335,89 @@ def test_import_export_collects_per_conversation_errors(
     assert len(report.errors) == 1
     assert "conversation #0" in report.errors[0]
 
+
+# ---- CLI handler --------------------------------------------------------
+
+
+@pytest.fixture
+def initialized_vault(tmp_path: Path, passphrase: bytearray) -> Path:
+    vault_path = tmp_path / "vault.db"
+    salt = new_salt()
+    save_salt(vault_path, salt)
+    key = derive_key(passphrase, salt)
+    bootstrap(vault_path, key)
+    key.wipe()
+    return vault_path
+
+
+def _seed_agent_in_vault(vault_path: Path, passphrase: bytearray) -> None:
+    salt_bytes = (vault_path.parent / (vault_path.name + ".salt")).read_bytes()
+    key = derive_key(passphrase, salt_bytes)
+    with VaultConnection.open(vault_path, key) as vc:
+        vc.connection.execute(
+            "INSERT INTO agents(external_id, name, created_at) VALUES ('01A', 'tom', 1)"
+        )
+    key.wipe()
+
+
+@pytest.mark.unit
+def test_cli_import_claude_runs_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+    initialized_vault: Path,
+    passphrase: bytearray,
+    tmp_path: Path,
+) -> None:
+    _seed_agent_in_vault(initialized_vault, passphrase)
+    export = _make_export(
+        tmp_path,
+        [
+            _conversation(
+                name="t",
+                messages=[
+                    ("human", "hello", "2024-01-01T12:00:00.000Z"),
+                    ("assistant", "hi", "2024-01-01T12:00:30.000Z"),
+                ],
+            )
+        ],
+    )
+    monkeypatch.setenv("TESSERA_PASSPHRASE", passphrase.decode("utf-8"))
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "import",
+            "claude",
+            str(export),
+            "--vault",
+            str(initialized_vault),
+        ]
+    )
+    rc = args.handler(args)
+    assert rc == 0
+
+
+@pytest.mark.unit
+def test_cli_import_claude_surfaces_malformed_export(
+    monkeypatch: pytest.MonkeyPatch,
+    initialized_vault: Path,
+    passphrase: bytearray,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _seed_agent_in_vault(initialized_vault, passphrase)
+    bad = tmp_path / "broken.json"
+    bad.write_text("{broken", encoding="utf-8")
+    monkeypatch.setenv("TESSERA_PASSPHRASE", passphrase.decode("utf-8"))
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "import",
+            "claude",
+            str(bad),
+            "--vault",
+            str(initialized_vault),
+        ]
+    )
+    rc = args.handler(args)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "not valid JSON" in err
