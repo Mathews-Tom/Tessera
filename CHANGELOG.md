@@ -4,6 +4,75 @@ All notable changes to Tessera are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0rc1] — 2026-04-26 (pre-release)
+
+Tessera v0.3 activates the **People + Skills surface** and ships the first **conversation-history importers** (ChatGPT and Claude). Schema bumps to v3 with an additive, idempotent v2 → v3 migration. Design rationale is recorded in [ADR-0012](docs/adr/0012-v0-3-people-and-skills-design.md). v0.3 DoD lives at [`docs/release-spec.md §Definition of Done for v0.3`](docs/release-spec.md). Release-engineering decision folding v0.1 DoD items 1 and 9 into the v0.3.0rc1 gate is recorded at [`docs/v0.1-dod-audit.md §Decision 2026-04-26`](docs/v0.1-dod-audit.md). Cross-platform clean-VM walkthrough runbook: [`docs/smoke-test-v0.3rc1.md`](docs/smoke-test-v0.3rc1.md). Friend-share onboarding: [`docs/quickstart.md`](docs/quickstart.md).
+
+### Schema v3 (additive over v2)
+
+- New nullable `disk_path` column on `facets`, partial-unique-indexed per agent so each on-disk skill file maps to at most one live row.
+- New `people` table — separate from `facets` — with `canonical_name`, JSON `aliases` array, and `UNIQUE(agent_id, canonical_name)`.
+- New `person_mentions(facet_id, person_id, confidence)` link table with `ON DELETE CASCADE` on both foreign keys.
+- v2 → v3 step list registered in `migration/runner.py::_V2_TO_V3_STEPS` (idempotent, resume-safe, takes a pre-migration backup).
+
+People are stored as rows, not facets, because relationship-graph mutability (alias merges, splits) fights `UNIQUE(agent_id, content_hash)` dedup. Skills are facets with structured metadata (`{name, description, active}`) plus the optional `disk_path` column. ADR-0012 §Rationale records the alternatives and rejection reasons.
+
+### New facet type activated for writes
+
+- `skill` — user-authored procedure markdown, optionally synced to disk. The `content` field carries the procedure verbatim; `disk_path` links it to a `.md` file.
+
+### Five new MCP tools
+
+- `learn_skill(name, description, procedure_md)` — write scope on `skill`.
+- `get_skill(name)` — read scope on `skill`, returns `null` when no live match.
+- `list_skills(active_only=true, limit=50)` — read scope on `skill`.
+- `resolve_person(mention)` — read scope on `person`, returns `(matches, is_exact)`. Conservative: a single canonical-name or alias match flips `is_exact=True`; multi-match or substring hits return every candidate. Auto-pick is deliberately not wired (no calibration data at v0.3; a wrong auto-pick is hard to undo).
+- `list_people(limit=50, since?)` — read scope on `person`.
+
+### New CLI
+
+- `tessera skills {list, show, sync-to-disk, sync-from-disk}` — list/show via HTTP MCP; sync via direct vault access.
+- `tessera people {list, show, merge, split}` — list/show via HTTP MCP; merge/split via direct vault access.
+- `tessera import {chatgpt, claude} <path>` — direct-vault batch import.
+
+The shared HTTP-MCP helpers (`tessera capture`, `tessera skills list`, `tessera people show`, …) were extracted from `cli/tools_cmd.py` into a new `cli/_http.py` module so the `httpx` import lives in exactly one place. The CI no-telemetry allowlist tracks the move.
+
+### Importers
+
+- ChatGPT (`conversations.json` from a ChatGPT data export) — walks the active-branch via the export's mapping graph; falls back to a `create_time` sort when `current_node` is missing or the parent chain is broken; handles multimodal `content` block arrays.
+- Claude (`conversations.json` from a Claude data export) — walks the flat `chat_messages` array; handles both legacy `text` and newer `content` block shapes.
+
+Both importers write **only `project` facets** by ADR-0012's design — never `skill` or `person`. Skills stay user-authored via `learn_skill`; people surface through `resolve_person`. Person-mention auto-extraction during import is documented future work; shipping heuristic NER without calibration data would create silent false-positive person rows the user can't easily undo.
+
+### Default recall fan-out
+
+`recall` without an explicit `facet_types` filter now includes `skill` in the cross-facet bundle by default. `person` is excluded — people live in their own table, have no embeddings, and are served by the dedicated `resolve_person` tool.
+
+### Documentation
+
+- ADR-0012 — v0.3 People + Skills design.
+- v0.3 DoD checkboxes added to `docs/release-spec.md` covering cross-platform smoke (subsumes v0.1 DoD item 1), v2 → v3 migration verification on a real rc2 vault, and carry-over of v0.1 DoD item 9 (external user demo) as the rc1 → GA gate.
+- `docs/smoke-test-v0.3rc1.md` runbook with VM baselines, Flow A (clean install), Flow B (rc2 → rc1 in-place migration), failure-mode table, and gate-closure criteria.
+- `docs/quickstart.md` friends-share onboarding guide.
+
+### Known limitations (v0.3)
+
+- **Person-mention auto-extraction during import is not shipped.** Documented future work pending calibration data.
+- **Skill names must be unique per agent.** A user who names two skills the same hits `DuplicateSkillNameError` on the second `learn_skill` call. No `learn_skill_or_overwrite` variant in v0.3.
+- **People accumulate without garbage collection.** A user importing a ChatGPT export with many one-off person mentions has only `tessera people merge` for consolidation. Re-evaluate at v0.5 if real-user vaults grow unwieldy.
+- **No write-time compilation, no episodic temporal retrieval, no BYO sync.** Deferred to v0.5.
+- **HMAC-chained audit log** remains v0.3 scope per the v0.1 threat model — implementation lands later in the v0.3.x window.
+
+### Install
+
+```bash
+pip install --pre tessera-context
+# or pin explicitly
+pip install tessera-context==0.3.0rc1
+```
+
+The v0.3.0rc1 → v0.3.0 GA stabilization gates (none of which block rc1 publication) are: cross-platform clean-install smoke recordings on macOS / Ubuntu / Windows per `docs/smoke-test-v0.3rc1.md`, the v2 → v3 migration verified on a real rc2 vault on each platform, one external user completing the T-shape demo unaided (carry-over of v0.1 DoD item 9), and 30+ days of Tom dogfooding ChatGPT/Claude imports on a real vault. rc1 ships now on internal evidence (CI green, schema v3 migration covered by unit tests, the v0.3 surface covered by integration tests) — same pattern as v0.1.0rc1 and rc2.
+
 ## [0.1.0rc2] — 2026-04-25 (pre-release, polish)
 
 Release-metadata and repo-ergonomics polish on top of `0.1.0rc1`. No source code changes; the shipped binaries and API surface are identical to rc1.

@@ -1,9 +1,11 @@
 # v0.3.0rc1 — Cross-Platform Smoke Test Runbook
 
-**Status:** Open gate
+**Status:** Open — v0.3.0rc1 → v0.3.0 GA stabilization gate, NOT an rc1 ship gate.
 **Owner:** Tom Mathews
 **Closes:** v0.1 DoD item 1 (cross-platform smoke) + v0.3 DoD cross-platform checkbox
 **Decision recorded:** `docs/v0.1-dod-audit.md §Decision 2026-04-26`
+
+> rc1 publishes on internal evidence (CI green, schema v3 migration covered by `tests/unit/test_migration_runner.py`, v0.3 surface covered by `tests/integration/test_mcp_tool_surface.py`). The recordings below happen during the rc1 → GA stabilization window, mirroring how v0.1 DoD items 1 and 9 rode along the v0.1.x → v0.5 stabilization window per the 2026-04-25 deferral decision.
 
 ---
 

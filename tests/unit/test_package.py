@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import tessera
+
+# PEP 440 pre-release / dev / post markers. While the project is pre-1.0 the
+# version always carries one of these (rcN, aN, bN, .devN, .postN). A bare
+# `0.X.Y` final release would mean we forgot to prefix the next dev cycle.
+_PEP440_PRERELEASE = re.compile(r"^0\.\d+\.\d+(rc|a|b|\.dev|\.post)\d+$")
 
 
 @pytest.mark.unit
@@ -14,9 +21,11 @@ def test_package_exposes_version() -> None:
 
 
 @pytest.mark.unit
-def test_package_version_is_dev_prerelease() -> None:
-    assert tessera.__version__.startswith("0.")
-    assert "dev" in tessera.__version__
+def test_package_version_is_pep440_prerelease() -> None:
+    assert _PEP440_PRERELEASE.match(tessera.__version__), (
+        f"package __version__={tessera.__version__!r} must be a PEP 440 pre-release "
+        "while we are pre-1.0 (rc / alpha / beta / .dev / .post)"
+    )
 
 
 @pytest.mark.unit
