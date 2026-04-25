@@ -44,47 +44,22 @@ parser; ship that when adoption demands it.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import sqlcipher3
 
+from tessera.importers._common import (
+    IMPORTABLE_FACET_TYPES,
+    ImportError_,
+    ImportReport,
+    MalformedExportError,
+    UnsupportedFacetTypeError,
+)
 from tessera.vault import facets as vault_facets
 
-_IMPORTABLE_FACET_TYPES: frozenset[str] = frozenset(
-    {"identity", "preference", "workflow", "project", "style"}
-)
 _INCLUDED_ROLES: frozenset[str] = frozenset({"user", "assistant"})
 _DEFAULT_SOURCE_TOOL: str = "chatgpt-import"
-
-
-class ImportError_(Exception):
-    """Base class for importer failures.
-
-    Named with a trailing underscore to avoid shadowing the builtin
-    ``ImportError`` even though Python would let us — silent shadow
-    in callers that ``from tessera.importers.chatgpt import *`` would
-    surprise tooling that catches the builtin.
-    """
-
-
-class MalformedExportError(ImportError_):
-    """The export file does not match the expected JSON shape."""
-
-
-class UnsupportedFacetTypeError(ImportError_):
-    """Caller asked for a facet type the importer is not allowed to write."""
-
-
-@dataclass(frozen=True, slots=True)
-class ImportReport:
-    conversations_seen: int = 0
-    facets_created: int = 0
-    facets_deduplicated: int = 0
-    skipped_empty: int = 0
-    errors: tuple[str, ...] = ()
-    source_path: str = ""
 
 
 def import_export(
@@ -109,10 +84,10 @@ def import_export(
     so re-running the importer is a no-op modulo any export updates.
     """
 
-    if facet_type not in _IMPORTABLE_FACET_TYPES:
+    if facet_type not in IMPORTABLE_FACET_TYPES:
         raise UnsupportedFacetTypeError(
             f"facet_type {facet_type!r} not importable; expected one of "
-            f"{sorted(_IMPORTABLE_FACET_TYPES)}"
+            f"{sorted(IMPORTABLE_FACET_TYPES)}"
         )
     try:
         raw = export_path.read_text(encoding="utf-8")
