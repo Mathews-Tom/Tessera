@@ -35,6 +35,7 @@ ADRs are numbered sequentially. Numbers are never reused. Superseding decisions 
 | 0009 | [SWCR opt-in pending ablation](0009-swcr-opt-in-pending-ablation.md) | Superseded by 0011 |
 | 0010 | [Five-facet user-context model](0010-five-facet-user-context-model.md) | Accepted |
 | 0011 | [SWCR default-on as cross-facet coherence primitive](0011-swcr-default-on-cross-facet-coherence.md) | Accepted |
+| 0012 | [v0.3 People + Skills design](0012-v0-3-people-and-skills-design.md) | Accepted |
 
 ## When to write an ADR
 
