@@ -485,3 +485,241 @@ async def test_all_tool_errors_carry_distinct_codes(
     with pytest.raises(mcp.ValidationError) as val_exc:
         await mcp.capture(tctx, content="", facet_type="style")
     assert val_exc.value.code == "invalid_input"
+
+
+# ---- v0.3 People + Skills tools -----------------------------------------
+
+
+_V0_3_SCOPES: tuple[str, ...] = ("style", "project", "skill", "person")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_learn_skill_creates_and_returns_external_id(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    resp = await mcp.learn_skill(
+        tctx,
+        name="git-rebase",
+        description="Squash branches before merge",
+        procedure_md="# Procedure\n\nUse interactive rebase.",
+    )
+    assert resp.is_new is True
+    assert resp.name == "git-rebase"
+    assert len(resp.external_id) == 26
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_learn_skill_requires_write_scope_on_skill(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault,
+        vault_path,
+        scope_read=("skill",),
+        scope_write=("style", "project"),
+    )
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.learn_skill(tctx, name="x", description="d", procedure_md="alpha")
+    assert exc.value.required_facet_type == "skill"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_learn_skill_duplicate_name_surfaces_validation_error(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    await mcp.learn_skill(tctx, name="dup", description="a", procedure_md="alpha")
+    with pytest.raises(mcp.ValidationError, match="already exists"):
+        await mcp.learn_skill(tctx, name="dup", description="b", procedure_md="beta")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_skill_returns_full_view(open_vault: VaultConnection, vault_path: Path) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    await mcp.learn_skill(tctx, name="git-rebase", description="d", procedure_md="alpha")
+    view = await mcp.get_skill(tctx, name="git-rebase")
+    assert view is not None
+    assert view.name == "git-rebase"
+    assert view.procedure_md == "alpha"
+    assert view.truncated is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_skill_returns_none_for_missing(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    assert await mcp.get_skill(tctx, name="nope") is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_skill_truncates_long_body(
+    open_vault: VaultConnection, vault_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drop the budget so a small body still triggers the truncation path."""
+
+    import tessera.mcp_surface.tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "GET_SKILL_RESPONSE_BUDGET", 80)
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    body = "alpha bravo charlie delta echo foxtrot golf hotel " * 20
+    await mcp.learn_skill(tctx, name="long", description="d", procedure_md=body)
+    view = await mcp.get_skill(tctx, name="long")
+    assert view is not None
+    assert view.truncated is True
+    assert len(view.procedure_md) < len(body)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_skills_filters_inactive_by_default(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    await mcp.learn_skill(tctx, name="active", description="d", procedure_md="a")
+    await mcp.learn_skill(tctx, name="retired", description="d", procedure_md="b")
+    # Flip retired off via the underlying skills module — mcp surface
+    # has no metadata-edit verb at v0.3.
+    from tessera.vault import skills as vault_skills
+
+    retired = vault_skills.get_by_name(
+        open_vault.connection, agent_id=tctx.verified.agent_id, name="retired"
+    )
+    assert retired is not None
+    vault_skills.update_metadata(
+        open_vault.connection, external_id=retired.external_id, active=False
+    )
+    listed = await mcp.list_skills(tctx)
+    assert [s.name for s in listed.items] == ["active"]
+    everyone = await mcp.list_skills(tctx, active_only=False)
+    assert {s.name for s in everyone.items} == {"active", "retired"}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_skills_requires_read_scope_on_skill(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(open_vault, vault_path, scope_read=("style",), scope_write=("style",))
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.list_skills(tctx)
+    assert exc.value.required_facet_type == "skill"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_person_exact_match_marked_exact(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    from tessera.vault import people as vault_people
+
+    vault_people.insert(
+        open_vault.connection,
+        agent_id=tctx.verified.agent_id,
+        canonical_name="Sarah Johnson",
+        aliases=["Sarah", "SJ"],
+    )
+    resp = await mcp.resolve_person(tctx, mention="Sarah Johnson")
+    assert resp.is_exact is True
+    assert len(resp.matches) == 1
+    assert resp.matches[0].canonical_name == "Sarah Johnson"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_person_ambiguous_returns_candidates(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    from tessera.vault import people as vault_people
+
+    vault_people.insert(
+        open_vault.connection,
+        agent_id=tctx.verified.agent_id,
+        canonical_name="Sarah Johnson",
+    )
+    vault_people.insert(
+        open_vault.connection,
+        agent_id=tctx.verified.agent_id,
+        canonical_name="Sarah Kim",
+    )
+    resp = await mcp.resolve_person(tctx, mention="Sarah")
+    assert resp.is_exact is False
+    assert {m.canonical_name for m in resp.matches} == {"Sarah Johnson", "Sarah Kim"}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_person_requires_read_scope_on_person(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(open_vault, vault_path, scope_read=("skill",), scope_write=("skill",))
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.resolve_person(tctx, mention="Sarah")
+    assert exc.value.required_facet_type == "person"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_people_paginates_by_canonical_name(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    from tessera.vault import people as vault_people
+
+    for name in ("Charlie", "Alice", "Bob"):
+        vault_people.insert(
+            open_vault.connection,
+            agent_id=tctx.verified.agent_id,
+            canonical_name=name,
+        )
+    resp = await mcp.list_people(tctx)
+    assert [p.canonical_name for p in resp.items] == ["Alice", "Bob", "Charlie"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_people_rejects_bad_limit(open_vault: VaultConnection, vault_path: Path) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    with pytest.raises(mcp.ValidationError):
+        await mcp.list_people(tctx, limit=0)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_person_rejects_empty_mention(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_3_SCOPES, scope_write=_V0_3_SCOPES
+    )
+    with pytest.raises(mcp.ValidationError, match="must not be empty"):
+        await mcp.resolve_person(tctx, mention="")
