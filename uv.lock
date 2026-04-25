@@ -1429,7 +1429,7 @@ wheels = [
 
 [[package]]
 name = "tessera-context"
-version = "0.1.0rc2"
+version = "0.3.0rc1"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },
