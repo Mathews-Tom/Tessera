@@ -46,17 +46,27 @@ def test_validate_length_rejects_non_string() -> None:
 
 
 @pytest.mark.unit
-def test_validate_facet_type_accepts_v0_1_vocab() -> None:
-    for t in ("identity", "preference", "workflow", "project", "style"):
+def test_validate_facet_type_accepts_v0_3_vocab() -> None:
+    # v0.3 unlocks ``person`` and ``skill`` alongside the original five
+    # v0.1 types. The MCP boundary must accept every writable type.
+    for t in ("identity", "preference", "workflow", "project", "style", "person", "skill"):
         _validate_facet_type(t)
+
+
+@pytest.mark.unit
+def test_validate_facet_type_rejects_compiled_notebook_until_v0_5() -> None:
+    # ``compiled_notebook`` is reserved in the schema CHECK but is not
+    # writable until v0.5 ships write-time compilation.
+    with pytest.raises(ValidationError, match="not in"):
+        _validate_facet_type("compiled_notebook")
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("retired", ["episodic", "semantic", "relationship", "goal", "judgment"])
 def test_validate_facet_type_rejects_retired_types(retired: str) -> None:
-    # Per ADR 0010 the retired facet types are no longer writable at
-    # v0.1; the MCP boundary must reject them so stale clients can't
-    # sneak rows past the schema CHECK.
+    # Per ADR 0010 the retired facet types are no longer writable; the
+    # MCP boundary must reject them so stale clients can't sneak rows
+    # past the schema CHECK.
     with pytest.raises(ValidationError, match="not in"):
         _validate_facet_type(retired)
 

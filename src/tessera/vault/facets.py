@@ -7,10 +7,10 @@ erases (``docs/threat-model.md §S7``). FTS rows are maintained by the
 ``facets_ai`` / ``facets_ad`` / ``facets_au`` triggers installed with the
 schema.
 
-The facet-type allowlist is post-reframe (ADR 0010): the five v0.1 types
-are writable today; the v0.3 (``person``, ``skill``) and v0.5
-(``compiled_notebook``) types are reserved in the schema CHECK but not
-acceptable to the write path until those versions activate them.
+The facet-type allowlist is post-reframe (ADR 0010). v0.3 unlocks
+``person`` and ``skill`` for writes alongside the original five v0.1
+types; ``compiled_notebook`` remains reserved in the schema CHECK but
+unwritable until v0.5 activates it.
 """
 
 from __future__ import annotations
@@ -28,20 +28,27 @@ from ulid import ULID
 
 from tessera.vault.connection import ensure_vec_loaded, savepoint
 
-# v0.1 writable facet types (ADR 0010). These are the only facet_type values
-# a capture call will accept until v0.3 ships ``person`` and ``skill`` and
-# v0.5 ships ``compiled_notebook`` — even though the schema CHECK reserves
-# all eight so tokens can be scoped forward without a migration.
+# v0.1 writable facet types (ADR 0010). Retained as a named subset so
+# importers and pre-v0.3 fixtures can still target the original
+# vocabulary explicitly — the active write-path allowlist is
+# ``WRITABLE_FACET_TYPES`` below.
 V0_1_FACET_TYPES: Final[frozenset[str]] = frozenset(
     {"identity", "preference", "workflow", "project", "style"}
 )
 
-# Forward-compatibility allowlists used by scope validation and migration
-# tests. They mirror the schema CHECK so a future write path can unlock them
-# by swapping which allowlist the capture surface consults, rather than
-# editing a scattered set of string literals.
+# v0.3 unlocks ``person`` and ``skill`` for writes; v0.5 will further
+# unlock ``compiled_notebook`` once the write-time compilation surface
+# ships. The forward-compatibility allowlists mirror the schema CHECK
+# so each release activates a new write path by swapping the allowlist
+# the capture surface consults rather than editing scattered literals.
 V0_3_FACET_TYPES: Final[frozenset[str]] = V0_1_FACET_TYPES | frozenset({"person", "skill"})
 V0_5_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | frozenset({"compiled_notebook"})
+
+# The facet-type set the v0.3 write path accepts. CRUD, MCP validation,
+# CLI choices, and dispatcher routing all read this single name so a
+# future bump (v0.5 unlocking ``compiled_notebook``) is a one-line
+# change here.
+WRITABLE_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES
 
 # Superset of every facet type the schema CHECK permits. Used by the scope
 # layer — a token may be scoped for read against a reserved type even when
@@ -98,9 +105,9 @@ def insert(
     returned with ``is_new=False`` and no row is written.
     """
 
-    if facet_type not in V0_1_FACET_TYPES:
+    if facet_type not in WRITABLE_FACET_TYPES:
         raise UnsupportedFacetTypeError(
-            f"facet_type {facet_type!r} not supported at v0.1; expected one of {sorted(V0_1_FACET_TYPES)}"
+            f"facet_type {facet_type!r} not writable; expected one of {sorted(WRITABLE_FACET_TYPES)}"
         )
     digest = content_hash(content)
     # Dedup sees live AND soft-deleted rows because the UNIQUE(agent_id,
@@ -174,8 +181,8 @@ def list_by_type(
     limit: int = 10,
     since: int | None = None,
 ) -> list[Facet]:
-    if facet_type not in V0_1_FACET_TYPES:
-        raise UnsupportedFacetTypeError(f"facet_type {facet_type!r} not supported at v0.1")
+    if facet_type not in WRITABLE_FACET_TYPES:
+        raise UnsupportedFacetTypeError(f"facet_type {facet_type!r} not writable")
     if since is None:
         rows = conn.execute(
             """

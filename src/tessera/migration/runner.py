@@ -13,9 +13,11 @@ The runner handles three flows:
   ``schema_target``. Every step is idempotent and checks ``_migration_steps``
   before re-applying; rollback is the other (user-invoked) option.
 
-The active upgrade target is v1 → v2 (post-reframe five-facet schema per
-ADR 0010). Future versions plug in by registering a new step list against
-their target in ``_STEPS_BY_TARGET``.
+Two upgrade targets are registered: v1 → v2 (post-reframe five-facet
+schema per ADR 0010) and v2 → v3 (v0.3 People + Skills surface — adds
+``disk_path`` column on ``facets`` plus the ``people`` and
+``person_mentions`` tables). Future versions plug in by registering a
+new step list against their target in ``_STEPS_BY_TARGET``.
 """
 
 from __future__ import annotations
@@ -303,6 +305,89 @@ _V1_TO_V2_STEPS: Final[tuple[MigrationStep, ...]] = (
 )
 
 
+# ---- v2 -> v3 forward migration steps -----------------------------------
+#
+# Schema v3 activates the v0.3 People + Skills surface. The change is
+# purely additive: a nullable ``disk_path`` column on ``facets`` for
+# skills synced to disk, a partial unique index keying disk paths per
+# agent, and two new tables (``people``, ``person_mentions``) with
+# their indexes. No row-level data movement is required, so each step
+# is a guarded ALTER / CREATE and survives interruption-replay
+# unchanged.
+
+
+def _facets_has_disk_path(conn: sqlcipher3.Connection) -> bool:
+    cols = conn.execute("PRAGMA table_info(facets)").fetchall()
+    return any(str(row[1]) == "disk_path" for row in cols)
+
+
+def _step_add_disk_path_column(conn: sqlcipher3.Connection) -> None:
+    if _facets_has_disk_path(conn):
+        return
+    conn.execute("ALTER TABLE facets ADD COLUMN disk_path TEXT")
+
+
+def _step_create_disk_path_index(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS facets_disk_path
+            ON facets(agent_id, disk_path)
+            WHERE disk_path IS NOT NULL AND is_deleted = 0
+        """
+    )
+
+
+def _step_create_people(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS people (
+            id              INTEGER PRIMARY KEY,
+            external_id     TEXT NOT NULL UNIQUE,
+            agent_id        INTEGER NOT NULL REFERENCES agents(id),
+            canonical_name  TEXT NOT NULL,
+            aliases         TEXT NOT NULL DEFAULT '[]',
+            metadata        TEXT NOT NULL DEFAULT '{}',
+            created_at      INTEGER NOT NULL,
+            UNIQUE(agent_id, canonical_name)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS people_agent
+            ON people(agent_id, canonical_name)
+        """
+    )
+
+
+def _step_create_person_mentions(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS person_mentions (
+            id          INTEGER PRIMARY KEY,
+            facet_id    INTEGER NOT NULL REFERENCES facets(id) ON DELETE CASCADE,
+            person_id   INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+            confidence  REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+            UNIQUE(facet_id, person_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS person_mentions_person
+            ON person_mentions(person_id)
+        """
+    )
+
+
+_V2_TO_V3_STEPS: Final[tuple[MigrationStep, ...]] = (
+    MigrationStep("add_disk_path_column", 3, _step_add_disk_path_column),
+    MigrationStep("create_disk_path_index", 3, _step_create_disk_path_index),
+    MigrationStep("create_people", 3, _step_create_people),
+    MigrationStep("create_person_mentions", 3, _step_create_person_mentions),
+)
+
+
 # Forward-migration step registry keyed by target version. Bootstrap (target 1
 # from a fresh vault) is intentionally absent: it cannot use the step runner
 # because `_meta` and `_migration_steps` do not exist until the schema DDL has
@@ -311,6 +396,7 @@ _V1_TO_V2_STEPS: Final[tuple[MigrationStep, ...]] = (
 # VaultNotInitializedError — safe even without a checkpoint trail.
 _STEPS_BY_TARGET: Final[dict[int, Sequence[MigrationStep]]] = {
     2: _V1_TO_V2_STEPS,
+    3: _V2_TO_V3_STEPS,
 }
 
 

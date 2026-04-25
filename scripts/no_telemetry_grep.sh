@@ -10,18 +10,22 @@ set -euo pipefail
 FORBIDDEN='^\s*(import|from)\s+(requests|httpx|aiohttp|urllib\.request)\b'
 
 # Paths to scan: src/tessera minus the adapters subtree and the
-# two daemon/CLI call sites that legitimately need an HTTP client:
+# three daemon/CLI call sites that legitimately need an HTTP client:
 #   - src/tessera/daemon/doctor.py probes Ollama's /api/tags for
 #     reachability as part of the `tessera doctor` health matrix.
 #     It is a bounded, user-initiated, localhost-by-default call with
 #     a 1-second timeout — not telemetry.
-#   - src/tessera/cli/tools_cmd.py is the CLI's loopback client to
-#     tesserad's HTTP MCP endpoint at 127.0.0.1. Calls from CLI to the
+#   - src/tessera/cli/_http.py is the shared CLI loopback client to
+#     tesserad's HTTP MCP endpoint at 127.0.0.1, used by every
+#     subcommand that calls a tool by name (`tessera capture`,
+#     `tessera skills list`, `tessera people show`, …). Extracted
+#     from tools_cmd.py in the v0.3 People + Skills refactor so the
+#     httpx import lives in exactly one place. Calls from CLI to the
 #     local daemon do not leave the machine.
 #   - src/tessera/daemon/stdio_bridge.py is the stdio-to-HTTP bridge
 #     that Claude Desktop launches; it POSTs every tools/list and
 #     tools/call to tesserad's /mcp endpoint at 127.0.0.1 over the
-#     same loopback path as tools_cmd.py. The bridge never reaches a
+#     same loopback path as cli/_http.py. The bridge never reaches a
 #     non-local host — `tessera connect claude-desktop` wires it to
 #     `http://127.0.0.1:<port>/mcp`.
 # Extending this list requires a matching §CI enforcement note in
@@ -30,7 +34,7 @@ SCAN_ROOT="src/tessera"
 ALLOWLIST="src/tessera/adapters"
 ALLOWLISTED_FILES=(
   "src/tessera/daemon/doctor.py"
-  "src/tessera/cli/tools_cmd.py"
+  "src/tessera/cli/_http.py"
   "src/tessera/daemon/stdio_bridge.py"
 )
 

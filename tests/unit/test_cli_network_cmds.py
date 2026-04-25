@@ -42,7 +42,7 @@ def test_capture_sends_bearer_token(
         seen["body"] = json
         return _DummyResponse(200, {"ok": True, "result": {"external_id": "01X"}})
 
-    monkeypatch.setattr("tessera.cli.tools_cmd.httpx.post", _fake_post)
+    monkeypatch.setattr("tessera.cli._http.httpx.post", _fake_post)
     monkeypatch.setenv("TESSERA_TOKEN", "tessera_session_AAAAAAAAAAAAAAAAAAAAAAAA")
     parser = _build_parser()
     args = parser.parse_args(["capture", "hello world", "--facet-type", "project"])
@@ -89,7 +89,7 @@ def test_stats_surfaces_http_error(
         del url, kwargs
         return _DummyResponse(401, {"error": "unauthenticated"})
 
-    monkeypatch.setattr("tessera.cli.tools_cmd.httpx.post", _fake_post)
+    monkeypatch.setattr("tessera.cli._http.httpx.post", _fake_post)
     monkeypatch.setenv("TESSERA_TOKEN", "t")
     parser = _build_parser()
     args = parser.parse_args(["stats"])
@@ -106,7 +106,7 @@ def test_recall_unknown_host_returns_nonzero(monkeypatch: pytest.MonkeyPatch) ->
         del kwargs
         raise _httpx.ConnectError("nope")
 
-    monkeypatch.setattr("tessera.cli.tools_cmd.httpx.post", _boom)
+    monkeypatch.setattr("tessera.cli._http.httpx.post", _boom)
     monkeypatch.setenv("TESSERA_TOKEN", "t")
     parser = _build_parser()
     args = parser.parse_args(["recall", "q"])

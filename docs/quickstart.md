@@ -1,0 +1,265 @@
+# Tessera — Pitch & Quick-Start
+
+> _Teach it once. Use it anywhere._
+> Portable context that travels with you across every AI tool.
+
+Apache 2.0. Local-first. Single SQLite file. No telemetry. No hosted service. No account.
+
+---
+
+## Why this exists
+
+Every AI tool you use is an amnesiac you re-onboard from scratch. CLAUDE.md for Claude. Custom Instructions for ChatGPT. Cursor Rules for Cursor. Codex config for Codex. You teach each one your preferences, your workflows, your projects, your writing voice — and then you do it again in six weeks when the next model ships.
+
+There is no layer between you and the models. The moment you switch tools, you start over. Tessera is that layer.
+
+A local daemon owns a single SQLite file at `~/.tessera/vault.db`. The file holds your _context_ across five facets: who you are (`identity`), how you work (`preference`), procedures you follow (`workflow`), what you're building (`project`), and how you write (`style`). Any MCP-capable AI tool reads and writes that context with a scoped capability token. You teach Claude once that you prefer `uv` over `pip` and Cursor inherits it. You paste three LinkedIn posts as voice samples in Claude Desktop and ChatGPT drafts your fourth post in your voice without you ever opening ChatGPT's settings.
+
+## Who it's for
+
+The T-shaped AI-native operator. Deep in one or two domains; horizontal across many through AI tools. If you've written a `CLAUDE.md` and wished it worked everywhere, you are the user.
+
+## How it's different
+
+| Class                                                                                                     | What it does                            | Why Tessera is different                                                                                                                                        |
+| --------------------------------------------------------------------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-tool preference files (CLAUDE.md, ChatGPT Custom Instructions, Cursor Rules, Codex config)            | One file per tool                       | Cross-tool by design; one source of truth                                                                                                                       |
+| Cloud-hosted memory layers (Mem0, OpenMemory, Cognee, MemPalace, the cloud-Postgres "second brain" class) | Memory layer in someone else's database | Your vault is a single file on your disk; structured context (preferences, workflows, projects, style), not flat blobs; cross-facet coherent retrieval via SWCR |
+
+## What's real today
+
+`v0.1.0rc2` lives on PyPI as `tessera-context`. Five facets, six MCP tools, all-local by default (Ollama for embedding, sentence-transformers for rerank), encrypted vault (sqlcipher + argon2id), zero outbound network unless you explicitly opt in.
+
+`v0.3.0rc1` (named skills synced to disk, people resolution, ChatGPT + Claude conversation-history importers) is implemented on `feat/v0.3-people-skills-importers` but not yet on PyPI. The remaining gates before rc1 cuts are a recorded clean-VM walkthrough on macOS / Ubuntu / Windows and verification that the v2 → v3 migration runs cleanly on an existing rc2 vault. Runbook: [`docs/smoke-test-v0.3rc1.md`](smoke-test-v0.3rc1.md). DoD: [`docs/release-spec.md §Definition of Done for v0.3`](release-spec.md). Until rc1 lands, the v0.3 features in this guide are reachable by source-installing the branch (`git clone … && cd Tessera && uv sync --dev`).
+
+---
+
+## Quick-start (≈10 minutes)
+
+### 1. Prerequisites
+
+```bash
+# Python 3.12 (3.13 not yet supported — sqlcipher3 wheel gap)
+python3 --version
+
+# macOS — sqlcipher headers + Ollama
+brew install sqlcipher ollama
+
+# Ubuntu / Debian — build deps for sqlcipher3 wheel + Ollama
+sudo apt install -y build-essential libsqlcipher-dev
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Windows — sqlcipher3 has no native wheel today; WSL2 + Ubuntu is the
+# supported path until that ships. Install Python 3.12 and Ollama inside WSL2.
+
+ollama pull nomic-embed-text
+```
+
+### 2. Install
+
+```bash
+# pipx is the friendliest path — isolated venv, console script on PATH
+pipx install --pip-args="--pre" tessera-context==0.1.0rc2
+
+# or plain pip (note: --pre is required while we're on rc)
+pip install --pre tessera-context==0.1.0rc2
+
+tessera --version          # expect 0.1.0rc2
+```
+
+Once `0.3.0rc1` lands on PyPI the install line becomes `pipx install --pip-args="--pre" tessera-context==0.3.0rc1` and the v0.3 features below activate automatically. To use them today, source-install instead:
+
+```bash
+git clone https://github.com/Mathews-Tom/Tessera.git
+cd Tessera && uv sync --dev
+uv run tessera --version
+```
+
+### 3. Initialise the vault
+
+```bash
+tessera init --vault ~/.tessera/vault.db
+# Set a passphrase when prompted. It's stored in your OS keyring after the
+# first run, so you won't be asked again.
+
+tessera daemon start --vault ~/.tessera/vault.db
+tessera doctor                    # all green = ready
+```
+
+### 4. Wire your AI tools
+
+```bash
+# One shot — every detected file-based MCP client
+tessera connect all --vault ~/.tessera/vault.db --token-ttl-days 30
+
+# Or per-tool, with control over scope
+tessera connect claude-desktop --vault ~/.tessera/vault.db
+tessera connect claude-code    --vault ~/.tessera/vault.db
+tessera connect cursor         --vault ~/.tessera/vault.db
+tessera connect codex          --vault ~/.tessera/vault.db
+```
+
+Default service-token TTL is 24 hours. `--token-ttl-days 30` is the "set and forget" personal-use mode (cap 90).
+
+ChatGPT Developer Mode is deferred to v0.1.x — three stacked blockers (HTTPS front, Bearer auth in the New App dialog, canonical HTTP MCP). Two Anthropic clients sharing one vault still demonstrates the portability story today.
+
+### 5. Teach it the first thing
+
+In Claude Desktop or Claude Code, with the Tessera MCP wired:
+
+```text
+You: Capture a preference: I prefer `uv` over `pip` for Python. Never suggest `pip install`.
+Claude: [calls capture(content, facet_type="preference")]
+
+You: Capture this LinkedIn workflow: 5-act structure — Hook → Legend → Credibility Spike → Observation → Meaning. 150–300 words. No emojis.
+Claude: [calls capture(content, facet_type="workflow")]
+
+You: Capture the active project context: anneal — Artifact-Eval-Agent triplet, git worktrees for isolation, Apache 2.0.
+Claude: [calls capture(content, facet_type="project")]
+```
+
+Now open a different MCP-capable tool (Claude Code, Cursor, Codex) and ask it to draft a LinkedIn post about your project. It will call `recall("LinkedIn post anneal")` and the SWCR-weighted bundle returns your style, your workflow, your project, your no-emoji preference — together — without you configuring the second tool.
+
+---
+
+## Daily personal use
+
+The five facets are the unit of capture. Use them deliberately:
+
+| Facet        | What goes here                                                                            | Capture cadence                                              |
+| ------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `identity`   | Stable-for-years user facts (role, location, professional context)                        | Once, then revisit yearly                                    |
+| `preference` | Stable-for-months behavioural rules (`uv` over `pip`, async-first, terse Reddit register) | Whenever a tool produces something you'd correct             |
+| `workflow`   | Procedural patterns (5-act LinkedIn, weekly review structure, PR description template)    | Whenever you catch yourself re-explaining a procedure        |
+| `project`    | Active work context (anneal architecture, current quarter goals)                          | Weekly; soft-delete via `tessera forget` when projects close |
+| `style`      | Writing voice samples (3-5 representative posts per channel)                              | Once per output channel, refresh quarterly                   |
+
+### Capture from the CLI
+
+CLI commands that talk to the daemon (`capture`, `recall`, `show`, `stats`, `forget`) authenticate with a bearer token, the same way an MCP-wired client does. Mint a long-lived service token once and put it in your shell:
+
+```bash
+tessera tokens create \
+  --vault ~/.tessera/vault.db \
+  --client-name cli \
+  --token-class service \
+  --read '*' --write '*' \
+  --token-ttl-days 30
+# copy the printed token (shown once) into your shell rc:
+export TESSERA_TOKEN="paste-the-token-here"
+```
+
+Then capture and recall feel native:
+
+```bash
+tessera capture "I write Reddit comments terse, slightly abrasive, in-group aware. 4 sentence max." --facet-type preference
+tessera capture "$(cat my-best-linkedin-post.md)" --facet-type style
+```
+
+### Recall and inspect
+
+```bash
+tessera recall "LinkedIn post about anneal"          # cross-facet by default
+tessera recall "Python deps" --facet-types preference
+tessera show <external_id>                            # full row
+tessera stats                                         # facet counts per type
+```
+
+### Soft-delete (audit-logged, reversible at SQL layer)
+
+```bash
+tessera forget <external_id> --reason "project closed 2026-Q1"
+```
+
+---
+
+## v0.3 features (on the active branch)
+
+### Skills — named procedures, synced to disk
+
+```bash
+# Author through any MCP client via learn_skill, then materialise to disk:
+tessera skills sync-to-disk /path/to/your/skills-dir
+
+# Edit a .md file in your editor, then reconcile back:
+tessera skills sync-from-disk /path/to/your/skills-dir
+
+# Inspect:
+tessera skills list
+tessera skills show "git-rebase-cleanup"
+```
+
+Pick any directory you control — common choices are a folder inside an existing dotfiles repo or a dedicated `~/notes/skills/` path. Pair it with a Git repo to version-control your skill library independently of the vault.
+
+### People — resolution, not extraction
+
+People are stored as rows in a `people` table (not facets) with canonical name + alias array. Auto-extraction from imported conversations is **not** shipped — it would create silent false-positive person rows you can't easily undo. Use `tessera people` and the `resolve_person` MCP tool to surface candidates and let your AI client ask you when ambiguous.
+
+### Importers — backfill from your existing AI history
+
+```bash
+# Claude data export: Settings → Privacy → Export Data → conversations.json
+tessera import claude --file ~/Downloads/claude-export/conversations.json
+
+# ChatGPT data export: Settings → Data Controls → Export → conversations.json
+tessera import chatgpt --file ~/Downloads/chatgpt-export/conversations.json
+```
+
+Importers write `project` facets only — never `skill` or `person`. Skills stay user-authored; people surface through interactive resolution. This keeps your skill library and contact graph free of silent NER false positives.
+
+---
+
+## Maintenance & portability
+
+```bash
+tessera doctor                                              # health check, exit non-zero on red
+tessera doctor --vault ~/.tessera/vault.db --collect bundle # scrubbed .tar.gz for issue reports
+
+tessera export --vault ~/.tessera/vault.db --format json   --output ~/Backups/tessera-$(date +%F).json
+tessera export --vault ~/.tessera/vault.db --format md     --output ~/Backups/tessera-md/
+tessera export --vault ~/.tessera/vault.db --format sqlite --output ~/Backups/vault-decrypted.db
+
+# Reset embed status for facets that errored or for one facet type after a model swap:
+tessera vault repair-embeds --vault ~/.tessera/vault.db
+tessera vault repair-embeds --vault ~/.tessera/vault.db --facet-type style
+
+# Or just copy the file. The vault IS the product.
+cp ~/.tessera/vault.db ~/Backups/vault-$(date +%F).db
+```
+
+### Token hygiene
+
+```bash
+tessera tokens list   --vault ~/.tessera/vault.db
+tessera tokens revoke --vault ~/.tessera/vault.db --token-id <id> --reason "rotated"
+tessera disconnect cursor                                   # remove tool's MCP entry without stomping siblings
+```
+
+---
+
+## What it explicitly will not become
+
+No telemetry. No auto-capture (you decide what gets stored). No AI-generated capture without explicit user intent. No hosted-only mode in v0.1. No model reselling, ever. No paid features in the open-source core, ever. Full list at `docs/non-goals.md`.
+
+If a real audience forms, the long-term shape is optional managed sync (BYO storage always free) — Obsidian Sync's playbook. That is years out and not the reason this exists.
+
+---
+
+## Where to read next
+
+- [`docs/pitch.md`](pitch.md) — the deeper colleague-pitch with framing, market context, and what to push back on.
+- [`docs/system-overview.md`](system-overview.md) — category claim, moat analysis, T-shape framing.
+- [`docs/system-design.md`](system-design.md) — architecture, schema, retrieval pipeline, encryption.
+- [`docs/swcr-spec.md`](swcr-spec.md) — the cross-facet retrieval algorithm.
+- [`docs/release-spec.md`](release-spec.md) — what ships in v0.1 / v0.3 / v0.5 / v1.0.
+- [`docs/troubleshooting.md`](troubleshooting.md) — symptom-indexed install and first-run fixes.
+
+---
+
+## What I'd ask of you if you try it
+
+1. Does the framing land? "Portable context layer for every AI tool" — does it feel like a category, or a memory product with a paint job?
+2. Where does the demo break in your head? When you imagine teaching one tool and recalling in another, what's the part you don't believe?
+3. Who would actually install this in your network? Not "who would think it's interesting" — who would change their setup. T-shaped engineers, people running 3+ AI tools, people who've written a CLAUDE.md and wished it worked everywhere.
+
+Issues, fixes, and direct feedback: <https://github.com/Mathews-Tom/Tessera>.

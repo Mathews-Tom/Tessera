@@ -73,7 +73,7 @@ def test_repair_embeds_filters_by_facet_type(open_vault: VaultConnection) -> Non
 @pytest.mark.unit
 def test_repair_embeds_rejects_unsupported_facet_type(open_vault: VaultConnection) -> None:
     with pytest.raises(ValueError, match="unsupported"):
-        cli_vault.repair_embeds(open_vault.connection, facet_type="skill")
+        cli_vault.repair_embeds(open_vault.connection, facet_type="compiled_notebook")
 
 
 @pytest.mark.unit

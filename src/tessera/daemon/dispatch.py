@@ -43,12 +43,17 @@ async def dispatch_tool_call(
 
 
 def _tool_context(state: DaemonState, verified: VerifiedCapability) -> mcp.ToolContext:
-    # Default ``facet_types`` is every v0.1 type the token can read. This is
-    # the cross-facet default the reframe requires: a recall() without an
-    # explicit filter assembles a bundle across every facet the caller is
-    # scoped for, which is what makes the T-shape synthesis story work
-    # (``docs/system-design.md §Retrieval pipeline``). A caller that wants a
-    # single-facet-type recall passes ``facet_types=[...]`` explicitly.
+    # Default ``facet_types`` is every writable type the token can read.
+    # This is the cross-facet default the reframe requires: a recall()
+    # without an explicit filter assembles a bundle across every facet
+    # the caller is scoped for, which is what makes the T-shape
+    # synthesis story work (``docs/system-design.md §Retrieval
+    # pipeline``). v0.3 adds ``skill`` to the default fan-out so user
+    # procedures surface alongside identity / preference / workflow /
+    # project / style without requiring an explicit ``facet_types``
+    # argument. ``person`` is *not* in the default because people are
+    # not facets — they live in the ``people`` table and surface via
+    # the ``resolve_person`` MCP tool, not ``recall``.
     scoped_types = tuple(
         ftype
         for ftype in _DEFAULT_RECALL_TYPES
@@ -69,10 +74,14 @@ def _tool_context(state: DaemonState, verified: VerifiedCapability) -> mcp.ToolC
     )
 
 
-# The v0.1 facet types a recall() without an explicit ``facet_types`` filter
-# fans out over — sorted deterministically so scope-filtered subsets still
-# produce a stable order in the pipeline context.
-_DEFAULT_RECALL_TYPES: tuple[str, ...] = tuple(sorted(vault_facets.V0_1_FACET_TYPES))
+# Facet types a recall() without an explicit ``facet_types`` filter fans
+# out over — every facet type the v0.3 write path can produce, sorted
+# deterministically so scope-filtered subsets still produce a stable
+# order in the pipeline context. People are excluded (they are not
+# facets); compiled_notebook is excluded (deferred to v0.5).
+_DEFAULT_RECALL_TYPES: tuple[str, ...] = tuple(
+    sorted(vault_facets.WRITABLE_FACET_TYPES - {"person"})
+)
 
 
 async def _do_capture(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -166,6 +175,87 @@ async def _do_stats(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, An
     }
 
 
+async def _do_learn_skill(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.learn_skill(
+        tctx,
+        name=_require_str(args, "name"),
+        description=_require_str(args, "description"),
+        procedure_md=_require_str(args, "procedure_md"),
+        source_tool=args.get("source_tool"),
+    )
+    return {
+        "external_id": resp.external_id,
+        "name": resp.name,
+        "is_new": resp.is_new,
+    }
+
+
+async def _do_get_skill(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.get_skill(tctx, name=_require_str(args, "name"))
+    if resp is None:
+        return {"skill": None}
+    return {
+        "skill": {
+            "external_id": resp.external_id,
+            "name": resp.name,
+            "description": resp.description,
+            "procedure_md": resp.procedure_md,
+            "active": resp.active,
+            "disk_path": resp.disk_path,
+            "captured_at": resp.captured_at,
+            "embed_status": resp.embed_status,
+            "truncated": resp.truncated,
+            "token_count": resp.token_count,
+        }
+    }
+
+
+async def _do_list_skills(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    active_only = args.get("active_only", True)
+    if not isinstance(active_only, bool):
+        raise mcp.ValidationError("active_only must be a boolean")
+    resp = await mcp.list_skills(
+        tctx,
+        active_only=active_only,
+        limit=_optional_int(args, "limit", default=50),
+    )
+    return {
+        "items": [
+            {
+                "external_id": s.external_id,
+                "name": s.name,
+                "description": s.description,
+                "active": s.active,
+                "captured_at": s.captured_at,
+            }
+            for s in resp.items
+        ],
+        "truncated": resp.truncated,
+        "total_tokens": resp.total_tokens,
+    }
+
+
+async def _do_resolve_person(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.resolve_person(tctx, mention=_require_str(args, "mention"))
+    return {
+        "matches": [_person_to_json(m) for m in resp.matches],
+        "is_exact": resp.is_exact,
+    }
+
+
+async def _do_list_people(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.list_people(
+        tctx,
+        limit=_optional_int(args, "limit", default=50),
+        since=args.get("since"),
+    )
+    return {
+        "items": [_person_to_json(m) for m in resp.items],
+        "truncated": resp.truncated,
+        "total_tokens": resp.total_tokens,
+    }
+
+
 _HandlerT = Callable[[mcp.ToolContext, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _HANDLERS: dict[str, _HandlerT] = {
@@ -175,6 +265,11 @@ _HANDLERS: dict[str, _HandlerT] = {
     "list_facets": _do_list_facets,
     "stats": _do_stats,
     "forget": _do_forget,
+    "learn_skill": _do_learn_skill,
+    "get_skill": _do_get_skill,
+    "list_skills": _do_list_skills,
+    "resolve_person": _do_resolve_person,
+    "list_people": _do_list_people,
 }
 
 
@@ -218,6 +313,15 @@ def _summary_to_json(s: mcp.FacetSummary) -> dict[str, Any]:
         "captured_at": s.captured_at,
         "source_tool": s.source_tool,
         "embed_status": s.embed_status,
+    }
+
+
+def _person_to_json(p: mcp.PersonMatch) -> dict[str, Any]:
+    return {
+        "external_id": p.external_id,
+        "canonical_name": p.canonical_name,
+        "aliases": list(p.aliases),
+        "created_at": p.created_at,
     }
 
 

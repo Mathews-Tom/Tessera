@@ -93,6 +93,25 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     # No user content crosses the boundary: the warm-up uses the literal
     # string ``"warm"`` as input.
     "daemon_warmed": frozenset({"reranker_device", "embedder_name", "duration_ms"}),
+    # People surface (v0.3). canonical_name and alias strings are
+    # treated as user content per §S4 and never land in payloads —
+    # forensics correlates rows via target_external_id and counts.
+    # Cross-references to a *second* people row (merge / split) carry
+    # the related external_id so the audit trail can reconstruct the
+    # graph mutation.
+    "person_created": frozenset({"alias_count"}),
+    "person_alias_added": frozenset({"alias_count_after"}),
+    "person_merged": frozenset({"secondary_external_id", "mentions_migrated", "aliases_migrated"}),
+    "person_split": frozenset({"new_external_id"}),
+    "person_mention_linked": frozenset({"person_external_id", "confidence"}),
+    "person_mention_unlinked": frozenset({"person_external_id"}),
+    # Skills surface (v0.3). Procedure markdown and metadata fields are
+    # user content and never land in payloads — only the changed-field
+    # name list and content-hash prefixes correlate forensics rows.
+    "skill_procedure_updated": frozenset({"content_hash_prefix", "embed_status_reset"}),
+    "skill_metadata_updated": frozenset({"fields_changed"}),
+    "skill_disk_path_set": frozenset(set()),
+    "skill_disk_path_cleared": frozenset(set()),
 }
 
 

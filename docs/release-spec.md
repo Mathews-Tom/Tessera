@@ -194,69 +194,56 @@ The releases between v0.1 and v0.3 are stabilization, not feature work. The bar 
 
 ## v0.3 — People + Skills + Importers
 
-**The bar.** The user's context layer expands to cover relationships and learned procedures. Existing AI conversation history (from ChatGPT and Claude exports) becomes importable and queryable. People and skills facets prove their design against real usage.
+**The bar.** The user's context layer expands to cover relationships and learned procedures. Existing AI conversation history (from ChatGPT and Claude exports) becomes importable and queryable. People and skills prove their design against real usage. Design rationale is recorded in `docs/adr/0012-v0-3-people-and-skills-design.md`.
 
 ### Scope
 
-**New facets**
-- `person` — persistent model of individuals the user works with (colleagues, peers, mentors, public figures referenced regularly). Fields: canonical name, aliases, relationship context, interaction style, notes.
-- `skill` — learned procedures stored as `.md` content, syncable to disk. Fields: name, description, procedure markdown, disk path if synced.
+**Schema v3 (additive over v2)**
+- New nullable `disk_path` column on `facets`, partial-unique-indexed per agent for live skill rows.
+- New `people` table — separate from `facets` — carrying canonical name, alias array, and per-agent uniqueness.
+- New `person_mentions` link table joining facets to people with confidence scores and `ON DELETE CASCADE` on both sides.
+- The schema-level `facet_type` CHECK already admitted `person`, `skill`, `compiled_notebook` at v2; v0.3 unlocks `skill` for writes (people are stored in `people`, not as facets — see ADR 0012).
+
+**New facet types activated for writes**
+- `skill` — user-authored procedure markdown, optionally synced to disk. Stored as a facet with `metadata = {name, description, active}` and the `disk_path` column when synced.
+
+**People surface (not a facet type)**
+- People live in their own `people` rows, not in `facets`. Rationale: relationship-graph mutability (alias merges, splits) fights content-hash dedup; per-row foreign keys are cleaner than `json_extract` joins. ADR 0012 records the alternative and the rejection reasons.
 
 **New MCP tools**
-- `learn_skill(name, description, procedure_md)`
-- `get_skill(name_or_query)`
-- `resolve_person(mention, disambiguation?)`
-- `list_skills([active_only=true])`
-- `list_people([filter])`
+- `learn_skill(name, description, procedure_md)` — write scope on `skill`
+- `get_skill(name)` — read scope on `skill`, returns `null` when no live match
+- `list_skills([active_only=true, limit=50])` — read scope on `skill`
+- `resolve_person(mention)` — read scope on `person`, returns `(matches, is_exact)` candidate list
+- `list_people([limit=50, since?])` — read scope on `person`
 
 **New CLI**
-- `tessera skills [list|show|edit|sync-to-disk|sync-from-disk]`
-- `tessera people [list|show|merge|split]`
-- `tessera import <source> <path>`
+- `tessera skills {list|show|sync-to-disk|sync-from-disk}` — list/show via HTTP MCP; sync via direct vault access
+- `tessera people {list|show|merge|split}` — list/show via HTTP MCP; merge/split via direct vault access
+- `tessera import {chatgpt|claude} <path>` — direct-vault batch import
 
-**Importers (at least two ship in v0.3)**
-- ChatGPT export (`conversations.json` from data export)
-- Claude export
-- Stretch: Obsidian vault, email mbox, Notion export
+**Importers (two ship at v0.3)**
+- ChatGPT export (`conversations.json` from a ChatGPT data export). Walks the active-branch through the export's mapping graph; falls back to a `create_time` sort when `current_node` is missing or the parent chain is broken.
+- Claude export (`conversations.json` from a Claude data export). Walks the flat `chat_messages` array; handles both the older `text` field and the newer `content` block array shape.
+- Stretch: Obsidian vault, email mbox, Notion export.
 
-Importers backfill the **v0.1 facet types** — `identity | preference | workflow | project | style` — from exported conversation history. They do not write to `skill`: skills are authored by the user via the `learn_skill` MCP tool, not derived from past conversations. Person mentions surfaced during import populate the `people` and `person_mentions` tables via the same resolution flow as interactive capture.
-
-**Schema additions**
-```sql
--- Person-specific table to support relationship queries
-CREATE TABLE people (
-  id            INTEGER PRIMARY KEY,
-  external_id   TEXT NOT NULL UNIQUE,
-  user_id       INTEGER NOT NULL REFERENCES users(id),
-  canonical_name TEXT NOT NULL,
-  aliases       TEXT NOT NULL DEFAULT '[]',          -- JSON array
-  metadata      TEXT NOT NULL DEFAULT '{}',
-  created_at    INTEGER NOT NULL,
-  UNIQUE(user_id, canonical_name)
-);
-
--- Link facets that mention people
-CREATE TABLE person_mentions (
-  id          INTEGER PRIMARY KEY,
-  facet_id    INTEGER NOT NULL REFERENCES facets(id),
-  person_id   INTEGER NOT NULL REFERENCES people(id),
-  confidence  REAL NOT NULL DEFAULT 1.0,
-  UNIQUE(facet_id, person_id)
-);
-
--- Skills have an optional disk path for sync
-ALTER TABLE facets ADD COLUMN disk_path TEXT;  -- populated when facet_type='skill'
-```
+Importers backfill the **v0.1 facet types** — `identity | preference | workflow | project | style` — from exported conversation history. They do not write to `skill`: skills are authored by the user via the `learn_skill` MCP tool, not derived from past conversations. Person-mention auto-extraction during import is documented future work — heuristic NER without calibration data over-engineers a problem real-user mistakes haven't yet justified (ADR 0012 §Negative).
 
 ### Definition of Done for v0.3
 
-- [ ] Skill round-trip: user learns skill via `learn_skill` in Claude → retrieves via `get_skill` in Cursor → applies in fresh session
-- [ ] Skill disk sync: `tessera skills sync-to-disk` writes `.md` files; edits sync back via `sync-from-disk`
-- [ ] At least one ChatGPT export (5K+ conversations) imports successfully and is queryable via `recall`
-- [ ] At least one Claude export imports successfully
-- [ ] Person resolution: handles "Sarah," "Sarah J," "Sarah Johnson" as same entity with explicit confirmation for fuzzy matches
-- [ ] `recall` includes top-K people and skills in cross-facet bundles when relevant
-- [ ] Tom has dogfooded Tessera with real ChatGPT/Claude import for 30+ days
+Per-item status is annotated below. Implementation lands in the v0.3 commit series; external-user verification gates lift when v0.1.x graduates and v0.3 dogfooding has produced signal.
+
+- [x] Schema v3 migration is additive, idempotent, and resume-safe. *(`src/tessera/migration/runner.py:_V2_TO_V3_STEPS`; `tests/unit/test_migration_runner.py`.)*
+- [x] Skill round-trip is wired end-to-end at the protocol layer: `learn_skill` writes a skill, `get_skill` retrieves it across MCP clients with read scope on `skill`. *(`src/tessera/mcp_surface/tools.py::learn_skill`/`get_skill`; `tests/integration/test_mcp_tool_surface.py`.)* External cross-client demo (Claude → Cursor → fresh session) is **pending external verification**.
+- [x] Skill disk sync: `tessera skills sync-to-disk` writes `.md` files; edits sync back via `sync-from-disk`. *(`src/tessera/vault/skills.py::sync_to_disk`/`sync_from_disk`; `src/tessera/cli/skills_cmd.py`; `tests/unit/test_skills.py::test_round_trip_to_disk_then_back`.)*
+- [x] ChatGPT importer parses `conversations.json` shape, dedups on rerun, handles multimodal content blocks and the active-branch / fallback walker paths. *(`src/tessera/importers/chatgpt.py`; `tests/unit/test_importers_chatgpt.py`.)* 5K+ conversation import is **pending real-export run**.
+- [x] Claude importer parses `chat_messages` shape, handles both legacy `text` and newer `content` block schemas. *(`src/tessera/importers/claude.py`; `tests/unit/test_importers_claude.py`.)* Real-export run is **pending**.
+- [x] Person resolution returns single-match `is_exact=True` for canonical / alias hits and a candidate list for fuzzy matches. Auto-pick is deliberately not wired (ADR 0012 §Conservative resolution). *(`src/tessera/vault/people.py::resolve`; `tests/unit/test_people.py::test_resolve_*`; `tests/integration/test_mcp_tool_surface.py::test_resolve_person_*`.)*
+- [x] `recall` includes top-K skills in cross-facet bundles by default; people surface via the dedicated `resolve_person` tool. *(`src/tessera/daemon/dispatch.py::_DEFAULT_RECALL_TYPES`; `tests/unit/test_daemon_dispatch_defaults.py`. ADR 0012 records the people-as-rows decision.)*
+- [ ] **Cross-platform clean-install smoke (subsumes v0.1 DoD item 1).** Recorded clean-VM walkthrough on macOS, Ubuntu, and Windows: `pip install --pre tessera-context==0.3.0rc1` → `ollama pull nomic-embed-text` → `tessera init` → `tessera daemon start` → `tessera connect claude-desktop` (or platform equivalent) → capture → recall. Decision 2026-04-26: folded into v0.3.0rc1 because the v2→v3 migration only exercises on a v0.3 install; running the v0.1 walkthrough separately doubles the work for no extra signal. *(Pending — external clean-VM coordination per `docs/smoke-test-v0.3rc1.md`.)*
+- [ ] **v2 → v3 migration verification on a real rc2 vault.** Smoke run pre-seeds each clean VM with a populated rc2 vault (≥ 50 facets across all five v0.1 types, sqlcipher-encrypted), installs v0.3.0rc1, launches the daemon, and confirms (a) `_migration_steps` rows for the v3 target, (b) `disk_path` column visible on `facets`, (c) `people` and `person_mentions` tables created, (d) every pre-migration facet count preserved, (e) `tessera doctor` green. *(Implementation Green at `src/tessera/migration/runner.py:_V2_TO_V3_STEPS`; the open gate is real-vault verification on each platform.)*
+- [ ] **One external user completes the T-shape demo unaided, recorded (carry-over from v0.1 DoD item 9).** Independent of platform; gates v0.3.0rc1 → v0.3.0 GA, not rc1. *(Pending — seeded T-shape engineer recruit.)*
+- [ ] Tom has dogfooded Tessera with real ChatGPT/Claude import for 30+ days. *(Pending — external dogfooding gate.)*
 
 ---
 
