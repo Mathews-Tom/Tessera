@@ -1,4 +1,6 @@
-"""MCP tool surface: capture, recall, show, list_facets, stats, forget.
+"""MCP tool surface: capture, recall, show, list_facets, stats, forget,
+plus the v0.3 People + Skills tools (learn_skill, get_skill, list_skills,
+resolve_person, list_people).
 
 Each tool is a thin wrapper around a storage/retrieval primitive plus
 four cross-cutting concerns the boundary owns and the primitives
@@ -11,9 +13,10 @@ below it do not:
    ``scope_denied`` audit rows and raise :class:`ScopeDenied`.
 3. Per-tool token-budget declaration — every response passes through
    ``apply_budget`` so no tool can return more tokens than it promised.
-4. Audit emission — capture/recall/forget delegate to their primitive's
-   existing audit path; show/list_facets/stats are pure reads and do
-   not add audit entries.
+4. Audit emission — capture/recall/forget/learn_skill delegate to their
+   primitive's existing audit path; show/list_facets/stats/list_skills/
+   list_people/resolve_person/get_skill are pure reads and do not add
+   audit entries.
 
 The surface is intentionally storage-layer-thin. Each tool is a dozen
 lines of validation + scope check + delegate + response-shape — the
@@ -21,9 +24,15 @@ heavy lifting lives in the retrieval pipeline and the vault CRUD
 helpers. Keeping the boundary thin keeps the audit and scope
 invariants legible.
 
-The sixth tool is ``forget`` (soft-delete with an audit entry).
+The sixth core tool is ``forget`` (soft-delete with an audit entry).
 Cross-facet context is delivered by ``recall`` with ``facet_types``
-defaulting to every type the caller is scoped for (per ADR 0010).
+defaulting to every type the caller is scoped for (per ADR 0010). The
+v0.3 surface adds five tools that operate on the People + Skills
+side: ``learn_skill`` writes a skill (write scope on ``skill``),
+``get_skill`` and ``list_skills`` read skills (read scope on
+``skill``), ``resolve_person`` turns a free-form mention into a
+candidate ``Person`` list, and ``list_people`` enumerates the agent's
+people roster (both read scope on ``person``).
 """
 
 from __future__ import annotations
@@ -48,6 +57,8 @@ from tessera.retrieval.pipeline import recall as _pipeline_recall
 from tessera.vault import audit as vault_audit
 from tessera.vault import capture as vault_capture
 from tessera.vault import facets as vault_facets
+from tessera.vault import people as vault_people
+from tessera.vault import skills as vault_skills
 
 # Input validation limits. These are hard caps; any payload exceeding
 # them is rejected at the boundary with :class:`ValidationError` rather
@@ -80,6 +91,19 @@ SHOW_RESPONSE_BUDGET: Final[int] = 2_048
 LIST_FACETS_RESPONSE_BUDGET: Final[int] = 2_048
 STATS_RESPONSE_BUDGET: Final[int] = 1_024
 FORGET_RESPONSE_BUDGET: Final[int] = 256
+LEARN_SKILL_RESPONSE_BUDGET: Final[int] = 512
+GET_SKILL_RESPONSE_BUDGET: Final[int] = 4_096
+LIST_SKILLS_RESPONSE_BUDGET: Final[int] = 2_048
+RESOLVE_PERSON_RESPONSE_BUDGET: Final[int] = 1_024
+LIST_PEOPLE_RESPONSE_BUDGET: Final[int] = 2_048
+
+# v0.3 tool input bounds. Skill names are user-visible identifiers, so
+# we cap them well below content; descriptions sit between names and
+# free-form content; mentions are conversational fragments and live at
+# the same ceiling as names.
+_MAX_SKILL_NAME_CHARS: Final[int] = 256
+_MAX_SKILL_DESCRIPTION_CHARS: Final[int] = 1_024
+_MAX_MENTION_CHARS: Final[int] = 256
 
 # ULID shape: 26 chars Crockford base32. We accept the canonical upper
 # alphabet only; the facets module mints via python-ulid which emits
@@ -302,6 +326,100 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
         },
         response_budget_tokens=FORGET_RESPONSE_BUDGET,
     ),
+    ToolContract(
+        name="learn_skill",
+        description=(
+            "Create a skill (named procedure markdown) the agent can recall later. "
+            "Required args: name, description, procedure_md."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "maxLength": _MAX_SKILL_NAME_CHARS},
+                "description": {"type": "string", "maxLength": _MAX_SKILL_DESCRIPTION_CHARS},
+                "procedure_md": {"type": "string", "maxLength": _MAX_CONTENT_CHARS},
+                "source_tool": {"type": "string", "pattern": _SOURCE_TOOL_PATTERN.pattern},
+            },
+            "required": ["name", "description", "procedure_md"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=LEARN_SKILL_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="get_skill",
+        description="Fetch one skill by exact name. Returns null when no live skill matches.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "maxLength": _MAX_SKILL_NAME_CHARS},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=GET_SKILL_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="list_skills",
+        description=(
+            "List the agent's skills, ordered by name. Optional active_only=true filters "
+            "out retired skills (default true). Optional limit defaults to 50."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "active_only": {"type": "boolean", "default": True},
+                "limit": {
+                    "type": "integer",
+                    "minimum": _MIN_LIMIT,
+                    "maximum": _MAX_LIMIT,
+                    "default": 50,
+                },
+            },
+            "additionalProperties": False,
+        },
+        response_budget_tokens=LIST_SKILLS_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="resolve_person",
+        description=(
+            "Turn a free-form mention string into candidate person rows. Returns "
+            "is_exact=true only when canonical-name or alias matches exactly single."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mention": {"type": "string", "maxLength": _MAX_MENTION_CHARS},
+            },
+            "required": ["mention"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=RESOLVE_PERSON_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="list_people",
+        description=(
+            "List the agent's people roster, ordered by canonical name. Optional limit "
+            "defaults to 50, optional since filters by created_at epoch."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": _MIN_LIMIT,
+                    "maximum": _MAX_LIMIT,
+                    "default": 50,
+                },
+                "since": {
+                    "type": "integer",
+                    "minimum": _MIN_SINCE_EPOCH,
+                    "maximum": _MAX_SINCE_EPOCH,
+                },
+            },
+            "additionalProperties": False,
+        },
+        response_budget_tokens=LIST_PEOPLE_RESPONSE_BUDGET,
+    ),
 )
 
 
@@ -392,6 +510,72 @@ class ForgetResponse:
     external_id: str
     facet_type: str
     deleted_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class LearnSkillResponse:
+    external_id: str
+    name: str
+    is_new: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SkillView:
+    """Full skill payload returned by ``get_skill``.
+
+    Carries the procedure markdown verbatim — callers requesting the
+    skill body get the canonical text. Token-budget enforcement
+    truncates the procedure tail (with ``truncated=True``) when the
+    budget cannot fit the full body.
+    """
+
+    external_id: str
+    name: str
+    description: str
+    procedure_md: str
+    active: bool
+    disk_path: str | None
+    captured_at: int
+    embed_status: str
+    truncated: bool
+    token_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class SkillSummary:
+    external_id: str
+    name: str
+    description: str
+    active: bool
+    captured_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class ListSkillsResponse:
+    items: tuple[SkillSummary, ...]
+    truncated: bool
+    total_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class PersonMatch:
+    external_id: str
+    canonical_name: str
+    aliases: tuple[str, ...]
+    created_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvePersonResponse:
+    matches: tuple[PersonMatch, ...]
+    is_exact: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ListPeopleResponse:
+    items: tuple[PersonMatch, ...]
+    truncated: bool
+    total_tokens: int
 
 
 # ---- Tools ---------------------------------------------------------------
@@ -635,6 +819,153 @@ async def forget(
     )
 
 
+async def learn_skill(
+    tctx: ToolContext,
+    *,
+    name: str,
+    description: str,
+    procedure_md: str,
+    source_tool: str | None = None,
+) -> LearnSkillResponse:
+    """MCP ``learn_skill`` — create a named skill.
+
+    Write scope on ``skill`` is required. The underlying
+    ``vault.skills.create_skill`` enforces per-agent name uniqueness
+    and rides on the facets ``UNIQUE(agent_id, content_hash)`` so two
+    skills cannot share a procedure body. ``source_tool`` defaults to
+    the capability's ``client_name`` when omitted, mirroring capture.
+    """
+
+    _validate_length("name", name, _MAX_SKILL_NAME_CHARS, allow_empty=False)
+    _validate_length("description", description, _MAX_SKILL_DESCRIPTION_CHARS, allow_empty=True)
+    _validate_length("procedure_md", procedure_md, _MAX_CONTENT_CHARS, allow_empty=False)
+    resolved_source = source_tool or tctx.verified.client_name
+    _validate_source_tool(resolved_source)
+    _require_scope(tctx, op="write", facet_type="skill")
+    try:
+        external_id, is_new = vault_skills.create_skill(
+            tctx.conn,
+            agent_id=tctx.verified.agent_id,
+            name=name,
+            description=description,
+            procedure_md=procedure_md,
+            source_tool=resolved_source,
+        )
+    except vault_skills.DuplicateSkillNameError as exc:
+        raise ValidationError(str(exc)) from exc
+    except vault_facets.UnknownAgentError as exc:
+        raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
+    return LearnSkillResponse(external_id=external_id, name=name.strip(), is_new=is_new)
+
+
+async def get_skill(tctx: ToolContext, *, name: str) -> SkillView | None:
+    """MCP ``get_skill`` — fetch a skill by exact name.
+
+    Returns ``None`` when the agent has no live skill with that name.
+    Long procedure markdown is truncated to fit the per-tool budget;
+    the response carries ``truncated=True`` when truncation fired so
+    the caller can request the full body via ``show`` if needed.
+    """
+
+    _validate_length("name", name, _MAX_SKILL_NAME_CHARS, allow_empty=False)
+    _require_scope(tctx, op="read", facet_type="skill")
+    skill = vault_skills.get_by_name(tctx.conn, agent_id=tctx.verified.agent_id, name=name)
+    if skill is None:
+        return None
+    body = skill.procedure_md
+    body_tokens = count_tokens(body)
+    truncated = False
+    if body_tokens > GET_SKILL_RESPONSE_BUDGET - 64:
+        body = truncate_snippet(body, max_tokens=GET_SKILL_RESPONSE_BUDGET - 64)
+        truncated = True
+        body_tokens = count_tokens(body)
+    return SkillView(
+        external_id=skill.external_id,
+        name=skill.name,
+        description=skill.description,
+        procedure_md=body,
+        active=skill.active,
+        disk_path=skill.disk_path,
+        captured_at=skill.captured_at,
+        embed_status=skill.embed_status,
+        truncated=truncated,
+        token_count=body_tokens,
+    )
+
+
+async def list_skills(
+    tctx: ToolContext,
+    *,
+    active_only: bool = True,
+    limit: int = 50,
+) -> ListSkillsResponse:
+    """MCP ``list_skills`` — paginated metadata for skill rows."""
+
+    _validate_limit(limit)
+    _require_scope(tctx, op="read", facet_type="skill")
+    rows = vault_skills.list_skills(
+        tctx.conn,
+        agent_id=tctx.verified.agent_id,
+        active_only=active_only,
+        limit=limit,
+    )
+    summaries = [
+        SkillSummary(
+            external_id=s.external_id,
+            name=s.name,
+            description=s.description,
+            active=s.active,
+            captured_at=s.captured_at,
+        )
+        for s in rows
+    ]
+    items, truncated, total_tokens = _budget_skill_summaries(summaries)
+    return ListSkillsResponse(items=items, truncated=truncated, total_tokens=total_tokens)
+
+
+async def resolve_person(
+    tctx: ToolContext,
+    *,
+    mention: str,
+) -> ResolvePersonResponse:
+    """MCP ``resolve_person`` — map a mention string to candidate rows.
+
+    Read scope on ``person`` required. The result mirrors
+    :class:`vault.people.ResolveResult`: ``is_exact=True`` only when a
+    single canonical-name or alias hit lands; otherwise the caller
+    receives a list to disambiguate.
+    """
+
+    _validate_length("mention", mention, _MAX_MENTION_CHARS, allow_empty=False)
+    _require_scope(tctx, op="read", facet_type="person")
+    result = vault_people.resolve(tctx.conn, agent_id=tctx.verified.agent_id, mention=mention)
+    matches = tuple(_person_match_view(p) for p in result.matches)
+    return ResolvePersonResponse(matches=matches, is_exact=result.is_exact)
+
+
+async def list_people(
+    tctx: ToolContext,
+    *,
+    limit: int = 50,
+    since: int | None = None,
+) -> ListPeopleResponse:
+    """MCP ``list_people`` — paginated people roster."""
+
+    _validate_limit(limit)
+    if since is not None:
+        _validate_since(since)
+    _require_scope(tctx, op="read", facet_type="person")
+    rows = vault_people.list_by_agent(
+        tctx.conn,
+        agent_id=tctx.verified.agent_id,
+        limit=limit,
+        since=since,
+    )
+    matches = [_person_match_view(p) for p in rows]
+    items, truncated, total_tokens = _budget_person_matches(matches)
+    return ListPeopleResponse(items=items, truncated=truncated, total_tokens=total_tokens)
+
+
 # ---- Helpers -------------------------------------------------------------
 
 
@@ -796,6 +1127,71 @@ def _enforce_response_budget(
     return tuple(kept), truncated
 
 
+def _person_match_view(person: vault_people.Person) -> PersonMatch:
+    return PersonMatch(
+        external_id=person.external_id,
+        canonical_name=person.canonical_name,
+        aliases=person.aliases,
+        created_at=person.created_at,
+    )
+
+
+def _budget_skill_summaries(
+    summaries: list[SkillSummary],
+) -> tuple[tuple[SkillSummary, ...], bool, int]:
+    """Apply the list_skills budget to skill summaries.
+
+    Each summary's token cost is the description plus a per-row
+    overhead for the name + flags. The trim falls back to the trailing
+    items so the caller sees the alphabetically-earliest skills first.
+    """
+
+    items: list[BudgetedItem] = []
+    for s in summaries:
+        per_row_overhead = 32
+        items.append(
+            BudgetedItem(
+                key=s.external_id,
+                snippet=s.description,
+                token_count=(count_tokens(s.description) + count_tokens(s.name) + per_row_overhead),
+            )
+        )
+    trimmed = apply_budget(items, total_budget=LIST_SKILLS_RESPONSE_BUDGET)
+    kept_keys = {item.key for item in trimmed.items}
+    kept = tuple(s for s in summaries if s.external_id in kept_keys)
+    total = sum(item.token_count for item in trimmed.items)
+    return kept, trimmed.truncated, total
+
+
+def _budget_person_matches(
+    matches: list[PersonMatch],
+) -> tuple[tuple[PersonMatch, ...], bool, int]:
+    """Apply the list_people budget to person rows.
+
+    Token cost is the canonical name + every alias + a per-row
+    overhead. People rows are small, so truncation only fires on
+    pathologically large rosters.
+    """
+
+    items: list[BudgetedItem] = []
+    for p in matches:
+        per_row_overhead = 24
+        alias_tokens = sum(count_tokens(a) for a in p.aliases)
+        snippet = p.canonical_name + (" " + " ".join(p.aliases) if p.aliases else "")
+        items.append(
+            BudgetedItem(
+                key=p.external_id,
+                snippet=snippet,
+                token_count=count_tokens(p.canonical_name) + alias_tokens + per_row_overhead,
+            )
+        )
+    trimmed = apply_budget(items, total_budget=LIST_PEOPLE_RESPONSE_BUDGET)
+    kept_keys = {item.key for item in trimmed.items}
+    kept = tuple(p for p in matches if p.external_id in kept_keys)
+    total = sum(item.token_count for item in trimmed.items)
+    return kept, trimmed.truncated, total
+
+
 def _as_budgeted(summaries: list[FacetSummary]) -> list[BudgetedItem]:
     items = []
     for s in summaries:
@@ -852,9 +1248,14 @@ def _now_epoch() -> int:
 __all__ = [
     "CAPTURE_RESPONSE_BUDGET",
     "FORGET_RESPONSE_BUDGET",
+    "GET_SKILL_RESPONSE_BUDGET",
+    "LEARN_SKILL_RESPONSE_BUDGET",
     "LIST_FACETS_RESPONSE_BUDGET",
+    "LIST_PEOPLE_RESPONSE_BUDGET",
+    "LIST_SKILLS_RESPONSE_BUDGET",
     "MCP_TOOL_CONTRACTS",
     "RECALL_RESPONSE_BUDGET",
+    "RESOLVE_PERSON_RESPONSE_BUDGET",
     "SHOW_RESPONSE_BUDGET",
     "STATS_RESPONSE_BUDGET",
     "ActiveModel",
@@ -863,11 +1264,18 @@ __all__ = [
     "EmbedHealth",
     "FacetSummary",
     "ForgetResponse",
+    "LearnSkillResponse",
     "ListFacetsResponse",
+    "ListPeopleResponse",
+    "ListSkillsResponse",
+    "PersonMatch",
     "RecallMatchView",
     "RecallResponse",
+    "ResolvePersonResponse",
     "ScopeDenied",
     "ShowResponse",
+    "SkillSummary",
+    "SkillView",
     "StatsResponse",
     "StorageError",
     "ToolContext",
@@ -876,8 +1284,13 @@ __all__ = [
     "ValidationError",
     "capture",
     "forget",
+    "get_skill",
+    "learn_skill",
     "list_facets",
+    "list_people",
+    "list_skills",
     "recall",
+    "resolve_person",
     "show",
     "stats",
 ]

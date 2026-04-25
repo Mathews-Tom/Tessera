@@ -16,7 +16,19 @@ from tessera.mcp_surface import tools as mcp
 @pytest.mark.unit
 def test_contract_lists_dispatchable_tools_in_order() -> None:
     names = [contract.name for contract in mcp.MCP_TOOL_CONTRACTS]
-    assert names == ["capture", "recall", "show", "list_facets", "stats", "forget"]
+    assert names == [
+        "capture",
+        "recall",
+        "show",
+        "list_facets",
+        "stats",
+        "forget",
+        "learn_skill",
+        "get_skill",
+        "list_skills",
+        "resolve_person",
+        "list_people",
+    ]
     assert set(names) == set(dispatch._HANDLERS)
 
 

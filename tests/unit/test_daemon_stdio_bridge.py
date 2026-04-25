@@ -22,9 +22,21 @@ from tessera.daemon import stdio_bridge
 
 
 @pytest.mark.unit
-def test_tool_catalogue_lists_v01_verbs() -> None:
+def test_tool_catalogue_lists_v0_3_verbs() -> None:
     names = [tool.name for tool in stdio_bridge._TOOLS]
-    assert names == ["capture", "recall", "show", "list_facets", "stats", "forget"]
+    assert names == [
+        "capture",
+        "recall",
+        "show",
+        "list_facets",
+        "stats",
+        "forget",
+        "learn_skill",
+        "get_skill",
+        "list_skills",
+        "resolve_person",
+        "list_people",
+    ]
     # Every tool carries a description and an input schema so Claude
     # Desktop's tool picker renders something useful.
     for tool in stdio_bridge._TOOLS:
