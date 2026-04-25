@@ -71,7 +71,7 @@ pip install --pre tessera-context
 pip install tessera-context==0.3.0rc1
 ```
 
-The v0.3.0rc1 → v0.3.0 GA gate is one external user completing the T-shape demo unaided (carry-over of v0.1 DoD item 9), plus 30+ days of Tom dogfooding ChatGPT/Claude imports on a real vault.
+The v0.3.0rc1 → v0.3.0 GA stabilization gates (none of which block rc1 publication) are: cross-platform clean-install smoke recordings on macOS / Ubuntu / Windows per `docs/smoke-test-v0.3rc1.md`, the v2 → v3 migration verified on a real rc2 vault on each platform, one external user completing the T-shape demo unaided (carry-over of v0.1 DoD item 9), and 30+ days of Tom dogfooding ChatGPT/Claude imports on a real vault. rc1 ships now on internal evidence (CI green, schema v3 migration covered by unit tests, the v0.3 surface covered by integration tests) — same pattern as v0.1.0rc1 and rc2.
 
 ## [0.1.0rc2] — 2026-04-25 (pre-release, polish)
 
