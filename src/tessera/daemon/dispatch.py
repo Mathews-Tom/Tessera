@@ -43,12 +43,17 @@ async def dispatch_tool_call(
 
 
 def _tool_context(state: DaemonState, verified: VerifiedCapability) -> mcp.ToolContext:
-    # Default ``facet_types`` is every v0.1 type the token can read. This is
-    # the cross-facet default the reframe requires: a recall() without an
-    # explicit filter assembles a bundle across every facet the caller is
-    # scoped for, which is what makes the T-shape synthesis story work
-    # (``docs/system-design.md §Retrieval pipeline``). A caller that wants a
-    # single-facet-type recall passes ``facet_types=[...]`` explicitly.
+    # Default ``facet_types`` is every writable type the token can read.
+    # This is the cross-facet default the reframe requires: a recall()
+    # without an explicit filter assembles a bundle across every facet
+    # the caller is scoped for, which is what makes the T-shape
+    # synthesis story work (``docs/system-design.md §Retrieval
+    # pipeline``). v0.3 adds ``skill`` to the default fan-out so user
+    # procedures surface alongside identity / preference / workflow /
+    # project / style without requiring an explicit ``facet_types``
+    # argument. ``person`` is *not* in the default because people are
+    # not facets — they live in the ``people`` table and surface via
+    # the ``resolve_person`` MCP tool, not ``recall``.
     scoped_types = tuple(
         ftype
         for ftype in _DEFAULT_RECALL_TYPES
@@ -69,10 +74,14 @@ def _tool_context(state: DaemonState, verified: VerifiedCapability) -> mcp.ToolC
     )
 
 
-# The v0.1 facet types a recall() without an explicit ``facet_types`` filter
-# fans out over — sorted deterministically so scope-filtered subsets still
-# produce a stable order in the pipeline context.
-_DEFAULT_RECALL_TYPES: tuple[str, ...] = tuple(sorted(vault_facets.V0_1_FACET_TYPES))
+# Facet types a recall() without an explicit ``facet_types`` filter fans
+# out over — every facet type the v0.3 write path can produce, sorted
+# deterministically so scope-filtered subsets still produce a stable
+# order in the pipeline context. People are excluded (they are not
+# facets); compiled_notebook is excluded (deferred to v0.5).
+_DEFAULT_RECALL_TYPES: tuple[str, ...] = tuple(
+    sorted(vault_facets.WRITABLE_FACET_TYPES - {"person"})
+)
 
 
 async def _do_capture(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
