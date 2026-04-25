@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import tessera
 from tessera.cli.__main__ import _build_parser
 
 
@@ -76,3 +77,17 @@ def test_recall_requires_query() -> None:
     args = parser.parse_args(["recall", "what did I say about X"])
     assert args.query == "what did I say about X"
     assert args.k == 10
+
+
+@pytest.mark.unit
+def test_top_level_version_flag_prints_and_exits(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = _build_parser()
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["--version"])
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "tessera" in output
+    assert tessera.__version__ in output

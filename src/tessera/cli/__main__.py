@@ -18,6 +18,7 @@ import argparse
 import sys
 from collections.abc import Callable
 
+from tessera import __version__ as TESSERA_VERSION
 from tessera.cli import (
     agents_cmd,
     connect_cmd,
@@ -55,6 +56,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tessera")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"tessera {TESSERA_VERSION}",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     init_cmd.register(subparsers)
