@@ -1,10 +1,11 @@
-"""v2 vault schema per docs/system-design.md §Vault schema and §Failure taxonomy.
+"""v3 vault schema per docs/system-design.md §Vault schema and §Failure taxonomy.
 
-Schema v2 is the first post-reframe schema: the ``facet_type`` CHECK
-reflects the five-facet v0.1 vocabulary plus reserved v0.3/v0.5 types
-(ADR 0010), each facet row carries a ``mode`` column and a
-``source_tool`` column, and the ``compiled_artifacts`` table is
-reserved (empty but present) for v0.5 write-time compilation.
+Schema v3 activates the v0.3 People + Skills surface: ``facets`` carries
+an optional ``disk_path`` for skills synced to disk, the ``people`` and
+``person_mentions`` tables make canonical-name resolution and facet
+linking first-class, and the v2 reserved facet-type vocabulary stays
+intact. The ``compiled_artifacts`` table remains reserved for v0.5
+write-time compilation.
 
 The schema is emitted as a list of ordered DDL statements. The
 migration runner applies them inside a single transaction guarded by
@@ -17,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 2
+SCHEMA_VERSION: Final[int] = 3
 
 _PRAGMAS: Final[tuple[str, ...]] = (
     "PRAGMA foreign_keys = ON",
@@ -84,6 +85,7 @@ _TABLES: Final[tuple[str, ...]] = (
         embed_attempts         INTEGER NOT NULL DEFAULT 0,
         embed_last_error       TEXT,
         embed_last_attempt_at  INTEGER,
+        disk_path              TEXT,
         UNIQUE(agent_id, content_hash)
     )
     """,
@@ -108,6 +110,11 @@ _TABLES: Final[tuple[str, ...]] = (
     CREATE INDEX IF NOT EXISTS facets_embed_status
         ON facets(embed_status, embed_last_attempt_at)
         WHERE is_deleted = 0 AND embed_status IN ('pending', 'failed')
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS facets_disk_path
+        ON facets(agent_id, disk_path)
+        WHERE disk_path IS NOT NULL AND is_deleted = 0
     """,
     """
     CREATE VIRTUAL TABLE IF NOT EXISTS facets_fts USING fts5(
@@ -152,6 +159,35 @@ _TABLES: Final[tuple[str, ...]] = (
     """
     CREATE INDEX IF NOT EXISTS compiled_agent_type
         ON compiled_artifacts(agent_id, artifact_type, compiled_at DESC)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS people (
+        id              INTEGER PRIMARY KEY,
+        external_id     TEXT NOT NULL UNIQUE,
+        agent_id        INTEGER NOT NULL REFERENCES agents(id),
+        canonical_name  TEXT NOT NULL,
+        aliases         TEXT NOT NULL DEFAULT '[]',
+        metadata        TEXT NOT NULL DEFAULT '{}',
+        created_at      INTEGER NOT NULL,
+        UNIQUE(agent_id, canonical_name)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS people_agent
+        ON people(agent_id, canonical_name)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS person_mentions (
+        id          INTEGER PRIMARY KEY,
+        facet_id    INTEGER NOT NULL REFERENCES facets(id) ON DELETE CASCADE,
+        person_id   INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+        confidence  REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+        UNIQUE(facet_id, person_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS person_mentions_person
+        ON person_mentions(person_id)
     """,
     """
     CREATE TABLE IF NOT EXISTS capabilities (

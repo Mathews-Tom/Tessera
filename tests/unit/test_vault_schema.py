@@ -10,11 +10,11 @@ from tessera.vault import schema
 
 
 @pytest.mark.unit
-def test_schema_version_matches_post_reframe() -> None:
-    # v2 is the first post-reframe schema (ADR 0010): five v0.1 facet
-    # types plus reserved v0.3/v0.5 types, ``mode`` column, and the
-    # reserved ``compiled_artifacts`` table.
-    assert schema.SCHEMA_VERSION == 2
+def test_schema_version_matches_v0_3_surface() -> None:
+    # v3 activates the v0.3 People + Skills surface: ``disk_path`` column
+    # on facets, ``people`` and ``person_mentions`` tables. The v2
+    # post-reframe vocabulary (ADR 0010) is preserved.
+    assert schema.SCHEMA_VERSION == 3
 
 
 @pytest.mark.unit
@@ -30,10 +30,140 @@ def test_all_statements_apply_on_plain_sqlite() -> None:
         "audit_log",
         "embedding_models",
         "compiled_artifacts",
+        "people",
+        "person_mentions",
         "_meta",
     } <= tables
     assert "_migration_steps" in tables
     assert "facets_fts" in tables
+
+
+@pytest.mark.unit
+def test_facets_carries_disk_path_column() -> None:
+    conn = sqlite3.connect(":memory:")
+    for stmt in schema.all_statements():
+        conn.execute(stmt)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(facets)").fetchall()}
+    assert "disk_path" in cols
+
+
+@pytest.mark.unit
+def test_people_unique_canonical_name_per_agent() -> None:
+    conn = sqlite3.connect(":memory:")
+    for stmt in schema.all_statements():
+        conn.execute(stmt)
+    conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('a1', 'a', 1)")
+    conn.execute(
+        """
+        INSERT INTO people(external_id, agent_id, canonical_name, created_at)
+        VALUES ('p1', 1, 'Sarah Johnson', 1)
+        """
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO people(external_id, agent_id, canonical_name, created_at)
+            VALUES ('p2', 1, 'Sarah Johnson', 2)
+            """
+        )
+
+
+@pytest.mark.unit
+def test_person_mentions_unique_facet_person_pair() -> None:
+    conn = sqlite3.connect(":memory:")
+    for stmt in schema.all_statements():
+        conn.execute(stmt)
+    conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('a1', 'a', 1)")
+    conn.execute(
+        """
+        INSERT INTO facets(external_id, agent_id, facet_type, content,
+                           content_hash, source_tool, captured_at)
+        VALUES ('f1', 1, 'project', 'x', 'h', 'cli', 1)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO people(external_id, agent_id, canonical_name, created_at)
+        VALUES ('p1', 1, 'Sarah', 1)
+        """
+    )
+    conn.execute("INSERT INTO person_mentions(facet_id, person_id, confidence) VALUES (1, 1, 0.9)")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO person_mentions(facet_id, person_id, confidence) VALUES (1, 1, 1.0)"
+        )
+
+
+@pytest.mark.unit
+def test_person_mentions_confidence_check_rejects_out_of_range() -> None:
+    conn = sqlite3.connect(":memory:")
+    for stmt in schema.all_statements():
+        conn.execute(stmt)
+    conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('a1', 'a', 1)")
+    conn.execute(
+        """
+        INSERT INTO facets(external_id, agent_id, facet_type, content,
+                           content_hash, source_tool, captured_at)
+        VALUES ('f1', 1, 'project', 'x', 'h', 'cli', 1)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO people(external_id, agent_id, canonical_name, created_at)
+        VALUES ('p1', 1, 'Sarah', 1)
+        """
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO person_mentions(facet_id, person_id, confidence) VALUES (1, 1, 1.5)"
+        )
+
+
+@pytest.mark.unit
+def test_disk_path_unique_per_agent_when_present() -> None:
+    conn = sqlite3.connect(":memory:")
+    for stmt in schema.all_statements():
+        conn.execute(stmt)
+    conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('a1', 'a', 1)")
+    conn.execute(
+        """
+        INSERT INTO facets(external_id, agent_id, facet_type, content,
+                           content_hash, source_tool, captured_at, disk_path)
+        VALUES ('f1', 1, 'skill', 'x', 'h1', 'cli', 1, '/tmp/a.md')
+        """
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO facets(external_id, agent_id, facet_type, content,
+                               content_hash, source_tool, captured_at, disk_path)
+            VALUES ('f2', 1, 'skill', 'y', 'h2', 'cli', 1, '/tmp/a.md')
+            """
+        )
+
+
+@pytest.mark.unit
+def test_disk_path_null_does_not_collide() -> None:
+    conn = sqlite3.connect(":memory:")
+    for stmt in schema.all_statements():
+        conn.execute(stmt)
+    conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('a1', 'a', 1)")
+    conn.execute(
+        """
+        INSERT INTO facets(external_id, agent_id, facet_type, content,
+                           content_hash, source_tool, captured_at)
+        VALUES ('f1', 1, 'project', 'x', 'h1', 'cli', 1)
+        """
+    )
+    # A second NULL disk_path on a different facet must not collide via
+    # the partial unique index.
+    conn.execute(
+        """
+        INSERT INTO facets(external_id, agent_id, facet_type, content,
+                           content_hash, source_tool, captured_at)
+        VALUES ('f2', 1, 'project', 'y', 'h2', 'cli', 2)
+        """
+    )
 
 
 @pytest.mark.unit

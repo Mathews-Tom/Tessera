@@ -240,7 +240,7 @@ _V1_SCHEMA_DDL: tuple[str, ...] = (
 
 def _bootstrap_v1_vault(path: Path) -> None:
     """Install the pre-reframe v1 schema directly via sqlcipher, bypassing
-    the runner's bootstrap() (which now emits v2 DDL)."""
+    the runner's bootstrap() (which now emits the current SCHEMA_VERSION DDL)."""
 
     from tessera.vault.connection import VaultConnection
 
@@ -253,6 +253,148 @@ def _bootstrap_v1_vault(path: Path) -> None:
         conn.execute(
             "INSERT INTO _meta(key, value) VALUES (?, ?), (?, ?), (?, ?)",
             ("schema_version", "1", "vault_id", "01TESTVAULT", "kdf_version", "1"),
+        )
+        conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('01A', 'a', 0)")
+        conn.execute("COMMIT")
+    k.wipe()
+
+
+# v2 was the post-reframe ADR-0010 schema before v0.3 unlocked People +
+# Skills. The DDL here is frozen at that shape so the v2 -> v3 migration
+# tests have a real prior-version vault to upgrade rather than relying
+# on the live ``schema.all_statements()`` (which now emits v3).
+_V2_SCHEMA_DDL: tuple[str, ...] = (
+    """
+    CREATE TABLE _meta (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE _migration_steps (
+        schema_target  INTEGER NOT NULL,
+        step_name      TEXT NOT NULL,
+        applied_at     INTEGER NOT NULL,
+        PRIMARY KEY (schema_target, step_name)
+    )
+    """,
+    """
+    CREATE TABLE agents (
+        id           INTEGER PRIMARY KEY,
+        external_id  TEXT NOT NULL UNIQUE,
+        name         TEXT NOT NULL,
+        created_at   INTEGER NOT NULL,
+        metadata     TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    """
+    CREATE TABLE embedding_models (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE,
+        dim        INTEGER NOT NULL,
+        added_at   INTEGER NOT NULL,
+        is_active  INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1))
+    )
+    """,
+    """
+    CREATE TABLE facets (
+        id                     INTEGER PRIMARY KEY,
+        external_id            TEXT NOT NULL UNIQUE,
+        agent_id               INTEGER NOT NULL REFERENCES agents(id),
+        facet_type             TEXT NOT NULL CHECK (facet_type IN
+            ('identity', 'preference', 'workflow', 'project', 'style',
+             'person', 'skill', 'compiled_notebook')),
+        content                TEXT NOT NULL,
+        content_hash           TEXT NOT NULL,
+        mode                   TEXT NOT NULL DEFAULT 'query_time'
+            CHECK (mode IN ('query_time', 'write_time', 'hybrid')),
+        source_tool            TEXT NOT NULL,
+        captured_at            INTEGER NOT NULL,
+        metadata               TEXT NOT NULL DEFAULT '{}',
+        is_deleted             INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+        deleted_at             INTEGER,
+        embed_model_id         INTEGER REFERENCES embedding_models(id),
+        embed_status           TEXT NOT NULL DEFAULT 'pending'
+            CHECK (embed_status IN ('pending', 'embedded', 'failed', 'stale')),
+        embed_attempts         INTEGER NOT NULL DEFAULT 0,
+        embed_last_error       TEXT,
+        embed_last_attempt_at  INTEGER,
+        UNIQUE(agent_id, content_hash)
+    )
+    """,
+    """
+    CREATE VIRTUAL TABLE facets_fts USING fts5(
+        content,
+        content=facets,
+        content_rowid=id,
+        tokenize='porter unicode61'
+    )
+    """,
+    """
+    CREATE TRIGGER facets_ai AFTER INSERT ON facets BEGIN
+        INSERT INTO facets_fts(rowid, content) VALUES (new.id, new.content);
+    END
+    """,
+    """
+    CREATE TABLE compiled_artifacts (
+        id                INTEGER PRIMARY KEY,
+        external_id       TEXT NOT NULL UNIQUE,
+        agent_id          INTEGER NOT NULL REFERENCES agents(id),
+        source_facets     TEXT NOT NULL,
+        artifact_type     TEXT NOT NULL,
+        content           TEXT NOT NULL,
+        compiled_at       INTEGER NOT NULL,
+        compiler_version  TEXT NOT NULL,
+        is_stale          INTEGER NOT NULL DEFAULT 0 CHECK (is_stale IN (0, 1)),
+        metadata          TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    """
+    CREATE TABLE capabilities (
+        id                   INTEGER PRIMARY KEY,
+        agent_id             INTEGER NOT NULL REFERENCES agents(id),
+        client_name          TEXT NOT NULL,
+        token_hash           TEXT NOT NULL UNIQUE,
+        salt                 TEXT NOT NULL,
+        scopes               TEXT NOT NULL,
+        token_class          TEXT NOT NULL CHECK (token_class IN ('session', 'service', 'subagent')),
+        created_at           INTEGER NOT NULL,
+        expires_at           INTEGER NOT NULL,
+        last_used_at         INTEGER,
+        revoked_at           INTEGER,
+        refresh_token_hash   TEXT UNIQUE,
+        refresh_salt         TEXT,
+        refresh_expires_at   INTEGER
+    )
+    """,
+    """
+    CREATE TABLE audit_log (
+        id                  INTEGER PRIMARY KEY,
+        at                  INTEGER NOT NULL,
+        actor               TEXT NOT NULL,
+        agent_id            INTEGER REFERENCES agents(id),
+        op                  TEXT NOT NULL,
+        target_external_id  TEXT,
+        payload             TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+)
+
+
+def _bootstrap_v2_vault(path: Path) -> None:
+    """Install the v2 (post-reframe, pre-v0.3) schema directly."""
+
+    from tessera.vault.connection import VaultConnection
+
+    k = derive_key(bytearray(_PASS), _SALT)
+    with VaultConnection.open_raw(path, k) as vc:
+        conn = vc.connection
+        conn.execute("BEGIN")
+        for stmt in _V2_SCHEMA_DDL:
+            conn.execute(stmt)
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES (?, ?), (?, ?), (?, ?)",
+            ("schema_version", "2", "vault_id", "01TESTVAULT2", "kdf_version", "1"),
         )
         conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('01A', 'a', 0)")
         conn.execute("COMMIT")
@@ -292,11 +434,13 @@ def test_v1_to_v2_migration_maps_retired_facet_types(tmp_path: Path) -> None:
             )
     k.wipe()
 
-    # Run the real upgrade.
+    # Run the real upgrade. The runner advances all the way to the
+    # binary's BINARY_SCHEMA_VERSION (currently v3) — both the v1 -> v2
+    # remapping and the v2 -> v3 additive surface land in one call.
     k2 = derive_key(bytearray(_PASS), _SALT)
     state = upgrade(vault_path, k2)
     k2.wipe()
-    assert state.schema_version == 2
+    assert state.schema_version == 3
 
     # Verify the remapping: episodic -> project, semantic -> preference,
     # style -> style, skill -> skill, relationship -> person,
@@ -321,6 +465,10 @@ def test_v1_to_v2_migration_maps_retired_facet_types(tmp_path: Path) -> None:
         }
         # The reserved ``compiled_artifacts`` table now exists and is empty.
         count = conn.execute("SELECT COUNT(*) FROM compiled_artifacts").fetchone()[0]
+        # v3-added structure is in place.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(facets)").fetchall()}
+        people_count = conn.execute("SELECT COUNT(*) FROM people").fetchone()[0]
+        mentions_count = conn.execute("SELECT COUNT(*) FROM person_mentions").fetchone()[0]
     k3.wipe()
 
     assert rows == {
@@ -336,6 +484,92 @@ def test_v1_to_v2_migration_maps_retired_facet_types(tmp_path: Path) -> None:
     assert set(modes.values()) == {"query_time"}
     assert set(source_tools.values()) == {"cli"}
     assert count == 0
+    assert "disk_path" in cols
+    assert people_count == 0
+    assert mentions_count == 0
+
+
+@pytest.mark.unit
+def test_v2_to_v3_migration_adds_disk_path_and_people_tables(tmp_path: Path) -> None:
+    """A vault bootstrapped at v2 must upgrade to v3 without losing rows."""
+
+    # Install the v2 schema directly. v2 is the post-reframe shape: the
+    # v3 additive surface (disk_path column, people, person_mentions) is
+    # absent. We then call upgrade() and verify the additions land.
+    vault_path = tmp_path / "v2.db"
+    _bootstrap_v2_vault(vault_path)
+
+    # Seed a couple of facets at v2 so we can prove row preservation.
+    k = derive_key(bytearray(_PASS), _SALT)
+    from tessera.vault.connection import VaultConnection
+
+    with VaultConnection.open_raw(vault_path, k) as vc:
+        conn = vc.connection
+        conn.execute(
+            """
+            INSERT INTO facets(external_id, agent_id, facet_type, content,
+                               content_hash, source_tool, captured_at)
+            VALUES ('seed1', 1, 'project', 'work-in-progress', 'h-seed1', 'cli', 1000)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO facets(external_id, agent_id, facet_type, content,
+                               content_hash, source_tool, captured_at)
+            VALUES ('seed2', 1, 'preference', 'no emojis', 'h-seed2', 'cli', 1001)
+            """
+        )
+    k.wipe()
+
+    k2 = derive_key(bytearray(_PASS), _SALT)
+    state = upgrade(vault_path, k2)
+    k2.wipe()
+    assert state.schema_version == 3
+
+    k3 = derive_key(bytearray(_PASS), _SALT)
+    with VaultConnection.open(vault_path, k3) as vc:
+        conn = vc.connection
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(facets)").fetchall()}
+        assert "disk_path" in cols
+
+        # Both v2-era rows survive with NULL disk_path.
+        seeded = {
+            row[0]: row[1]
+            for row in conn.execute(
+                "SELECT external_id, disk_path FROM facets ORDER BY external_id"
+            ).fetchall()
+        }
+        assert seeded == {"seed1": None, "seed2": None}
+
+        # New tables exist and are empty.
+        assert conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM person_mentions").fetchone()[0] == 0
+
+        # The partial-unique index lives on the new column.
+        idx = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='facets_disk_path'"
+        ).fetchone()
+        assert idx is not None
+    k3.wipe()
+
+
+@pytest.mark.unit
+def test_v2_to_v3_migration_is_idempotent_under_resume(tmp_path: Path) -> None:
+    """Running upgrade twice must leave the vault at v3 with no errors."""
+
+    vault_path = tmp_path / "v2-resume.db"
+    _bootstrap_v2_vault(vault_path)
+
+    k = derive_key(bytearray(_PASS), _SALT)
+    upgrade(vault_path, k)
+    k.wipe()
+
+    # A second call is a no-op: schema_version is already at the binary
+    # ceiling so the for-loop has zero iterations.
+    k2 = derive_key(bytearray(_PASS), _SALT)
+    state = upgrade(vault_path, k2)
+    k2.wipe()
+    assert state.schema_version == 3
 
 
 @pytest.mark.unit
