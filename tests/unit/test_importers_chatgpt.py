@@ -10,8 +10,12 @@ from typing import Any
 
 import pytest
 
+from tessera.cli.__main__ import _build_parser
 from tessera.importers import chatgpt as chatgpt_importer
+from tessera.migration import bootstrap
 from tessera.vault import schema
+from tessera.vault.connection import VaultConnection
+from tessera.vault.encryption import derive_key, new_salt, save_salt
 
 
 @pytest.fixture
@@ -289,3 +293,97 @@ def test_import_export_falls_back_to_create_time_walk_when_current_node_missing(
     report = chatgpt_importer.import_export(conn, agent_id=aid, export_path=export)
     assert report.facets_created == 1
 
+
+# ---- CLI handler --------------------------------------------------------
+
+
+@pytest.fixture
+def initialized_vault(tmp_path: Path, passphrase: bytearray) -> Path:
+    vault_path = tmp_path / "vault.db"
+    salt = new_salt()
+    save_salt(vault_path, salt)
+    key = derive_key(passphrase, salt)
+    bootstrap(vault_path, key)
+    key.wipe()
+    return vault_path
+
+
+def _seed_agent_in_vault(vault_path: Path, passphrase: bytearray) -> None:
+    salt_bytes = (vault_path.parent / (vault_path.name + ".salt")).read_bytes()
+    key = derive_key(passphrase, salt_bytes)
+    with VaultConnection.open(vault_path, key) as vc:
+        vc.connection.execute(
+            "INSERT INTO agents(external_id, name, created_at) VALUES ('01A', 'tom', 1)"
+        )
+    key.wipe()
+
+
+@pytest.mark.unit
+def test_cli_import_chatgpt_runs_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+    initialized_vault: Path,
+    passphrase: bytearray,
+    tmp_path: Path,
+) -> None:
+    _seed_agent_in_vault(initialized_vault, passphrase)
+    export = _make_export(
+        tmp_path,
+        [
+            _conversation(
+                title="t",
+                messages=[("user", "hello", 1.0), ("assistant", "hi", 2.0)],
+            )
+        ],
+    )
+    monkeypatch.setenv("TESSERA_PASSPHRASE", passphrase.decode("utf-8"))
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "import",
+            "chatgpt",
+            str(export),
+            "--vault",
+            str(initialized_vault),
+        ]
+    )
+    rc = args.handler(args)
+    assert rc == 0
+
+
+@pytest.mark.unit
+def test_cli_import_chatgpt_surfaces_malformed_export(
+    monkeypatch: pytest.MonkeyPatch,
+    initialized_vault: Path,
+    passphrase: bytearray,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _seed_agent_in_vault(initialized_vault, passphrase)
+    bad = tmp_path / "broken.json"
+    bad.write_text("{broken", encoding="utf-8")
+    monkeypatch.setenv("TESSERA_PASSPHRASE", passphrase.decode("utf-8"))
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "import",
+            "chatgpt",
+            str(bad),
+            "--vault",
+            str(initialized_vault),
+        ]
+    )
+    rc = args.handler(args)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "not valid JSON" in err
+
+
+@pytest.mark.unit
+def test_cli_import_subparser_requires_subcommand(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["import"])
+    err = capsys.readouterr().err
+    assert "import_command" in err or "required" in err
