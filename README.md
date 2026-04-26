@@ -18,7 +18,7 @@ From PyPI (recommended):
 ```bash
 pip install --pre tessera-context
 # or pin explicitly:
-pip install tessera-context==0.4.0rc1
+pip install tessera-context==0.4.0rc2
 ```
 
 pip's default resolver skips pre-releases, so `--pre` or an explicit version pin is required. The PyPI distribution name is `tessera-context`; the CLI binary and Python import path remain `tessera`. The short `tessera` name on PyPI is held by a 2017-dormant Graphite dashboard project; PEP 541 reclaim is pursued in parallel.

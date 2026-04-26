@@ -4,11 +4,23 @@ All notable changes to Tessera are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0rc2] — 2026-04-27 (pre-release)
+
+First-run ergonomics fix on the v0.4 line. rc1 shipped earlier the same day with a 30 s `tessera daemon start --timeout` default that proved too tight after the ONNX-only migration: the daemon's first start now downloads ~650 MB of fastembed weights on the critical startup path, which routinely takes 30–90 s on a typical residential link. When the CLI hit the timeout, the spawned `tesserad` kept running in the background and eventually bound port 5710 — but the user's next `tessera daemon start` then hit `OSError [Errno 48] address already in use` against the orphan it had just abandoned. rc2 raises the default so the timeout no longer races the download.
 
 ### Changed
 
-- `tessera daemon start --timeout` default bumped from 30 s to 120 s. The previous value was sized for the v0.1–v0.3 Ollama cold-load (~2–5 s); after the ONNX-only switch the daemon's first start downloads ~650 MB of fastembed weights to `~/.cache/fastembed` on the critical startup path, which routinely runs 30–90 s on a typical residential link. Subsequent starts (cache warm) complete in ~3–5 s and stay well under the new default. Users on faster paths can pass `--timeout 30` for the previous behaviour.
+- `tessera daemon start --timeout` default bumped from 30 s to 120 s. Subsequent starts (cache warm) complete in ~3–5 s and stay well under the new default. Users on faster paths can pass `--timeout 30` for the previous behaviour; users on slower links pass `--timeout 600` once. The argparse help text picks the value up automatically.
+
+### Install
+
+```bash
+pip install --pre tessera-context
+# or pin explicitly:
+pip install tessera-context==0.4.0rc2
+```
+
+No vault migration required from rc1; this rc is a CLI-default change only.
 
 ## [0.4.0rc1] — 2026-04-27 (pre-release)
 
