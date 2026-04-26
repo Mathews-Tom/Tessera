@@ -4,6 +4,12 @@ All notable changes to Tessera are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- `tessera daemon start --timeout` default bumped from 30 s to 120 s. The previous value was sized for the v0.1–v0.3 Ollama cold-load (~2–5 s); after the ONNX-only switch the daemon's first start downloads ~650 MB of fastembed weights to `~/.cache/fastembed` on the critical startup path, which routinely runs 30–90 s on a typical residential link. Subsequent starts (cache warm) complete in ~3–5 s and stay well under the new default. Users on faster paths can pass `--timeout 30` for the previous behaviour.
+
 ## [0.4.0rc1] — 2026-04-27 (pre-release)
 
 Tessera v0.4 swaps the entire model stack to **fastembed (ONNX Runtime) running fully in-process** and removes Ollama, sentence-transformers, OpenAI, and Cohere adapters from the codebase. The torch dependency closure goes with them. Install footprint drops from ~600 MB to ~30 MB of Python packages. The change is breaking: any vault embedded by v0.1–v0.3 needs a re-embed against fastembed weights (run `tessera models set --name <fastembed-id> --activate` then `tessera vault repair-embeds`, or wipe and re-init for a clean start).

@@ -23,7 +23,16 @@ from tessera.daemon.units import (
 )
 
 _READY_POLL_INTERVAL = 0.5
-_DEFAULT_START_TIMEOUT = 30.0
+# 120s default accommodates first-run fastembed weight downloads on a
+# typical link: ~520 MB for nomic-embed-text-v1.5 + ~130 MB for the
+# Xenova ms-marco cross-encoder land in ~30-90 s end-to-end on most
+# residential connections, with headroom for slower paths. Subsequent
+# starts (cache warm) complete in ~3-5 s. Users on faster links can
+# pass `--timeout 30` for the previous behaviour; users on slower
+# links pass a larger value once. Pre-v0.4 this was 30 s, sized for
+# the Ollama HTTP cold-load (~2-5 s) — too tight after the ONNX swap
+# moved weight downloads onto the daemon's critical-startup path.
+_DEFAULT_START_TIMEOUT = 120.0
 _DEFAULT_WAIT_TIMEOUT = 60.0
 
 
