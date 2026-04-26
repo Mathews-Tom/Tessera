@@ -18,7 +18,13 @@ import argparse
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._common import (
+    CliError,
+    fail,
+    open_vault,
+    resolve_passphrase,
+    resolve_vault_path,
+)
 from tessera.cli._ui import EMOJI, kv_panel, status, success
 from tessera.vault.connection import VaultConnection
 from tessera.vault.export import (
@@ -32,7 +38,12 @@ from tessera.vault.export import (
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
     export_parser = subparsers.add_parser("export", help="export the vault to a portable format")
-    export_parser.add_argument("--vault", type=Path, required=True)
+    export_parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
     export_parser.add_argument("--passphrase", default=None)
     export_parser.add_argument(
         "--format",
@@ -63,7 +74,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     import_parser = subparsers.add_parser(
         "import-vault", help="import a JSON export into the vault"
     )
-    import_parser.add_argument("--vault", type=Path, required=True)
+    import_parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
     import_parser.add_argument("--passphrase", default=None)
     import_parser.add_argument("--input", type=Path, required=True, help="path to a JSON export")
     import_parser.add_argument(
@@ -80,12 +96,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 
 def _cmd_export(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
     with (
         status(f"exporting vault to {args.format}", emoji=EMOJI["export"]),
-        open_vault(args.vault, passphrase) as vault,
+        open_vault(vault_path, passphrase) as vault,
     ):
         try:
             summary = _dispatch_export(
@@ -101,12 +118,13 @@ def _cmd_import(args: argparse.Namespace) -> int:
     if not args.input.is_file():
         return fail(f"input not found: {args.input}")
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
     with (
         status(f"importing from {args.input}", emoji=EMOJI["import"]),
-        open_vault(args.vault, passphrase) as vault,
+        open_vault(vault_path, passphrase) as vault,
     ):
         try:
             summary = import_json(

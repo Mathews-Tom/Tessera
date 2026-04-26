@@ -12,6 +12,7 @@ from pathlib import Path
 
 import sqlcipher3
 
+from tessera.cli._common import CliError, resolve_passphrase, resolve_vault_path
 from tessera.cli._ui import EMOJI, error, status, success
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, load_salt
@@ -35,8 +36,17 @@ def _make_parser() -> argparse.ArgumentParser:
         "repair-embeds",
         help="Reset facets in 'failed' embed state so the next worker pass retries them.",
     )
-    repair.add_argument("--vault", type=Path, required=True)
-    repair.add_argument("--passphrase", required=True)
+    repair.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
+    repair.add_argument(
+        "--passphrase",
+        default=None,
+        help="vault passphrase; default is $TESSERA_PASSPHRASE",
+    )
     repair.add_argument(
         "--facet-type",
         choices=sorted(WRITABLE_FACET_TYPES),
@@ -46,16 +56,21 @@ def _make_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_repair_embeds(args: argparse.Namespace) -> int:
-    passphrase = args.passphrase.encode("utf-8")
     try:
-        salt = load_salt(args.vault)
+        vault_path = resolve_vault_path(args.vault)
+        passphrase = resolve_passphrase(args.passphrase)
+    except CliError as exc:
+        error(str(exc))
+        return 1
+    try:
+        salt = load_salt(vault_path)
     except FileNotFoundError:
-        error(f"no KDF salt sidecar for {args.vault}; initialise the vault first")
+        error(f"no KDF salt sidecar for {vault_path}; initialise the vault first")
         return 1
     with (
         status("resetting failed embeds", emoji=EMOJI["repair"]),
         derive_key(passphrase, salt) as key,
-        VaultConnection.open(args.vault, key) as vc,
+        VaultConnection.open(vault_path, key) as vc,
     ):
         updated = repair_embeds(vc.connection, facet_type=args.facet_type)
     success(f"reset {updated} facet(s) from 'failed' to 'pending'", emoji=EMOJI["repair"])

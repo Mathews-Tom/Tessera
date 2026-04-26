@@ -9,7 +9,13 @@ from pathlib import Path
 
 from tessera import __version__ as TESSERA_VERSION
 from tessera.adapters import models_registry
-from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._common import (
+    CliError,
+    fail,
+    open_vault,
+    resolve_passphrase,
+    resolve_vault_path,
+)
 from tessera.cli._ui import (
     EMOJI,
     console,
@@ -29,13 +35,18 @@ from tessera.observability.scrub import ScrubberViolationError
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
     parser = subparsers.add_parser("doctor", help="run health checks")
-    parser.add_argument("--vault", type=Path, default=None)
+    parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db (vault checks skip when missing)",
+    )
     parser.add_argument("--passphrase", default=None)
     parser.add_argument(
         "--collect",
         metavar="NAME",
         default=None,
-        help="produce a diagnostic bundle under --out-dir (requires --vault)",
+        help="produce a diagnostic bundle under --out-dir (requires a vault)",
     )
     parser.add_argument(
         "--out-dir",
@@ -49,17 +60,22 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 def _cmd_doctor(args: argparse.Namespace) -> int:
     if args.collect is not None:
         return _cmd_collect(args)
-    config = resolve_config(vault_path=args.vault)
+    try:
+        vault_path = resolve_vault_path(args.vault)
+    except CliError as exc:
+        return fail(str(exc))
+    config = resolve_config(vault_path=vault_path)
     with status("running health checks", emoji=EMOJI["doctor"]):
-        if args.vault is None:
-            # Vault-dependent checks downgrade to WARN; run without opening.
+        if not vault_path.exists():
+            # No vault file yet (fresh install). Vault-dependent checks
+            # downgrade to WARN; run without opening.
             report = asyncio.run(run_all(config))
         else:
             try:
                 passphrase = resolve_passphrase(args.passphrase)
             except CliError as exc:
                 return fail(str(exc))
-            with open_vault(args.vault, passphrase) as vc:
+            with open_vault(vault_path, passphrase) as vc:
                 report = asyncio.run(run_all(config, conn=vc.connection))
     table = report_table("doctor report", ["check", "status", "detail"], emoji=EMOJI["doctor"])
     for result in report.results:
@@ -84,16 +100,17 @@ def _cmd_collect(args: argparse.Namespace) -> int:
     tarball lands so the operator knows to open it first.
     """
 
-    if args.vault is None:
-        return fail("--collect requires --vault")
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
+    if not vault_path.exists():
+        return fail(f"--collect requires an initialised vault; nothing at {vault_path}")
     out_dir = args.out_dir or Path.cwd()
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     name = f"tessera-bundle-{args.collect}-{stamp}"
-    config = resolve_config(vault_path=args.vault)
+    config = resolve_config(vault_path=vault_path)
     event_log: EventLog | None = None
     try:
         event_log = EventLog.open(config.events_db_path)
@@ -105,14 +122,14 @@ def _cmd_collect(args: argparse.Namespace) -> int:
     try:
         with (
             status("collecting diagnostic bundle", emoji=EMOJI["export"]),
-            open_vault(args.vault, passphrase) as vc,
+            open_vault(vault_path, passphrase) as vc,
         ):
             active_models = tuple(
                 m.name for m in models_registry.list_models(vc.connection) if m.is_active
             )
             spec = BundleSpec(
                 vault_conn=vc.connection,
-                vault_path=args.vault,
+                vault_path=vault_path,
                 event_log=event_log,
                 tessera_version=TESSERA_VERSION,
                 active_models=active_models,

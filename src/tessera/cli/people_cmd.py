@@ -12,7 +12,13 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._common import (
+    CliError,
+    fail,
+    open_vault,
+    resolve_passphrase,
+    resolve_vault_path,
+)
 from tessera.cli._http import add_http_args, call, print_json
 from tessera.cli._ui import EMOJI, console, report_table, status, success
 from tessera.vault import people as vault_people
@@ -63,7 +69,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 
 
 def _add_vault_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--vault", type=Path, required=True)
+    parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
     parser.add_argument(
         "--passphrase",
         default=None,
@@ -120,9 +131,10 @@ def _cmd_merge(args: argparse.Namespace) -> int:
     # for symmetry with split (which does need it for the new-row
     # insert) but unused here.
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
         with (
-            open_vault(args.vault, passphrase) as vc,
+            open_vault(vault_path, passphrase) as vc,
             status(f"merge {args.secondary} → {args.primary}", emoji=EMOJI["repair"]),
         ):
             survivor = vault_people.merge(
@@ -144,9 +156,10 @@ def _cmd_merge(args: argparse.Namespace) -> int:
 def _cmd_split(args: argparse.Namespace) -> int:
     move_aliases = [a.strip() for a in args.aliases.split(",") if a.strip()]
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
         with (
-            open_vault(args.vault, passphrase) as vc,
+            open_vault(vault_path, passphrase) as vc,
             status(f"split {args.person} → {args.canonical!r}", emoji=EMOJI["repair"]),
         ):
             _, new_person = vault_people.split(

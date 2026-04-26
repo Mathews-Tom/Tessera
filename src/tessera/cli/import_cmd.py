@@ -16,7 +16,14 @@ from pathlib import Path
 
 import sqlcipher3
 
-from tessera.cli._common import CliError, fail, open_vault, resolve_agent_id, resolve_passphrase
+from tessera.cli._common import (
+    CliError,
+    fail,
+    open_vault,
+    resolve_agent_id,
+    resolve_passphrase,
+    resolve_vault_path,
+)
 from tessera.cli._http import print_json
 from tessera.cli._ui import EMOJI, console, error, report_table, status, success
 from tessera.importers import chatgpt as chatgpt_importer
@@ -84,7 +91,12 @@ def _add_common_import_args(parser: argparse.ArgumentParser, *, default_source_t
 
 
 def _add_vault_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--vault", type=Path, required=True)
+    parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
     parser.add_argument(
         "--passphrase",
         default=None,
@@ -115,9 +127,10 @@ def _run_import(
     """
 
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
         with (
-            open_vault(args.vault, passphrase) as vc,
+            open_vault(vault_path, passphrase) as vc,
             status(f"importing {args.export_path} ({vendor})", emoji=EMOJI["repair"]),
         ):
             agent_id = resolve_agent_id(vc.connection, args.agent_id)

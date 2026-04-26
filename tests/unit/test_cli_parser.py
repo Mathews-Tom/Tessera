@@ -52,21 +52,25 @@ def test_tokens_create_requires_agent_and_client() -> None:
 
 
 @pytest.mark.unit
-def test_init_requires_vault() -> None:
+def test_init_vault_optional() -> None:
+    """`tessera init` parses without --vault; the resolver fills in the default."""
+
     parser = _build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["init"])
-    args = parser.parse_args(["init", "--vault", "/tmp/v.db"])
-    assert args.command == "init"
+    bare = parser.parse_args(["init"])
+    assert bare.command == "init"
+    assert bare.vault is None
+    explicit = parser.parse_args(["init", "--vault", "/tmp/v.db"])
+    assert explicit.command == "init"
 
 
 @pytest.mark.unit
-def test_daemon_start_fg_requires_vault() -> None:
+def test_daemon_start_fg_vault_optional() -> None:
     parser = _build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["daemon", "start-fg"])
-    args = parser.parse_args(["daemon", "start-fg", "--vault", "/tmp/v.db"])
-    assert args.subcommand == "start-fg"
+    bare = parser.parse_args(["daemon", "start-fg"])
+    assert bare.subcommand == "start-fg"
+    assert bare.vault is None
+    explicit = parser.parse_args(["daemon", "start-fg", "--vault", "/tmp/v.db"])
+    assert explicit.subcommand == "start-fg"
 
 
 @pytest.mark.unit
