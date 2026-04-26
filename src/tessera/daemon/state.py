@@ -12,15 +12,13 @@ stuck worker cannot block a graceful shutdown.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
 
 import sqlcipher3
 
 from tessera.adapters import models_registry
-from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.fastembed_embedder import FastEmbedEmbedder
 from tessera.adapters.protocol import Embedder, Reranker
 from tessera.observability.events import EventLog
 from tessera.retrieval.pipeline import PipelineContext
@@ -93,31 +91,25 @@ def build_pipeline_context(
     )
 
 
-DEFAULT_OLLAMA_MODEL: Final[str] = "nomic-embed-text"
-
-
-def resolve_embedder(conn: sqlcipher3.Connection, *, ollama_host: str) -> tuple[Embedder, int, str]:
+def resolve_embedder(conn: sqlcipher3.Connection) -> tuple[Embedder, int, str]:
     """Return (embedder, active_model_id, vec_table) for the active model.
 
     Raises :class:`~tessera.adapters.models_registry.NoActiveModelError`
     when the vault has no row with ``is_active=1``; the daemon cannot
     serve ``recall`` without one and refuses to start.
 
-    ``embedding_models.name`` at v0.1 stores the adapter name (``ollama``)
-    rather than the provider model name (``nomic-embed-text``). The
-    provider model name the daemon calls against is taken from the
-    ``TESSERA_OLLAMA_MODEL`` environment variable, defaulting to
-    ``nomic-embed-text``. A proper split across two columns is a v0.3
-    schema migration; for v0.1 the env var is the pragmatic seam.
+    The ``embedding_models.name`` column stores the fastembed model
+    identifier (e.g. ``"nomic-ai/nomic-embed-text-v1.5"``) directly
+    after the v0.3 ONNX-only switch. The previous ``adapter:model``
+    indirection — where ``name`` was the adapter slot ``"ollama"`` and
+    the provider model lived behind a ``TESSERA_OLLAMA_MODEL`` env var
+    — was a v0.1 hack that lost meaning the moment the second adapter
+    landed. With fastembed as the sole adapter, the column maps 1:1 to
+    the model identifier fastembed accepts.
     """
 
     model = models_registry.active_model(conn)
-    # Only ollama is wired at v0.1; additional adapters add branches
-    # here as they come online.
-    if model.name != "ollama":
-        raise ValueError(f"active embedding model {model.name!r} has no daemon-side adapter")
-    provider_model = os.environ.get("TESSERA_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
-    embedder = OllamaEmbedder(model_name=provider_model, dim=model.dim, host=ollama_host)
+    embedder = FastEmbedEmbedder(model_name=model.name, dim=model.dim)
     return embedder, model.id, models_registry.vec_table_name(model.id)
 
 

@@ -1,8 +1,14 @@
 # ADR 0006 — Ollama as default model runtime
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0014](0014-onnx-only-stack.md)
 **Date:** April 2026
 **Deciders:** Tom Mathews
+
+> **Superseded 2026-04-27.** Tessera v0.3 dropped Ollama as a runtime entirely
+> and moved both embedder and reranker into the daemon process via fastembed
+> (ONNX Runtime). The historical context below is preserved for archaeology;
+> the operational defaults documented here no longer apply. See ADR-0014 for
+> the current stack and the rationale for the switch.
 
 ## Context
 

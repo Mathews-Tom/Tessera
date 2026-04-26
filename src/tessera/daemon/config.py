@@ -42,9 +42,11 @@ class DaemonConfig:
     pid_path: Path
     events_db_path: Path
     allowed_origins: frozenset[str]
-    ollama_host: str
     reranker_model: str
     passphrase: bytes | None = None
+
+
+_DEFAULT_RERANKER_MODEL: Final[str] = "Xenova/ms-marco-MiniLM-L-12-v2"
 
 
 def resolve_config(
@@ -53,7 +55,6 @@ def resolve_config(
     http_host: str | None = None,
     http_port: int | None = None,
     socket_path: Path | None = None,
-    ollama_host: str | None = None,
     reranker_model: str | None = None,
     passphrase: bytes | None = None,
 ) -> DaemonConfig:
@@ -64,10 +65,7 @@ def resolve_config(
     host = http_host or os.environ.get("TESSERA_HTTP_HOST", DEFAULT_HTTP_HOST)
     port = http_port or int(os.environ.get("TESSERA_HTTP_PORT", str(DEFAULT_HTTP_PORT)))
     sock = socket_path or _default_socket_path()
-    ollama = ollama_host or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-    reranker = reranker_model or os.environ.get(
-        "TESSERA_RERANKER", "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    )
+    reranker = reranker_model or os.environ.get("TESSERA_RERANKER", _DEFAULT_RERANKER_MODEL)
     runtime_dir = _runtime_dir()
     return DaemonConfig(
         vault_path=vault,
@@ -81,7 +79,6 @@ def resolve_config(
         # allowlist further rejects browser-driven requests that
         # hijack ambient-authority DNS rebind vectors.
         allowed_origins=frozenset({"http://localhost", "http://127.0.0.1", "null"}),
-        ollama_host=ollama,
         reranker_model=reranker,
         passphrase=passphrase,
     )

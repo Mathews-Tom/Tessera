@@ -1,10 +1,9 @@
 """Daemon start→serve→stop lifecycle with fake adapters.
 
-Patches :func:`tessera.daemon.supervisor.SentenceTransformersReranker`
-and :func:`resolve_embedder` so the test exercises the full supervisor
+Patches :func:`tessera.daemon.supervisor.FastEmbedReranker` and
+:func:`resolve_embedder` so the test exercises the full supervisor
 path — vault unlock, HTTP bind, control bind, embed worker loop,
-shutdown — without loading the real sentence-transformers model or
-reaching Ollama.
+shutdown — without loading the real fastembed ONNX session.
 """
 
 from __future__ import annotations
@@ -44,8 +43,8 @@ def short_run_dir() -> Iterator[Path]:
 
 @dataclass
 class _FakeEmbedder:
-    name: ClassVar[str] = "ollama"
-    model_name: str = "ollama"
+    name: ClassVar[str] = "fastembed"
+    model_name: str = "fastembed-fake"
     dim: int = 8
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
@@ -100,7 +99,7 @@ async def test_supervisor_starts_serves_and_stops(
             )
             agent_id = int(cur.lastrowid) if cur.lastrowid is not None else 0
             models_registry.register_embedding_model(
-                vc.connection, name="ollama", dim=8, activate=True
+                vc.connection, name="fastembed-fake-model", dim=8, activate=True
             )
             vault_capture.capture(
                 vc.connection,
@@ -123,8 +122,8 @@ async def test_supervisor_starts_serves_and_stops(
     raw_token = issued.raw_token
 
     # Swap heavy adapters for lightweight fakes.
-    def _fake_resolve(conn: Any, *, ollama_host: str) -> tuple[_FakeEmbedder, int, str]:
-        del ollama_host
+    def _fake_resolve(conn: Any) -> tuple[_FakeEmbedder, int, str]:
+
         model = models_registry.active_model(conn)
         return _FakeEmbedder(), model.id, models_registry.vec_table_name(model.id)
 
@@ -132,7 +131,7 @@ async def test_supervisor_starts_serves_and_stops(
     # `from tessera.daemon.state import resolve_embedder`, so the patch
     # must target the supervisor module's namespace, not daemon_state's.
     monkeypatch.setattr(supervisor, "resolve_embedder", _fake_resolve)
-    monkeypatch.setattr(supervisor, "SentenceTransformersReranker", _FakeReranker)
+    monkeypatch.setattr(supervisor, "FastEmbedReranker", _FakeReranker)
 
     port = _pick_port()
     config = resolve_config(
@@ -151,7 +150,6 @@ async def test_supervisor_starts_serves_and_stops(
         pid_path=short_run_dir / "pid",
         events_db_path=short_run_dir / "events.db",
         allowed_origins=config.allowed_origins,
-        ollama_host=config.ollama_host,
         reranker_model=config.reranker_model,
         passphrase=config.passphrase,
     )
@@ -211,7 +209,7 @@ async def test_supervisor_emits_daemon_warmed_audit_row(
                 "INSERT INTO agents(external_id, name, created_at) VALUES ('01WARM', 'a', 0)"
             )
             models_registry.register_embedding_model(
-                vc.connection, name="ollama", dim=8, activate=True
+                vc.connection, name="fastembed-fake-model", dim=8, activate=True
             )
 
     embed_calls: list[list[str]] = []
@@ -230,8 +228,8 @@ async def test_supervisor_emits_daemon_warmed_audit_row(
             embed_calls.append(list(texts))
             return await super().embed(texts)
 
-    def _fake_resolve(conn: Any, *, ollama_host: str) -> tuple[_RecordingEmbedder, int, str]:
-        del ollama_host
+    def _fake_resolve(conn: Any) -> tuple[_RecordingEmbedder, int, str]:
+
         model = models_registry.active_model(conn)
         return _RecordingEmbedder(), model.id, models_registry.vec_table_name(model.id)
 
@@ -239,7 +237,7 @@ async def test_supervisor_emits_daemon_warmed_audit_row(
     # `from tessera.daemon.state import resolve_embedder`, so the patch
     # must target the supervisor module's namespace, not daemon_state's.
     monkeypatch.setattr(supervisor, "resolve_embedder", _fake_resolve)
-    monkeypatch.setattr(supervisor, "SentenceTransformersReranker", _RecordingReranker)
+    monkeypatch.setattr(supervisor, "FastEmbedReranker", _RecordingReranker)
 
     port = _pick_port()
     config = resolve_config(
@@ -257,7 +255,6 @@ async def test_supervisor_emits_daemon_warmed_audit_row(
         pid_path=short_run_dir / "pid",
         events_db_path=short_run_dir / "events.db",
         allowed_origins=config.allowed_origins,
-        ollama_host=config.ollama_host,
         reranker_model=config.reranker_model,
         passphrase=config.passphrase,
     )

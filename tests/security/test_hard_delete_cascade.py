@@ -13,7 +13,7 @@ from typing import ClassVar
 
 import pytest
 
-import tessera.adapters.ollama_embedder  # noqa: F401 — adapter registration side effect
+import tessera.adapters.fastembed_embedder  # noqa: F401 — adapter registration side effect
 from tessera.adapters import models_registry
 from tessera.retrieval import embed_worker
 from tessera.vault import capture, facets

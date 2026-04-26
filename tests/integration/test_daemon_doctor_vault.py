@@ -7,9 +7,9 @@ model, issue a token, and assert every vault-backed check reports OK.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-import httpx
 import pytest
 
 from tessera.adapters import models_registry
@@ -30,8 +30,14 @@ async def test_all_vault_checks_ok_on_healthy_vault(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("TESSERA_PASSPHRASE", "x")
+    # Force a fastembed cache directory we know exists so the
+    # _check_fastembed_cache check returns OK.
+    cache_dir = tmp_path / "fastembed-cache"
+    cache_dir.mkdir()
+    monkeypatch.setenv("FASTEMBED_CACHE_DIR", str(cache_dir))
+    os.environ["FASTEMBED_CACHE_DIR"] = str(cache_dir)
     models_registry.register_embedding_model(
-        open_vault.connection, name="ollama", dim=8, activate=True
+        open_vault.connection, name="nomic-ai/nomic-embed-text-v1.5", dim=8, activate=True
     )
     open_vault.connection.execute(
         "INSERT INTO agents(external_id, name, created_at) VALUES ('01DR', 'a', 0)"
@@ -45,16 +51,8 @@ async def test_all_vault_checks_ok_on_healthy_vault(
         now_epoch=1_000_000,
     )
 
-    class _Reachable(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"models": [{"name": "nomic-embed-text"}]})
-
     config = resolve_config(vault_path=vault_path, http_port=_pick_port())
-    client = httpx.AsyncClient(base_url=config.ollama_host, transport=_Reachable())
-    try:
-        report = await run_all(config, conn=open_vault.connection, httpx_client=client)
-    finally:
-        await client.aclose()
+    report = await run_all(config, conn=open_vault.connection)
     names = {r.name for r in report.results}
     assert {"sqlite_vec", "active_model", "schema_match", "tokens"} <= names
     by_name = {r.name: r for r in report.results}
@@ -62,7 +60,7 @@ async def test_all_vault_checks_ok_on_healthy_vault(
     assert by_name["active_model"].status is DoctorStatus.OK
     assert by_name["schema_match"].status is DoctorStatus.OK
     assert by_name["tokens"].status is DoctorStatus.OK
-    assert by_name["ollama"].status is DoctorStatus.OK
+    assert by_name["fastembed"].status is DoctorStatus.OK
 
 
 @pytest.mark.integration

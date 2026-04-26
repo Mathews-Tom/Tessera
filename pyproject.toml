@@ -29,13 +29,12 @@ classifiers = [
 
 dependencies = [
     "argon2-cffi>=23.1.0",
+    "fastembed>=0.4.0",
     "httpx>=0.27.0",
     "keyring>=25.0.0",
     "mcp>=1.2.0",
-    "ollama>=0.4.0",
     "python-ulid>=3.0.0",
     "rich>=13.0.0",
-    "sentence-transformers>=3.3.0",
     "sqlcipher3>=0.5.4 ; sys_platform != 'linux'",
     "sqlcipher3-binary>=0.5.4 ; sys_platform == 'linux'",
     "sqlite-vec>=0.1.6",
@@ -96,7 +95,20 @@ exclude = [
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
-extend-exclude = [".venv", "build", "dist"]
+extend-exclude = [
+    ".venv",
+    "build",
+    "dist",
+    # Historical benchmark reproduction scripts. Each ``run.py`` was
+    # executed once to produce the JSON results in its ``results/``
+    # directory; the results are the canonical artifact. After the
+    # ONNX-only migration the scripts reference deleted adapters
+    # (``OllamaEmbedder``, ``SentenceTransformersReranker``) and
+    # cannot be re-run as-is, but they stay as the historical record
+    # of how each measurement was taken. Exclude them from lint so
+    # the deleted-adapter imports do not break CI.
+    "docs/benchmarks",
+]
 
 [tool.ruff.lint]
 select = [

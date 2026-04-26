@@ -28,7 +28,7 @@ The T-shaped AI-native operator. Deep in one or two domains; horizontal across m
 
 ## What's real today
 
-`v0.3.0rc1` lives on PyPI as `tessera-context`. Five facets plus the v0.3 skill surface, eleven MCP tools (`capture`, `recall`, `show`, `list_facets`, `stats`, `forget`, `learn_skill`, `get_skill`, `list_skills`, `resolve_person`, `list_people`), all-local by default (Ollama for embedding, sentence-transformers for rerank), encrypted vault (sqlcipher + argon2id), ChatGPT + Claude conversation-history importers, named skills synced to disk, people resolution, zero outbound network unless you explicitly opt in.
+`v0.3.0rc1` lives on PyPI as `tessera-context`. Five facets plus the v0.3 skill surface, eleven MCP tools (`capture`, `recall`, `show`, `list_facets`, `stats`, `forget`, `learn_skill`, `get_skill`, `list_skills`, `resolve_person`, `list_people`), all-local by default (fastembed for embedding and reranking via ONNX Runtime, fully in-process), encrypted vault (sqlcipher + argon2id), ChatGPT + Claude conversation-history importers, named skills synced to disk, people resolution, zero outbound network unless you explicitly opt in.
 
 The remaining gates before v0.3.0 GA are a recorded clean-VM walkthrough on macOS / Ubuntu / Windows and verification that the v2 → v3 migration runs cleanly on an existing rc2 vault. Runbook: [`docs/smoke-test-v0.3rc1.md`](smoke-test-v0.3rc1.md). DoD: [`docs/release-spec.md §Definition of Done for v0.3`](release-spec.md).
 
@@ -42,18 +42,17 @@ The remaining gates before v0.3.0 GA are a recorded clean-VM walkthrough on macO
 # Python 3.12 (3.13 not yet supported — sqlcipher3 wheel gap)
 python3 --version
 
-# macOS — sqlcipher headers + Ollama
-brew install sqlcipher ollama
+# macOS — sqlcipher headers
+brew install sqlcipher
 
-# Ubuntu / Debian — build deps for sqlcipher3 wheel + Ollama
+# Ubuntu / Debian — build deps for sqlcipher3 wheel
 sudo apt install -y build-essential libsqlcipher-dev
-curl -fsSL https://ollama.com/install.sh | sh
 
 # Windows — sqlcipher3 has no native wheel today; WSL2 + Ubuntu is the
-# supported path until that ships. Install Python 3.12 and Ollama inside WSL2.
-
-ollama pull nomic-embed-text
+# supported path until that ships. Install Python 3.12 inside WSL2.
 ```
+
+Embedding and reranking run in-process via fastembed (ONNX Runtime). The first daemon start downloads model weights to `~/.cache/fastembed`; no separate model server, no Ollama, no torch.
 
 ### 2. Install
 
@@ -103,17 +102,16 @@ tessera init                      # creates ~/.tessera/vault.db (or $TESSERA_VAU
 
 ### 5. Register an embedding model
 
-`tessera init` bootstraps the vault but does not register an embedder; the daemon refuses to start without one. Point Tessera at the Ollama model you pulled in step 1 and flag it active:
+`tessera init` bootstraps the vault but does not register an embedder; the daemon refuses to start without one. Pick a fastembed model and flag it active:
 
 ```bash
 tessera models set \
-  --name ollama \
-  --model nomic-embed-text \
+  --name nomic-ai/nomic-embed-text-v1.5 \
   --dim 768 \
   --activate
 ```
 
-`--name` is the adapter id Tessera ships, `--model` is the Ollama model name, and `--dim` must match the model's embedding dimensionality (768 for `nomic-embed-text`). The `--activate` flag flips this model's `is_active` row to true so the embed worker and retrieval pipeline pick it up. You can register additional models without `--activate` and switch the active model later with another `tessera models set --activate` call.
+`--name` is the fastembed model identifier — anything from `TextEmbedding.list_supported_models()` works. `--dim` must match the model's declared embedding dimensionality (768 for `nomic-embed-text-v1.5`). `--activate` flips this model's `is_active` row to true so the embed worker and retrieval pipeline pick it up. You can register additional models without `--activate` and switch the active model later with another `tessera models set --activate` call. The first call after activation downloads the model weights (~520 MB for the default; ~130 MB for the `-Q` quantised variant if you want a smaller footprint) to `~/.cache/fastembed`.
 
 ### 6. Start the daemon
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import socket
 from pathlib import Path
 
-import httpx
 import pytest
 
 from tessera.daemon.config import resolve_config
@@ -19,7 +18,7 @@ async def test_doctor_without_vault_returns_warn_on_vault_check(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("TESSERA_PASSPHRASE", raising=False)
-    config = resolve_config(http_port=_pick_free_port(), ollama_host="http://127.0.0.1:65500")
+    config = resolve_config(http_port=_pick_free_port())
     report = await run_all(config)
     names = {r.name for r in report.results}
     assert "vault" in names
@@ -39,7 +38,7 @@ async def test_verdict_is_error_when_any_error_present(
     sock.listen(1)
     try:
         port = sock.getsockname()[1]
-        config = resolve_config(http_port=port, ollama_host="http://127.0.0.1:65500")
+        config = resolve_config(http_port=port)
         report = await run_all(config)
     finally:
         sock.close()
@@ -49,25 +48,22 @@ async def test_verdict_is_error_when_any_error_present(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_doctor_ollama_unreachable_is_warn_not_error(
+async def test_doctor_fastembed_cache_check_is_warn_not_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """A missing fastembed cache must surface as WARN, not ERROR.
+
+    Mirrors the previous Ollama-unreachable check: the user may not
+    have triggered a download yet, so a cold cache is "fix in one
+    embed call", not "install is broken".
+    """
+
     monkeypatch.setenv("HOME", str(tmp_path))
-    # Use a closed port for ollama: the check must downgrade to WARN,
-    # not ERROR — the user may be intentionally offline.
-    config = resolve_config(http_port=_pick_free_port(), ollama_host="http://127.0.0.1:65500")
-
-    class _NeverReachable(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("nope", request=request)
-
-    client = httpx.AsyncClient(base_url=config.ollama_host, transport=_NeverReachable())
-    try:
-        report = await run_all(config, httpx_client=client)
-    finally:
-        await client.aclose()
-    ollama_result = next(r for r in report.results if r.name == "ollama")
-    assert ollama_result.status is DoctorStatus.WARN
+    monkeypatch.setenv("FASTEMBED_CACHE_DIR", str(tmp_path / "definitely-not-here"))
+    config = resolve_config(http_port=_pick_free_port())
+    report = await run_all(config)
+    fastembed_result = next(r for r in report.results if r.name == "fastembed")
+    assert fastembed_result.status is DoctorStatus.WARN
 
 
 def _pick_free_port() -> int:
