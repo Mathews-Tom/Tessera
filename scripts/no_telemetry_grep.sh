@@ -28,6 +28,12 @@ FORBIDDEN='^\s*(import|from)\s+(requests|httpx|aiohttp|urllib\.request)\b'
 #     same loopback path as cli/_http.py. The bridge never reaches a
 #     non-local host — `tessera connect claude-desktop` wires it to
 #     `http://127.0.0.1:<port>/mcp`.
+#   - src/tessera/cli/curl_cmd.py is the recipe builder for the new
+#     /api/v1/* REST surface. It executes the printed curl recipe via
+#     httpx so users can verify the recipe before wiring it into a
+#     hook script, hitting only `$TESSERA_DAEMON_URL` (default
+#     `http://127.0.0.1:5710`). Same loopback shape as cli/_http.py
+#     and stdio_bridge.py; --print mode skips the HTTP call entirely.
 # Extending this list requires a matching §CI enforcement note in
 # docs/determinism-and-observability.md.
 SCAN_ROOT="src/tessera"
@@ -35,6 +41,7 @@ ALLOWLIST="src/tessera/adapters"
 ALLOWLISTED_FILES=(
   "src/tessera/daemon/doctor.py"
   "src/tessera/cli/_http.py"
+  "src/tessera/cli/curl_cmd.py"
   "src/tessera/daemon/stdio_bridge.py"
 )
 
