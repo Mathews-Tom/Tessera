@@ -37,10 +37,8 @@ graph TB
     CUSTOM[Custom harness]
   end
 
-  subgraph Models["Models — local or cloud"]
-    OLLAMA[Ollama on localhost<br/>nomic-embed, qwen, bge-reranker]
-    CLOUD[OpenAI / Voyage / Cohere<br/>optional, BYO key]
-    ST[sentence-transformers<br/>in-process reranker]
+  subgraph Models["Models — fully in-process via fastembed"]
+    FASTEMBED[fastembed — ONNX Runtime<br/>embedder + cross-encoder reranker]
   end
 
   CLAUDE -->|MCP| HTTPMCP
@@ -52,9 +50,7 @@ graph TB
   CTX --> RETR
   RETR --> VAULT
   RETR --> ADAPT
-  ADAPT --> OLLAMA
-  ADAPT -.optional.-> CLOUD
-  ADAPT --> ST
+  ADAPT --> FASTEMBED
   CTRL --> VAULT
 
   style VAULT fill:#1f3a5f,color:#fff
@@ -169,7 +165,7 @@ CREATE VIRTUAL TABLE facets_fts USING fts5(
 -- Embedding model registry; supports multi-model coexistence.
 CREATE TABLE embedding_models (
   id          INTEGER PRIMARY KEY,
-  name        TEXT NOT NULL UNIQUE,                  -- 'ollama/nomic-embed-text'
+  name        TEXT NOT NULL UNIQUE,                  -- 'nomic-ai/nomic-embed-text-v1.5'
   dim         INTEGER NOT NULL,
   added_at    INTEGER NOT NULL,
   is_active   INTEGER NOT NULL DEFAULT 0             -- exactly one row has this set
@@ -290,11 +286,11 @@ This is Framing X: a unified context layer where the user does not think about m
 
 Three slots, wired through a decorator-based registry:
 
-- **Embedder (required).** Produces dense vectors written to `sqlite-vec`. Default: Ollama `nomic-embed-text`. Optional: OpenAI-compatible endpoints via BYO key.
+- **Embedder (required).** Produces dense vectors written to `sqlite-vec`. Default: fastembed `nomic-ai/nomic-embed-text-v1.5` (768 dim). Any model in `TextEmbedding.list_supported_models()` is acceptable.
 - **Extractor (optional in v0.1).** Reserved for future entity/relation extraction. v0.1 ships without an active extractor; the slot exists so v0.3 can add extraction without a schema change.
-- **Reranker (required).** Health-checked at daemon startup. Default: sentence-transformers `bge-reranker-base` in-process. If the configured reranker fails health check, the retrieval pipeline falls back to RRF order and emits a warning to the audit log — never a silent skip.
+- **Reranker (required).** Health-checked at daemon startup. Default: fastembed `Xenova/ms-marco-MiniLM-L-12-v2` cross-encoder. If the configured reranker fails health check, the retrieval pipeline falls back to RRF order and emits a warning to the audit log — never a silent skip.
 
-All-local mode (Ollama embedder + sentence-transformers reranker, no cloud keys) is a tested, supported configuration on every release. ADR 0008 documents the slot boundaries and swap semantics in more detail; the module-level conventions it sets survive the reframe.
+All-local is the only supported mode after ADR-0014. fastembed runs both adapters in-process via ONNX Runtime; there are no cloud adapters to enable, no separate model server to coordinate, no torch dependency. ADR 0008 documents the slot boundaries and swap semantics; ADR 0014 documents the v0.4 simplification that removed every non-fastembed adapter.
 
 ## Trust & capability tokens
 
@@ -355,10 +351,10 @@ sequenceDiagram
   Daemon-->>CLI: ready on :5710
   CLI-->>User: ✓ vault created at ~/.tessera/vault.db
 
-  User->>CLI: tessera models set embedder ollama nomic-embed-text
-  CLI->>Daemon: validate Ollama reachable, register model
+  User->>CLI: tessera models set --name nomic-ai/nomic-embed-text-v1.5 --dim 768 --activate
+  CLI->>Daemon: register model
   Daemon->>Vault: embedding_models row, vec_1 table created
-  CLI-->>User: ✓ embedder configured
+  CLI-->>User: ✓ embedder configured (weights download on first daemon start)
 
   User->>CLI: tessera connect claude-desktop
   CLI->>Daemon: generate token, scoped to all facet types

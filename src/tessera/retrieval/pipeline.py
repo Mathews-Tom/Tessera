@@ -230,12 +230,11 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
             truncated = True
     except Exception as exc:
         # Only the exception class name travels into the audit payload.
-        # str(exc) would embed upstream provider bodies (AdapterResponseError
-        # splices ``resp.text[:200]`` from Ollama/OpenAI/Cohere responses,
-        # which routinely echo the embedding input) and JSON-parse errors
-        # from ``_fetch_entities`` can surface metadata fragments. The audit
-        # log's §S4 no-content guarantee is categorical, not "best effort
-        # with truncation".
+        # str(exc) on AdapterResponseError can include upstream-format
+        # excerpts that routinely echo the embedding input, and JSON-parse
+        # errors from ``_fetch_entities`` can surface metadata fragments.
+        # The audit log's §S4 no-content guarantee is categorical, not
+        # "best effort with truncation".
         pipeline_error = type(exc).__name__
         raise
     finally:
@@ -326,8 +325,8 @@ async def _gather_dense_by_type(
 
     Each call to :func:`dense.search` used to re-embed the same query
     text per facet type — N facet types meant N identical embedder
-    round-trips, each adding Ollama / sentence-transformers latency to
-    the critical path. Embedding once and reusing the vector collapses
+    round-trips, each adding fastembed inference latency to the
+    critical path. Embedding once and reusing the vector collapses
     that to a single call; ``asyncio.gather`` then dispatches the
     per-type vec queries concurrently. The vec queries themselves are
     synchronous against the shared sqlcipher3 connection and will not

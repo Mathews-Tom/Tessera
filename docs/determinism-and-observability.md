@@ -37,17 +37,17 @@ The retrieval pipeline (system-design.md §Retrieval pipeline) has five stages. 
 | MMR diversification       | Yes                     | Greedy with deterministic tie-break on `facets.id`            |
 | Token budget enforcement  | Yes                     | Integer token counts                                          |
 
-### Device-tier determinism
+### Execution-provider determinism
 
-The cross-encoder reranker runs via PyTorch through `sentence-transformers.CrossEncoder`. Device selection defaults to `"auto"` and picks CUDA > MPS > CPU; see `src/tessera/adapters/devices.py`. The determinism guarantee varies by device:
+Both embedder and reranker run through fastembed via ONNX Runtime. Provider selection happens inside fastembed (CPU / CoreML / CUDA) at session creation; the daemon does not configure it explicitly. The determinism guarantee varies by provider:
 
-| Device | Bit-identical across runs? | Notes |
-|--------|----------------------------|-------|
-| CPU | Yes | Integration test (`tests/integration/test_retrieval_pipeline.py`) pins `device="cpu"` and asserts bit-identical rerun of the same query. This is the strong guarantee. |
-| MPS | Within a single daemon lifetime on same hardware | Metal float-op ordering can vary across process launches on some torch revisions. `torch.manual_seed(seed)` scopes the RNG correctly within one process. |
-| CUDA | Within a single daemon lifetime on same hardware, with `CUBLAS_WORKSPACE_CONFIG=:4096:8` | Without the env var, CUDA's cuBLAS can select non-deterministic algorithms. Tessera does not set it globally because CPU is the determinism ground truth. |
+| Execution provider | Bit-identical across runs? | Notes |
+|--------------------|----------------------------|-------|
+| CPU | Yes | The integration tests run the embed + rerank path through ONNX Runtime's CPU provider and assert bit-identical rerun of the same query. This is the strong guarantee and the CI baseline. |
+| CoreML (Apple Silicon) | Within a single daemon lifetime on same hardware | Metal float-op ordering can vary across process launches on some macOS revisions; results are stable within one daemon process. |
+| CUDA | Within a single daemon lifetime on same hardware | ONNX Runtime's CUDA provider picks fastest-available kernels by default; the CPU provider remains the cross-run reproducibility ground truth. |
 
-`TESSERA_RERANK_DEVICE=cpu` forces the CPU path for users who need cross-run bit-identity (audit-log replay testing, reproducibility studies). The `daemon_warmed` audit row records the resolved device at startup so operators can verify which tier the daemon is running on after the fact.
+For users who need cross-run bit-identity (audit-log replay testing, reproducibility studies), pinning fastembed to the CPU provider is the supported path. The `daemon_warmed` audit row records the active execution provider at startup so operators can verify which tier the daemon is running on after the fact.
 
 ### Seed source
 
@@ -152,7 +152,7 @@ Contents:
 
 | File                      | Purpose                                                                              |
 | ------------------------- | ------------------------------------------------------------------------------------ |
-| `env.json`                | OS, kernel, CPU, RAM, Tessera version, Python version, Ollama version, active models |
+| `env.json`                | OS, kernel, CPU, RAM, Tessera version, Python version, fastembed version, ONNX Runtime version, active models |
 | `config.yaml` (redacted)  | User config with secrets scrubbed (keyring references kept, values removed)          |
 | `schema.sql`              | `.schema` dump of the vault — no content                                             |
 | `stats.json`              | Output of `tessera stats`                                                            |
@@ -181,7 +181,7 @@ Any assertion failure aborts bundle creation with a clear error. The bundle is c
 Three CI jobs enforce the commitments:
 
 1. **No-outbound test**: run the full test suite with `iptables -A OUTPUT -d ! 127.0.0.1 -j REJECT` (Linux CI). Tests pass only if all required calls go to the expected adapters. Failure = some dependency made a hidden outbound call.
-2. **No-telemetry grep**: reject PRs that add imports of `requests`, `httpx`, `aiohttp`, `urllib.request` outside `src/tessera/adapters/`. Adapters have their own allowlist. Four non-adapter files are also allowlisted by exact path: `src/tessera/daemon/doctor.py` (probes Ollama `/api/tags` for the `tessera doctor` health matrix), `src/tessera/cli/_http.py` (shared CLI loopback client to `tesserad` at `127.0.0.1`, used by every subcommand that calls an MCP tool by name; extracted from `cli/tools_cmd.py` in the v0.3 People + Skills refactor so the `httpx` import lives in exactly one place), `src/tessera/daemon/stdio_bridge.py` (stdio-to-HTTP bridge that Claude Desktop launches; every `tools/list` and `tools/call` POSTs to `http://127.0.0.1:<port>/mcp`, the same loopback path as `cli/_http.py`), and `src/tessera/cli/curl_cmd.py` (`tessera curl <verb>` recipe builder for the `/api/v1/*` REST surface; executes the printed curl recipe via `httpx` against `$TESSERA_DAEMON_URL` — default `http://127.0.0.1:5710` — so users can verify the recipe before wiring it into a hook script; `--print` mode skips the HTTP call entirely). All four are user-initiated, bounded, and reach only localhost or the configured Ollama host. Extending this list requires the same-commit update in `scripts/no_telemetry_grep.sh`.
+2. **No-telemetry grep**: reject PRs that add imports of `requests`, `httpx`, `aiohttp`, `urllib.request` outside `src/tessera/adapters/`. Adapters have their own allowlist. Three non-adapter files are also allowlisted by exact path: `src/tessera/cli/_http.py` (shared CLI loopback client to `tesserad` at `127.0.0.1`, used by every subcommand that calls an MCP tool by name; extracted from `cli/tools_cmd.py` in the v0.3 People + Skills refactor so the `httpx` import lives in exactly one place), `src/tessera/daemon/stdio_bridge.py` (stdio-to-HTTP bridge that Claude Desktop launches; every `tools/list` and `tools/call` POSTs to `http://127.0.0.1:<port>/mcp`, the same loopback path as `cli/_http.py`), and `src/tessera/cli/curl_cmd.py` (`tessera curl <verb>` recipe builder for the `/api/v1/*` REST surface; executes the printed curl recipe via `httpx` against `$TESSERA_DAEMON_URL` — default `http://127.0.0.1:5710` — so users can verify the recipe before wiring it into a hook script; `--print` mode skips the HTTP call entirely). All three are user-initiated, bounded, and reach only localhost. Extending this list requires the same-commit update in `scripts/no_telemetry_grep.sh`.
 3. **Determinism test**: run 100 `recall` calls with the same query on the same seeded vault; assert bit-identical results.
 
 ## What this is NOT

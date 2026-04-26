@@ -6,12 +6,12 @@ concrete adapter implementations. Users register an adapter class via
 looks it up by name at activation time.
 
 Registration is effectful at import time: importing
-``tessera.adapters.ollama_embedder`` is what makes ``"ollama"`` resolvable via
-:func:`get_embedder_class`. Importers are responsible for importing the
-adapter modules they need; this module deliberately does not auto-discover so
-that a configuration asking for ``"cohere"`` in an all-local deployment fails
-with a clear :class:`UnknownAdapterError` rather than dragging the cohere
-module (and its API-key surface) into an all-local install.
+``tessera.adapters.fastembed_embedder`` is what makes ``"fastembed"``
+resolvable via :func:`get_embedder_class`. Importers are responsible for
+importing the adapter modules they need; this module deliberately does not
+auto-discover so that asking for an unregistered name fails with a clear
+:class:`UnknownAdapterError` instead of pulling unrelated adapter code (and
+any API-key surface those would carry) into an all-local install.
 """
 
 from __future__ import annotations

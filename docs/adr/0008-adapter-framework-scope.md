@@ -1,8 +1,17 @@
 # ADR 0008 — Adapter framework scope and registration
 
-**Status:** Accepted
+**Status:** Partially superseded by [ADR-0014](0014-onnx-only-stack.md)
 **Date:** April 2026
 **Deciders:** Tom Mathews
+
+> **Partially superseded 2026-04-27.** ADR-0014 narrowed the shipped
+> adapter set to a single embedder + reranker pair (fastembed). The
+> module-level conventions this ADR established — decorator
+> registration, lazy import for unused adapters, narrow error
+> taxonomy — survive intact and apply to fastembed. The cloud-adapter
+> framework (OpenAI, Voyage, Cohere) referenced below was deleted at
+> v0.4; those references read as historical record of the v0.1–v0.3
+> framework rather than a live shipping list.
 
 ## Context
 

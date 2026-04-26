@@ -144,20 +144,23 @@ def _derive_key(config: DaemonConfig) -> ProtectedKey:
 async def _warm_adapters(vault: VaultConnection, embedder: Embedder, reranker: Reranker) -> None:
     """Force both adapters to load before the daemon accepts traffic.
 
-    Ollama's embed endpoint pays a cold-load cost (~2-5 s for
-    nomic-embed-text on M1 Pro) on first call after the model has
-    unloaded. sentence-transformers loads its CrossEncoder on first
-    ``score`` call. Without this warm-up, the first MCP recall after
-    daemon start pays both costs in series.
+    fastembed defers ONNX session creation to the first ``embed`` /
+    ``score`` call; the first call after a cold start pays the
+    weight-load cost (~2-5 s once weights are cached on disk, ~30 s
+    on a first-ever start that downloads ~520 MB of embedder weights
+    + ~130 MB of cross-encoder weights). Without this warm-up, the
+    first MCP recall after daemon start pays both costs in series.
 
-    The reranker's ``score`` call uses two dummy passages because arm64
-    torch builds have SIGBUSed on single-example forward paths — the
-    adapter's own ``health_check`` documents the same workaround.
+    The reranker's ``score`` call uses two dummy passages because the
+    adapter's own ``health_check`` documents the same workaround
+    (single-row cross-encoder forward passes have NaN'd on some older
+    onnxruntime builds).
 
     Fails loud: any exception propagates and blocks daemon startup,
     consistent with the no-fallback policy. A user who sees this error
-    has a misconfigured Ollama / missing model / broken torch install,
-    and a silent fallback to a non-functional daemon would hide it.
+    has either a broken fastembed install or a permission problem on
+    ``~/.cache/fastembed``; a silent fallback to a non-functional
+    daemon would hide it.
     """
 
     start = time.perf_counter()
