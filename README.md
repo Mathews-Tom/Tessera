@@ -38,11 +38,14 @@ uv run tessera --help
 export TESSERA_PASSPHRASE='your-passphrase-here'   # add to ~/.zshrc or your global .env
 
 tessera init                          # creates ~/.tessera/vault.db
+tessera models set --name ollama --model nomic-embed-text --dim 768 --activate
 tessera daemon start                  # starts tesserad, picks up the env var
 tessera connect claude-desktop        # mints token, writes config
 # or wire every detected client in one shot:
 tessera connect all
 ```
+
+The `tessera models set --activate` step registers the embedder Tessera will use; the daemon refuses to start without an active model. `nomic-embed-text` ships with Ollama; pull it once via `ollama pull nomic-embed-text` if you have not already.
 
 `--vault` and `--passphrase` flags are still accepted for one-off use, multi-vault setups, or scripted invocations. Resolution order is `flag → $TESSERA_VAULT / $TESSERA_PASSPHRASE → default`. See [`docs/quickstart.md`](docs/quickstart.md#setup-once) for the env-var setup and [`docs/troubleshooting.md`](docs/troubleshooting.md#multi-vault-disambiguation) for multi-vault disambiguation.
 

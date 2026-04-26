@@ -125,6 +125,19 @@ Some headless Linux sessions lack a running keyring daemon. Three options:
 2. **Use an alternate backend.** `pip install keyrings.alt` provides `PlaintextKeyring` (file-backed, 0600, not encrypted — OK on a single-user machine you control, not OK on shared hosts).
 3. **Use `$TESSERA_PASSPHRASE` directly** — Tessera reads this env var on every CLI invocation when no `--passphrase` flag is given, so headless hosts without a working keyring can still operate flag-free.
 
+### `tessera daemon start` fails with `NoActiveModelError: no embedding model is flagged active`
+
+`tessera init` bootstraps the vault but does not register an embedder. The daemon refuses to start without an active model because the embed worker and retrieval pipeline have nothing to call. Register one and flag it active:
+
+```bash
+tessera models set --name ollama --model nomic-embed-text --dim 768 --activate
+tessera daemon start
+```
+
+`--name` is the adapter id (only `ollama` ships in v0.1), `--model` is the Ollama model name, `--dim` matches the model's embedding dimensionality (768 for `nomic-embed-text`), and `--activate` flips the row's `is_active` flag. If you registered a model previously but did not activate it, run the same command again with `--activate` — the registry upserts on `(name, model)` and only one row can be active at a time.
+
+If `nomic-embed-text` is not present locally, `ollama pull nomic-embed-text` first; the prerequisites in `quickstart.md` cover this.
+
 ### `Address already in use` / `tessera daemon start` crashes with `OSError: [Errno 48]`
 
 Something is already bound to port `5710` (the default HTTP MCP port). Check:

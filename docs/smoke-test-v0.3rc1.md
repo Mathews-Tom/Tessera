@@ -60,19 +60,24 @@ export TESSERA_PASSPHRASE='smoke-test-passphrase'
 
 # 4. Initialise
 tessera init                       # creates ~/.tessera/vault.db
+
+# 5. Register the embedding model (daemon refuses to start without one)
+tessera models set --name ollama --model nomic-embed-text --dim 768 --activate
+
+# 6. Start daemon and verify health
 tessera daemon start
 tessera doctor                     # all green
 
-# 5. Wire one client
+# 7. Wire one client
 tessera connect claude-desktop --token-ttl-days 30
 
-# 6. Capture and recall (CLI form, since Claude Desktop install is platform-variable)
+# 8. Capture and recall (CLI form, since Claude Desktop install is platform-variable)
 tessera capture "I prefer uv over pip for Python." --facet-type preference
 tessera capture "anneal — Artifact-Eval-Agent triplet, git worktrees for isolation." --facet-type project
 tessera capture "$(printf 'Hook → Legend → Credibility Spike → Observation → Meaning. 150–300 words. No emojis.')" --facet-type workflow
 tessera recall "LinkedIn post about anneal"
 
-# 7. Stop daemon, capture timing
+# 9. Stop daemon, capture timing
 tessera daemon stop
 ```
 
@@ -104,6 +109,7 @@ pipx install --pip-args="--pre" tessera-context==0.1.0rc2
 tessera --version          # expect 0.1.0rc2
 export TESSERA_PASSPHRASE='smoke-test-passphrase'
 tessera init               # creates ~/.tessera/vault.db
+tessera models set --name ollama --model nomic-embed-text --dim 768 --activate
 tessera daemon start
 
 # 3. Pre-seed the vault with at least 50 facets across all five v0.1 types.

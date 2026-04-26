@@ -72,7 +72,8 @@ Once `0.3.0rc1` lands on PyPI the install line becomes `pipx install --pip-args=
 ```bash
 git clone https://github.com/Mathews-Tom/Tessera.git
 cd Tessera && uv sync --dev
-uv run tessera --version
+uv tool install -e . --force
+tessera --version
 ```
 
 ### 3. Setup once
@@ -100,11 +101,30 @@ version is what makes the daily flow flag-free.
 
 ```bash
 tessera init                      # creates ~/.tessera/vault.db (or $TESSERA_VAULT)
+```
+
+### 5. Register an embedding model
+
+`tessera init` bootstraps the vault but does not register an embedder; the daemon refuses to start without one. Point Tessera at the Ollama model you pulled in step 1 and flag it active:
+
+```bash
+tessera models set \
+  --name ollama \
+  --model nomic-embed-text \
+  --dim 768 \
+  --activate
+```
+
+`--name` is the adapter id Tessera ships, `--model` is the Ollama model name, and `--dim` must match the model's embedding dimensionality (768 for `nomic-embed-text`). The `--activate` flag flips this model's `is_active` row to true so the embed worker and retrieval pipeline pick it up. You can register additional models without `--activate` and switch the active model later with another `tessera models set --activate` call.
+
+### 6. Start the daemon
+
+```bash
 tessera daemon start              # starts tesserad
 tessera doctor                    # all green = ready
 ```
 
-### 5. Wire your AI tools
+### 7. Wire your AI tools
 
 ```bash
 # One shot — every detected file-based MCP client
@@ -121,7 +141,7 @@ Default service-token TTL is 24 hours. `--token-ttl-days 30` is the "set and for
 
 ChatGPT Developer Mode is deferred to v0.1.x — three stacked blockers (HTTPS front, Bearer auth in the New App dialog, canonical HTTP MCP). Two Anthropic clients sharing one vault still demonstrates the portability story today.
 
-### 6. Teach it the first thing
+### 8. Teach it the first thing
 
 In Claude Desktop or Claude Code, with the Tessera MCP wired:
 
