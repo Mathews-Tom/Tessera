@@ -54,6 +54,98 @@ class HttpMcpRequest:
     verified: VerifiedCapability
 
 
+@dataclass(frozen=True, slots=True)
+class DispatchError:
+    """Wire-shape failure: HTTP status comes from the surrounding outcome."""
+
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchOutcome:
+    """Authenticated dispatch result — one shape, two transports.
+
+    ``status`` is the HTTP status the caller writes. ``result`` is the
+    dispatcher's return value on success and is ``None`` on failure;
+    ``error`` is the inverse. Exactly one of (``result``, ``error``)
+    is non-None per outcome — enforced at construction sites, not
+    re-checked at the wire layer.
+    """
+
+    status: int
+    result: dict[str, Any] | None = None
+    error: DispatchError | None = None
+
+
+async def _authenticate_and_dispatch(
+    *,
+    headers: dict[str, str],
+    method: str,
+    args: dict[str, Any],
+    allowed_origins: frozenset[str],
+    conn: sqlcipher3.Connection,
+    dispatch: Dispatcher,
+    now_epoch_fn: Callable[[], int],
+) -> DispatchOutcome:
+    """Apply the cross-cutting Origin + bearer-token gates and dispatch.
+
+    Shared by ``/mcp`` (JSON-RPC envelope) and ``/api/v1/*`` (lean REST).
+    The two transports differ only in how they parse ``method``/``args``
+    out of the request and how they shape the response — auth, scope
+    denial mapping, and dispatcher error classification are identical
+    on both surfaces, so they live here.
+    """
+
+    origin = headers.get("origin")
+    if origin is not None and origin not in allowed_origins:
+        return DispatchOutcome(
+            status=403,
+            error=DispatchError(code="scope_denied", message="origin not allowed"),
+        )
+    token_header = headers.get("authorization", "")
+    if not token_header.lower().startswith("bearer "):
+        return DispatchOutcome(
+            status=401,
+            error=DispatchError(code="invalid_input", message="missing bearer token"),
+        )
+    raw_token = token_header[len("bearer ") :].strip()
+    try:
+        verified = verify_and_touch(conn, raw_token=raw_token, now_epoch=now_epoch_fn())
+    except AuthDenied:
+        return DispatchOutcome(
+            status=401,
+            error=DispatchError(code="scope_denied", message="unauthenticated"),
+        )
+    try:
+        result = await dispatch(verified, method, args)
+    except mcp_tools.ValidationError as exc:
+        return DispatchOutcome(
+            status=400, error=DispatchError(code="invalid_input", message=str(exc))
+        )
+    except mcp_tools.ScopeDenied as exc:
+        return DispatchOutcome(
+            status=403, error=DispatchError(code="scope_denied", message=str(exc))
+        )
+    except UnknownMethodError as exc:
+        return DispatchOutcome(
+            status=400, error=DispatchError(code="unknown_method", message=str(exc))
+        )
+    except mcp_tools.StorageError as exc:
+        return DispatchOutcome(
+            status=500, error=DispatchError(code="storage_error", message=str(exc))
+        )
+    except Exception as exc:
+        # Error-class name only; message suppressed so internal paths
+        # or data never leak to the HTTP client. The audit log has
+        # the full trace for operators.
+        return DispatchOutcome(
+            status=500,
+            error=DispatchError(code="internal_error", message=type(exc).__name__),
+        )
+    return DispatchOutcome(status=200, result=result)
+
+
 async def serve_http_mcp(
     *,
     host: str,
@@ -90,11 +182,11 @@ async def serve_http_mcp(
             return
 
         try:
-            method, target, _ = request_line.split(" ", 2)
+            http_method, target, _ = request_line.split(" ", 2)
         except ValueError:
             await _write_error(writer, 400, "invalid_input", "malformed request line")
             return
-        if method != "POST":
+        if http_method != "POST":
             await _write_error(writer, 405, "invalid_input", "POST only")
             return
         if target == "/mcp/exchange":
@@ -102,20 +194,6 @@ async def serve_http_mcp(
             return
         if target != "/mcp":
             await _write_error(writer, 404, "unknown_method", "unknown route")
-            return
-        origin = headers.get("origin")
-        if origin is not None and origin not in allowed_origins:
-            await _write_error(writer, 403, "scope_denied", "origin not allowed")
-            return
-        token_header = headers.get("authorization", "")
-        if not token_header.lower().startswith("bearer "):
-            await _write_error(writer, 401, "invalid_input", "missing bearer token")
-            return
-        raw_token = token_header[len("bearer ") :].strip()
-        try:
-            verified = verify_and_touch(conn, raw_token=raw_token, now_epoch=now_epoch_fn())
-        except AuthDenied:
-            await _write_error(writer, 401, "scope_denied", "unauthenticated")
             return
         try:
             payload = json.loads(body.decode("utf-8"))
@@ -132,27 +210,19 @@ async def serve_http_mcp(
                 writer, 400, "invalid_input", "method must be string, args must be object"
             )
             return
-        try:
-            result = await dispatch(verified, mcp_method, mcp_args)
-        except mcp_tools.ValidationError as exc:
-            await _write_error(writer, 400, "invalid_input", str(exc))
+        outcome = await _authenticate_and_dispatch(
+            headers=headers,
+            method=mcp_method,
+            args=mcp_args,
+            allowed_origins=allowed_origins,
+            conn=conn,
+            dispatch=dispatch,
+            now_epoch_fn=now_epoch_fn,
+        )
+        if outcome.error is not None:
+            await _write_error(writer, outcome.status, outcome.error.code, outcome.error.message)
             return
-        except mcp_tools.ScopeDenied as exc:
-            await _write_error(writer, 403, "scope_denied", str(exc))
-            return
-        except UnknownMethodError as exc:
-            await _write_error(writer, 400, "unknown_method", str(exc))
-            return
-        except mcp_tools.StorageError as exc:
-            await _write_error(writer, 500, "storage_error", str(exc))
-            return
-        except Exception as exc:
-            # Error-class name only; message suppressed so internal
-            # paths or data never leak to the HTTP client. The audit
-            # log has the full trace for operators.
-            await _write_error(writer, 500, "internal_error", type(exc).__name__)
-            return
-        await _write_response(writer, 200, {"ok": True, "result": result})
+        await _write_response(writer, 200, {"ok": True, "result": outcome.result})
 
     server = await asyncio.start_server(_handle, host=host, port=port)
     if ready is not None:
@@ -304,6 +374,8 @@ def _status_text(status: int) -> str:
 
 
 __all__ = [
+    "DispatchError",
+    "DispatchOutcome",
     "Dispatcher",
     "HttpMcpError",
     "HttpMcpRequest",
