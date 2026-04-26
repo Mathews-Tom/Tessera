@@ -54,22 +54,26 @@ pipx install --pip-args="--pre" tessera-context==0.3.0rc1
 # or: pip install --pre tessera-context==0.3.0rc1
 tessera --version          # expect 0.3.0rc1
 
-# 3. Initialise
-tessera init --vault ~/.tessera/vault.db
-tessera daemon start --vault ~/.tessera/vault.db
-tessera doctor             # all green
+# 3. Setup once — env vars drive the flag-free flow.
+#    Vault path defaults to ~/.tessera/vault.db; passphrase comes from the env var.
+export TESSERA_PASSPHRASE='smoke-test-passphrase'
 
-# 4. Wire one client
-tessera connect claude-desktop --vault ~/.tessera/vault.db --token-ttl-days 30
+# 4. Initialise
+tessera init                       # creates ~/.tessera/vault.db
+tessera daemon start
+tessera doctor                     # all green
 
-# 5. Capture and recall (CLI form, since Claude Desktop install is platform-variable)
+# 5. Wire one client
+tessera connect claude-desktop --token-ttl-days 30
+
+# 6. Capture and recall (CLI form, since Claude Desktop install is platform-variable)
 tessera capture "I prefer uv over pip for Python." --facet-type preference
 tessera capture "anneal — Artifact-Eval-Agent triplet, git worktrees for isolation." --facet-type project
 tessera capture "$(printf 'Hook → Legend → Credibility Spike → Observation → Meaning. 150–300 words. No emojis.')" --facet-type workflow
 tessera recall "LinkedIn post about anneal"
 
-# 6. Stop daemon, capture timing
-tessera daemon stop --vault ~/.tessera/vault.db
+# 7. Stop daemon, capture timing
+tessera daemon stop
 ```
 
 **Pass criteria:**
@@ -98,8 +102,9 @@ Goal: an existing rc2 user upgrades to v0.3.0rc1 without losing data.
 # 2. Install rc2 first
 pipx install --pip-args="--pre" tessera-context==0.1.0rc2
 tessera --version          # expect 0.1.0rc2
-tessera init --vault ~/.tessera/vault.db
-tessera daemon start --vault ~/.tessera/vault.db
+export TESSERA_PASSPHRASE='smoke-test-passphrase'
+tessera init               # creates ~/.tessera/vault.db
+tessera daemon start
 
 # 3. Pre-seed the vault with at least 50 facets across all five v0.1 types.
 #    Use the seed script (committed alongside this runbook):
@@ -107,7 +112,7 @@ bash docs/scripts/smoke-seed-rc2-vault.sh ~/.tessera/vault.db
 tessera stats              # record per-type counts
 
 # 4. Stop daemon, take a backup snapshot
-tessera daemon stop --vault ~/.tessera/vault.db
+tessera daemon stop
 cp ~/.tessera/vault.db ~/.tessera/vault.pre-v3.db
 
 # 5. Upgrade in place
@@ -115,7 +120,7 @@ pipx install --pip-args="--pre --force-reinstall" tessera-context==0.3.0rc1
 tessera --version          # expect 0.3.0rc1
 
 # 6. Daemon-start triggers the v2 → v3 migration (runner.py auto-applies on first connect)
-tessera daemon start --vault ~/.tessera/vault.db
+tessera daemon start
 tessera doctor
 
 # 7. Verify migration

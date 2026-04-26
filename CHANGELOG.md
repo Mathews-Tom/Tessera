@@ -4,6 +4,20 @@ All notable changes to Tessera are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- `--vault` and `--passphrase` are now optional on every CLI subcommand. Resolution order: explicit flag → env var (`TESSERA_VAULT` / `TESSERA_PASSPHRASE`) → default. The default vault path is `~/.tessera/vault.db`. Single-vault solo-developer setups can export `TESSERA_PASSPHRASE` once in the shell and run every subsequent command flag-free. Existing scripted invocations that pass `--vault` / `--passphrase` continue to work unchanged.
+- `tessera init` no longer requires `--vault`; it now creates `~/.tessera/vault.db` (or `$TESSERA_VAULT`) by default and creates the parent directory if missing.
+- The "passphrase required" error now points users at the persistent `export TESSERA_PASSPHRASE` path instead of the per-call `--passphrase` flag.
+
+### Added
+
+- Multi-vault disambiguation: when `~/.tessera/` contains more than one `*.db` file and neither `--vault` nor `$TESSERA_VAULT` is set, the CLI fails loud with the candidate list rather than guessing.
+- `docs/quickstart.md §Setup once` — env-var setup for flag-free daily use.
+- `docs/troubleshooting.md` — sections on persistent passphrase setup and multi-vault disambiguation.
+
 ## [0.3.0rc1] — 2026-04-26 (pre-release)
 
 Tessera v0.3 activates the **People + Skills surface** and ships the first **conversation-history importers** (ChatGPT and Claude). Schema bumps to v3 with an additive, idempotent v2 → v3 migration. Design rationale is recorded in [ADR-0012](docs/adr/0012-v0-3-people-and-skills-design.md). v0.3 DoD lives at [`docs/release-spec.md §Definition of Done for v0.3`](docs/release-spec.md). Release-engineering decision folding v0.1 DoD items 1 and 9 into the v0.3.0rc1 gate is recorded at [`docs/v0.1-dod-audit.md §Decision 2026-04-26`](docs/v0.1-dod-audit.md). Cross-platform clean-VM walkthrough runbook: [`docs/smoke-test-v0.3rc1.md`](docs/smoke-test-v0.3rc1.md). Friend-share onboarding: [`docs/quickstart.md`](docs/quickstart.md).

@@ -75,35 +75,53 @@ cd Tessera && uv sync --dev
 uv run tessera --version
 ```
 
-### 3. Initialise the vault
+### 3. Setup once
+
+Tessera resolves the vault path and passphrase from environment variables so
+day-to-day commands run without flags. The defaults match the v0.1 single-vault
+solo-developer case.
 
 ```bash
-tessera init --vault ~/.tessera/vault.db
-# Set a passphrase when prompted. It's stored in your OS keyring after the
-# first run, so you won't be asked again.
+# pick a passphrase, store it in your shell so every command picks it up.
+# add to ~/.zshrc / ~/.bashrc / global .env — anywhere your interactive
+# shells already source.
+export TESSERA_PASSPHRASE='your-passphrase-here'
 
-tessera daemon start --vault ~/.tessera/vault.db
+# the vault path defaults to ~/.tessera/vault.db. Override only if you keep
+# vaults elsewhere or run more than one (e.g. work.db + personal.db).
+# export TESSERA_VAULT="$HOME/Vaults/tessera/work.db"
+```
+
+Resolution order, applied per command: explicit flag → env var → default. Pass
+`--vault` / `--passphrase` for one-off runs without exporting; the env-var
+version is what makes the daily flow flag-free.
+
+### 4. Initialise the vault
+
+```bash
+tessera init                      # creates ~/.tessera/vault.db (or $TESSERA_VAULT)
+tessera daemon start              # starts tesserad
 tessera doctor                    # all green = ready
 ```
 
-### 4. Wire your AI tools
+### 5. Wire your AI tools
 
 ```bash
 # One shot — every detected file-based MCP client
-tessera connect all --vault ~/.tessera/vault.db --token-ttl-days 30
+tessera connect all --token-ttl-days 30
 
 # Or per-tool, with control over scope
-tessera connect claude-desktop --vault ~/.tessera/vault.db
-tessera connect claude-code    --vault ~/.tessera/vault.db
-tessera connect cursor         --vault ~/.tessera/vault.db
-tessera connect codex          --vault ~/.tessera/vault.db
+tessera connect claude-desktop
+tessera connect claude-code
+tessera connect cursor
+tessera connect codex
 ```
 
 Default service-token TTL is 24 hours. `--token-ttl-days 30` is the "set and forget" personal-use mode (cap 90).
 
 ChatGPT Developer Mode is deferred to v0.1.x — three stacked blockers (HTTPS front, Bearer auth in the New App dialog, canonical HTTP MCP). Two Anthropic clients sharing one vault still demonstrates the portability story today.
 
-### 5. Teach it the first thing
+### 6. Teach it the first thing
 
 In Claude Desktop or Claude Code, with the Tessera MCP wired:
 
@@ -140,7 +158,6 @@ CLI commands that talk to the daemon (`capture`, `recall`, `show`, `stats`, `for
 
 ```bash
 tessera tokens create \
-  --vault ~/.tessera/vault.db \
   --client-name cli \
   --token-class service \
   --read '*' --write '*' \
@@ -212,16 +229,16 @@ Importers write `project` facets only — never `skill` or `person`. Skills stay
 ## Maintenance & portability
 
 ```bash
-tessera doctor                                              # health check, exit non-zero on red
-tessera doctor --vault ~/.tessera/vault.db --collect bundle # scrubbed .tar.gz for issue reports
+tessera doctor                                # health check, exit non-zero on red
+tessera doctor --collect bundle               # scrubbed .tar.gz for issue reports
 
-tessera export --vault ~/.tessera/vault.db --format json   --output ~/Backups/tessera-$(date +%F).json
-tessera export --vault ~/.tessera/vault.db --format md     --output ~/Backups/tessera-md/
-tessera export --vault ~/.tessera/vault.db --format sqlite --output ~/Backups/vault-decrypted.db
+tessera export --format json   --output ~/Backups/tessera-$(date +%F).json
+tessera export --format md     --output ~/Backups/tessera-md/
+tessera export --format sqlite --output ~/Backups/vault-decrypted.db
 
 # Reset embed status for facets that errored or for one facet type after a model swap:
-tessera vault repair-embeds --vault ~/.tessera/vault.db
-tessera vault repair-embeds --vault ~/.tessera/vault.db --facet-type style
+tessera vault repair-embeds
+tessera vault repair-embeds --facet-type style
 
 # Or just copy the file. The vault IS the product.
 cp ~/.tessera/vault.db ~/Backups/vault-$(date +%F).db
@@ -230,9 +247,9 @@ cp ~/.tessera/vault.db ~/Backups/vault-$(date +%F).db
 ### Token hygiene
 
 ```bash
-tessera tokens list   --vault ~/.tessera/vault.db
-tessera tokens revoke --vault ~/.tessera/vault.db --token-id <id> --reason "rotated"
-tessera disconnect cursor                                   # remove tool's MCP entry without stomping siblings
+tessera tokens list
+tessera tokens revoke --token-id <id> --reason "rotated"
+tessera disconnect cursor                     # remove tool's MCP entry without stomping siblings
 ```
 
 ---

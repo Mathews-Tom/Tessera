@@ -33,12 +33,18 @@ uv run tessera --help
 ## Core local flow
 
 ```bash
-tessera init   --vault ~/.tessera/vault.db
-tessera daemon start --vault ~/.tessera/vault.db
-tessera connect claude-desktop --vault ~/.tessera/vault.db
+# one-time setup: pin a passphrase in your shell so commands run flag-free.
+# the vault path defaults to ~/.tessera/vault.db; override with $TESSERA_VAULT.
+export TESSERA_PASSPHRASE='your-passphrase-here'   # add to ~/.zshrc or your global .env
+
+tessera init                          # creates ~/.tessera/vault.db
+tessera daemon start                  # starts tesserad, picks up the env var
+tessera connect claude-desktop        # mints token, writes config
 # or wire every detected client in one shot:
-tessera connect all --vault ~/.tessera/vault.db
+tessera connect all
 ```
+
+`--vault` and `--passphrase` flags are still accepted for one-off use, multi-vault setups, or scripted invocations. Resolution order is `flag → $TESSERA_VAULT / $TESSERA_PASSPHRASE → default`. See [`docs/quickstart.md`](docs/quickstart.md#setup-once) for the env-var setup and [`docs/troubleshooting.md`](docs/troubleshooting.md#multi-vault-disambiguation) for multi-vault disambiguation.
 
 ChatGPT Developer Mode is deferred to v0.1.x because the current ChatGPT flow requires HTTPS/OAuth/canonical HTTP MCP compatibility that Tessera v0.1 does not yet ship. The v0.1 demo flow uses Claude Desktop and Claude Code as the MCP-capable clients.
 
@@ -60,6 +66,7 @@ The lead user is the AI-native developer who wants durable context across Claude
 
 | If you want to | Read |
 |---|---|
+| Walk through install + first capture in ~10 minutes | [`docs/quickstart.md`](docs/quickstart.md) |
 | Pitch to a colleague or evaluate whether this is interesting | [`docs/pitch.md`](docs/pitch.md) |
 | Understand the market position, category claim, and trade-offs | [`docs/system-overview.md`](docs/system-overview.md) |
 | Understand the architecture, schema, retrieval pipeline, encryption | [`docs/system-design.md`](docs/system-design.md) |

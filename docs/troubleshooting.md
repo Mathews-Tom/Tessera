@@ -73,6 +73,40 @@ which tessera
 
 ## First-run failures (`tessera init` / `tessera daemon start`)
 
+### `passphrase required; pass --passphrase or export TESSERA_PASSPHRASE`
+
+Every command that opens the vault needs a passphrase. The CLI resolves it in this order:
+
+1. `--passphrase <value>` flag.
+2. `$TESSERA_PASSPHRASE` (or whatever name `$TESSERA_PASSPHRASE_ENV` points at).
+3. Error.
+
+For solo-developer setups, exporting the env var once in `~/.zshrc`, `~/.bashrc`, or your shell-sourced global `.env` is the intended path — every subsequent command runs flag-free:
+
+```bash
+export TESSERA_PASSPHRASE='your-passphrase-here'
+tessera init                # picks up the env var
+tessera daemon start        # same
+```
+
+For one-off invocations (CI, scripts, multi-tenant machines), pass `--passphrase` per call instead. See `quickstart.md §Setup once`.
+
+### Multi-vault disambiguation
+
+If `~/.tessera/` contains more than one `*.db` file and you have not set `--vault` or `$TESSERA_VAULT`, the CLI refuses to guess and fails with:
+
+```text
+✗ ERROR ~/.tessera contains multiple vaults (~/.tessera/work.db, ~/.tessera/personal.db); pass --vault or export TESSERA_VAULT to pick one
+```
+
+Pick the vault you want either per-command (`--vault ~/.tessera/work.db`) or persistently:
+
+```bash
+export TESSERA_VAULT="$HOME/.tessera/work.db"
+```
+
+The single-vault default (`~/.tessera/vault.db`) covers the v0.1 lead-user case; the disambiguation only triggers when you have explicitly created additional vaults.
+
 ### `tessera init` prompts for a passphrase — what should I set?
 
 The passphrase derives the sqlcipher key via argon2id. It's what encrypts your vault at rest. It's stored in your OS keyring (macOS Keychain, GNOME keyring, Windows Credential Manager) after the first run; subsequent commands retrieve it without prompting.
@@ -89,7 +123,7 @@ Some headless Linux sessions lack a running keyring daemon. Three options:
 
 1. **Start a keyring daemon.** On Ubuntu / Debian: `sudo apt install gnome-keyring && dbus-update-activation-environment --all`. On Fedora: `sudo dnf install gnome-keyring`.
 2. **Use an alternate backend.** `pip install keyrings.alt` provides `PlaintextKeyring` (file-backed, 0600, not encrypted — OK on a single-user machine you control, not OK on shared hosts).
-3. **Pass `--passphrase-env TESSERA_PASSPHRASE`** to `tessera daemon start` and export the passphrase via env for each invocation.
+3. **Use `$TESSERA_PASSPHRASE` directly** — Tessera reads this env var on every CLI invocation when no `--passphrase` flag is given, so headless hosts without a working keyring can still operate flag-free.
 
 ### `Address already in use` / `tessera daemon start` crashes with `OSError: [Errno 48]`
 
