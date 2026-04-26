@@ -1,11 +1,11 @@
-# v0.4.0rc1 — Cross-Platform Smoke Test Runbook
+# v0.4.0rc2 — Cross-Platform Smoke Test Runbook
 
-**Status:** Open — v0.4.0rc1 → v0.4.0 GA stabilization gate, NOT an rc1 ship gate.
+**Status:** Open — v0.4 → v0.4.0 GA stabilization gate, NOT an rc ship gate.
 **Owner:** Tom Mathews
 **Closes:** v0.1 DoD item 1 (cross-platform smoke) carried forward across the v0.3 → v0.4 ONNX stack switch
 **Decision recorded:** `docs/v0.1-dod-audit.md §Decision 2026-04-26`
 
-> rc1 publishes on internal evidence (CI green, full unit + integration suite passing under fastembed-mocked unit tests, end-to-end fastembed loaded once on the project author's macOS workstation). The recordings below happen during the rc1 → GA stabilization window.
+> rc1 and rc2 published on internal evidence (CI green, full unit + integration suite passing under fastembed-mocked unit tests, end-to-end fastembed loaded once on the project author's macOS workstation). rc2 (2026-04-27) added the daemon-start `--timeout` first-run bump (30 → 120 s) after rc1 first-runs orphaned daemons on slow links. The recordings below happen during the rc → GA stabilization window.
 
 ---
 
@@ -13,7 +13,7 @@
 
 Verify on clean VMs of macOS, Ubuntu, and Windows that:
 
-1. `tessera-context==0.4.0rc1` installs from PyPI without manual platform fixes beyond what's documented in `docs/troubleshooting.md`.
+1. `tessera-context==0.4.0rc2` installs from PyPI without manual platform fixes beyond what's documented in `docs/troubleshooting.md`.
 2. `tessera init` → `tessera models set --activate` → `tessera daemon start` → `tessera connect` → capture → recall completes the T-shape demo flow end-to-end in under 10 minutes (not counting the one-time fastembed weight download).
 3. The first daemon start downloads the embedder + reranker weights cleanly to `~/.cache/fastembed` and serves a `recall` against a freshly-captured facet.
 
@@ -47,9 +47,9 @@ sudo apt install -y build-essential libsqlcipher-dev
 # Windows only: install Python 3.12 from python.org
 
 # 2. Install the rc
-pipx install --pip-args="--pre" tessera-context==0.4.0rc1
-# or: pip install --pre tessera-context==0.4.0rc1
-tessera --version          # expect 0.4.0rc1
+pipx install --pip-args="--pre" tessera-context==0.4.0rc2
+# or: pip install --pre tessera-context==0.4.0rc2
+tessera --version          # expect 0.4.0rc2
 
 # 3. Setup once — env vars drive the flag-free flow.
 #    Vault path defaults to ~/.tessera/vault.db; passphrase comes from the env var.
@@ -105,7 +105,7 @@ tessera daemon stop
 | `tessera daemon start` hangs at first run | fastembed weight download stalled | Check `~/.cache/fastembed` for partial files; rerun once network stabilises (downloads resume) |
 | `tessera daemon start` fails with `NoActiveModelError` | Skipped step 5 | Run `tessera models set --activate` per quickstart §5 |
 | `tessera doctor` flags `fastembed: cache not present` | Cache directory hasn't been populated yet | Harmless before first daemon start; run `tessera models test --name <fastembed-id>` to warm it out-of-band |
-| `tessera doctor` flags `fastembed: import failed` | Broken Python install / missing onnxruntime wheel | `pipx install --pre tessera-context==0.4.0rc1 --force` re-resolves the wheel set |
+| `tessera doctor` flags `fastembed: import failed` | Broken Python install / missing onnxruntime wheel | `pipx install --pre tessera-context==0.4.0rc2 --force` re-resolves the wheel set |
 | `recall` returns no matches | Embed worker still warming or the captured facet hasn't been embedded yet | Wait ~5 s for the embed worker idle pass, retry; check `tessera stats` for `pending` count |
 
 ---
@@ -118,4 +118,4 @@ The runbook is closed when:
 2. Failure-mode entries that surface during recordings are added to `docs/troubleshooting.md`.
 3. `docs/release-spec.md §Definition of Done for v0.4` flips the cross-platform smoke checkbox.
 
-The decision to publish v0.4.0rc1 to PyPI does NOT depend on this runbook closing — same model as v0.1.0rc1 and v0.3.0rc1, where rc publication ran ahead of the recordings on the strength of CI evidence.
+The decision to publish v0.4.0rc2 to PyPI does NOT depend on this runbook closing — same model as v0.1.0rc1 and v0.3.0rc1, where rc publication ran ahead of the recordings on the strength of CI evidence.
