@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- REST surface at `/api/v1/*` alongside the existing `/mcp` endpoint, sharing the daemon dispatcher, capability-token auth, and scope checks. Endpoints: `POST /api/v1/capture`, `GET /api/v1/recall`, `GET /api/v1/stats`, `GET /api/v1/facets[/<external_id>]`, `DELETE /api/v1/facets/<external_id>`, `POST /api/v1/skills`, `GET /api/v1/skills[/<name>]`, `GET /api/v1/people`, `GET /api/v1/people/resolve`. Response shape on success: dispatcher result dict directly with HTTP 200 (no JSON-RPC `{"ok": true, "result": ...}` envelope). On failure: `{"error": {"code", "message"}}` with the appropriate 4xx/5xx status. Designed for hooks, skills, and shell scripts where the per-call MCP envelope cost (~50–150 tokens) compounds across high-frequency calls.
+- `tessera curl <verb>` subcommand that prints copy-pasteable curl recipes for each REST endpoint, or executes them and pipes the JSON response. `--print` mode emits the literal curl invocation with `${TESSERA_TOKEN}` left unexpanded so recipes are safe to commit to hook scripts.
+- `docs/api.md` — canonical REST reference with per-endpoint URL/verb/params/response and worked recipes for pre-prompt hooks, post-tool capture hooks, and daily backup scripts.
+- ADR-0013 — REST surface alongside MCP. Records the dual-transport decision and scopes its boundary with ADR-0005.
+
 ### Changed
 
 - `--vault` and `--passphrase` are now optional on every CLI subcommand. Resolution order: explicit flag → env var (`TESSERA_VAULT` / `TESSERA_PASSPHRASE`) → default. The default vault path is `~/.tessera/vault.db`. Single-vault solo-developer setups can export `TESSERA_PASSPHRASE` once in the shell and run every subsequent command flag-free. Existing scripted invocations that pass `--vault` / `--passphrase` continue to work unchanged.

@@ -61,7 +61,12 @@ A local daemon owns a single-file SQLite vault that holds five v0.1 context face
 - `project` — active work context
 - `style` — writing voice samples
 
-MCP-capable tools connect with scoped capability tokens and call six tools: `capture`, `recall`, `show`, `list_facets`, `stats`, and `forget`. A bare `recall` searches every facet type the token can read, then returns a budgeted cross-facet bundle.
+Two transports reach the vault, sharing one daemon dispatcher and one token-based auth model:
+
+- **MCP at `/mcp`** for tool-aware AI clients that auto-discover Tessera (Claude Desktop, Claude Code, Cursor, Codex). Six MCP tools: `capture`, `recall`, `show`, `list_facets`, `stats`, `forget`, plus the v0.3 `learn_skill` / `get_skill` / `list_skills` / `resolve_person` / `list_people` surface.
+- **REST at `/api/v1/*`** for hooks, skills, and shell scripts. Curl-friendly endpoints that skip MCP's JSON-RPC envelope so high-frequency hook calls do not pay the per-call envelope tax. See [`docs/api.md`](docs/api.md) for the full reference and copy-pasteable recipes; `tessera curl --print recall "..."` emits canonical curl invocations safe to paste into hook scripts.
+
+A bare `recall` (either transport) searches every facet type the token can read and returns a budgeted cross-facet bundle.
 
 The lead user is the AI-native developer who wants durable context across Claude Code, Claude Desktop, Cursor, Codex, local model workflows, and custom harnesses without handing memory to a hosted service.
 
@@ -70,6 +75,7 @@ The lead user is the AI-native developer who wants durable context across Claude
 | If you want to | Read |
 |---|---|
 | Walk through install + first capture in ~10 minutes | [`docs/quickstart.md`](docs/quickstart.md) |
+| Build a hook, skill, or shell script that talks to the daemon | [`docs/api.md`](docs/api.md) |
 | Pitch to a colleague or evaluate whether this is interesting | [`docs/pitch.md`](docs/pitch.md) |
 | Understand the market position, category claim, and trade-offs | [`docs/system-overview.md`](docs/system-overview.md) |
 | Understand the architecture, schema, retrieval pipeline, encryption | [`docs/system-design.md`](docs/system-design.md) |
