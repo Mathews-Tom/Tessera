@@ -95,7 +95,20 @@ exclude = [
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
-extend-exclude = [".venv", "build", "dist"]
+extend-exclude = [
+    ".venv",
+    "build",
+    "dist",
+    # Historical benchmark reproduction scripts. Each ``run.py`` was
+    # executed once to produce the JSON results in its ``results/``
+    # directory; the results are the canonical artifact. After the
+    # ONNX-only migration the scripts reference deleted adapters
+    # (``OllamaEmbedder``, ``SentenceTransformersReranker``) and
+    # cannot be re-run as-is, but they stay as the historical record
+    # of how each measurement was taken. Exclude them from lint so
+    # the deleted-adapter imports do not break CI.
+    "docs/benchmarks",
+]
 
 [tool.ruff.lint]
 select = [

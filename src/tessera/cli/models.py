@@ -76,9 +76,7 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     set_parser.add_argument("--activate", action="store_true")
 
-    test_parser = sub.add_parser(
-        "test", help="Load the fastembed model and run a health check."
-    )
+    test_parser = sub.add_parser("test", help="Load the fastembed model and run a health check.")
     test_parser.add_argument("--name", default=DEFAULT_MODEL)
     test_parser.add_argument("--dim", type=int, default=DEFAULT_DIM)
 
