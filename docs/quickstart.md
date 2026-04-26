@@ -78,9 +78,7 @@ tessera --version
 
 ### 3. Setup once
 
-Tessera resolves the vault path and passphrase from environment variables so
-day-to-day commands run without flags. The defaults match the v0.1 single-vault
-solo-developer case.
+Tessera resolves the vault path and passphrase from environment variables so day-to-day commands run without flags. The defaults match the v0.1 single-vault solo-developer case.
 
 ```bash
 # pick a passphrase, store it in your shell so every command picks it up.
