@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from tessera.cli._common import CliError, fail, resolve_passphrase
+from tessera.cli._common import CliError, fail, resolve_passphrase, resolve_vault_path
 from tessera.cli._ui import EMOJI, console, info, kv_panel, status, success
 from tessera.daemon.config import DaemonConfig, resolve_config
 from tessera.daemon.control import ControlError, call_control
@@ -35,7 +35,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         "start",
         help="spawn tesserad in the background and wait for ready",
     )
-    start.add_argument("--vault", type=Path, required=True)
+    start.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
     start.add_argument("--passphrase", default=None)
     start.add_argument("--port", type=int, default=None)
     start.add_argument("--host", default=None)
@@ -51,7 +56,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         "start-fg",
         help="run tesserad in the foreground (used by launchd/systemd)",
     )
-    start_fg.add_argument("--vault", type=Path, required=True)
+    start_fg.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
     start_fg.add_argument("--passphrase", default=None)
     start_fg.add_argument("--port", type=int, default=None)
     start_fg.add_argument("--host", default=None)
@@ -73,7 +83,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     wait.set_defaults(handler=_cmd_wait)
 
     install = sub.add_parser("install", help="write launchd (macOS) or systemd (Linux) user unit")
-    install.add_argument("--vault", type=Path, required=True)
+    install.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
     install.set_defaults(handler=_cmd_install)
 
     uninstall = sub.add_parser("uninstall", help="remove the installed unit")
@@ -90,12 +105,13 @@ def _cmd_start(args: argparse.Namespace) -> int:
     """
 
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
 
     config = resolve_config(
-        vault_path=args.vault,
+        vault_path=vault_path,
         http_host=args.host,
         http_port=args.port,
     )
@@ -119,7 +135,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
     # `ps`). This matches the pattern the launchd/systemd units use.
     env = os.environ.copy()
     env["TESSERA_PASSPHRASE"] = bytes(passphrase).decode("utf-8")
-    argv = [sys.executable, "-m", "tessera.cli", "daemon", "start-fg", "--vault", str(args.vault)]
+    argv = [sys.executable, "-m", "tessera.cli", "daemon", "start-fg", "--vault", str(vault_path)]
     if args.port is not None:
         argv.extend(["--port", str(args.port)])
     if args.host is not None:
@@ -271,16 +287,17 @@ def _tail_log(path: Path, *, lines: int) -> str:
 
 def _cmd_start_fg(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
     config = resolve_config(
-        vault_path=args.vault,
+        vault_path=vault_path,
         http_host=args.host,
         http_port=args.port,
         passphrase=bytes(passphrase),
     )
-    info(f"starting daemon (foreground) against {args.vault}", emoji=EMOJI["daemon_up"])
+    info(f"starting daemon (foreground) against {vault_path}", emoji=EMOJI["daemon_up"])
     try:
         asyncio.run(run_daemon(config))
     except Exception as exc:
@@ -361,6 +378,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
+    try:
+        vault_path = resolve_vault_path(args.vault)
+    except CliError as exc:
+        return fail(str(exc))
     home = Path(os.path.expanduser("~"))
     python_exe = Path(sys.executable)
     platform: str = sys.platform  # strings forces mypy off the Literal narrow
@@ -368,7 +389,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
         path = launchd_plist_path(home)
         body = launchd_plist(
             python_executable=python_exe,
-            vault_path=args.vault,
+            vault_path=vault_path,
             log_path=home / ".tessera" / "run" / "tesserad.log",
         )
         _write_unit(path, body)
@@ -376,7 +397,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
         info(f"load via: launchctl bootstrap gui/$(id -u) {path}")
         return 0
     path = systemd_unit_path(home)
-    body = systemd_unit(python_executable=python_exe, vault_path=args.vault)
+    body = systemd_unit(python_executable=python_exe, vault_path=vault_path)
     _write_unit(path, body)
     success(f"wrote {path}", emoji=EMOJI["daemon_up"])
     info(

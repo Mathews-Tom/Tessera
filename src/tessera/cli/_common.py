@@ -10,12 +10,16 @@ import contextlib
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Final
 
 import sqlcipher3
 
 from tessera.cli._ui import error as _ui_error
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import ProtectedKey, derive_key, load_salt
+
+DEFAULT_VAULT_DIR: Final[Path] = Path("~/.tessera").expanduser()
+DEFAULT_VAULT_PATH: Final[Path] = DEFAULT_VAULT_DIR / "vault.db"
 
 
 class CliError(Exception):
@@ -37,7 +41,48 @@ def resolve_passphrase(arg_value: str | None) -> bytearray:
     env_value = os.environ.get(env_var)
     if env_value:
         return bytearray(env_value.encode("utf-8"))
-    raise CliError(f"passphrase required; pass --passphrase or export {env_var}")
+    raise CliError(
+        f"no passphrase available; export {env_var} once in your shell "
+        f"(persists across commands), or pass --passphrase for one-off use"
+    )
+
+
+def resolve_vault_path(arg_value: Path | None) -> Path:
+    """Pick the vault path from --vault, env, default, or disambiguate.
+
+    Order of resolution:
+
+    1. ``arg_value`` (explicit ``--vault`` flag) — trust the caller.
+    2. ``$TESSERA_VAULT`` — set once in the user's shell init.
+    3. ``~/.tessera/vault.db`` default — works for the v0.1 lead-user
+       case (single solo vault) without any setup.
+
+    Multi-vault disambiguation only triggers when none of the three
+    above resolved a path *and* ``~/.tessera`` happens to contain more
+    than one ``*.db``. In that rare case we refuse to guess and list
+    the candidates so the user can pass ``--vault`` or set
+    ``$TESSERA_VAULT``.
+
+    The returned path is not required to exist — ``tessera init``
+    creates it; every other command surfaces a specific
+    "vault not initialised" error via :func:`open_vault` when the salt
+    sidecar is missing.
+    """
+
+    if arg_value is not None:
+        return arg_value.expanduser()
+    env = os.environ.get("TESSERA_VAULT")
+    if env:
+        return Path(env).expanduser()
+    if DEFAULT_VAULT_DIR.is_dir():
+        candidates = sorted(p for p in DEFAULT_VAULT_DIR.glob("*.db") if p.is_file())
+        if len(candidates) > 1:
+            listing = ", ".join(str(p) for p in candidates)
+            raise CliError(
+                f"{DEFAULT_VAULT_DIR} contains multiple vaults ({listing}); "
+                "pass --vault or export TESSERA_VAULT to pick one"
+            )
+    return DEFAULT_VAULT_PATH
 
 
 @contextlib.contextmanager
@@ -99,9 +144,12 @@ def resolve_agent_id(conn: sqlcipher3.Connection, explicit: int | None) -> int:
 
 
 __all__ = [
+    "DEFAULT_VAULT_DIR",
+    "DEFAULT_VAULT_PATH",
     "CliError",
     "fail",
     "open_vault",
     "resolve_agent_id",
     "resolve_passphrase",
+    "resolve_vault_path",
 ]

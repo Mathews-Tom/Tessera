@@ -20,7 +20,14 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from tessera.cli._common import CliError, fail, open_vault, resolve_agent_id, resolve_passphrase
+from tessera.cli._common import (
+    CliError,
+    fail,
+    open_vault,
+    resolve_agent_id,
+    resolve_passphrase,
+    resolve_vault_path,
+)
 from tessera.cli._http import add_http_args, call, print_json
 from tessera.cli._ui import EMOJI, console, error, report_table, status, success
 from tessera.vault import skills as vault_skills
@@ -64,7 +71,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 
 
 def _add_vault_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--vault", type=Path, required=True)
+    parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
     parser.add_argument(
         "--passphrase",
         default=None,
@@ -114,9 +126,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_sync_to_disk(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
         with (
-            open_vault(args.vault, passphrase) as vc,
+            open_vault(vault_path, passphrase) as vc,
             status(f"sync-to-disk → {args.directory}", emoji=EMOJI["repair"]),
         ):
             agent_id = resolve_agent_id(vc.connection, args.agent_id)
@@ -131,9 +144,10 @@ def _cmd_sync_to_disk(args: argparse.Namespace) -> int:
 
 def _cmd_sync_from_disk(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
         with (
-            open_vault(args.vault, passphrase) as vc,
+            open_vault(vault_path, passphrase) as vc,
             status(f"sync-from-disk ← {args.directory}", emoji=EMOJI["repair"]),
         ):
             agent_id = resolve_agent_id(vc.connection, args.agent_id)

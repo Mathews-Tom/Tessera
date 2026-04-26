@@ -14,6 +14,7 @@ from tessera.cli._common import (
     open_vault,
     resolve_agent_id,
     resolve_passphrase,
+    resolve_vault_path,
 )
 from tessera.cli._ui import EMOJI, console, kv_panel, report_table, success, warn
 
@@ -23,7 +24,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     def _add_vault_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--vault", type=Path, required=True)
+        p.add_argument(
+            "--vault",
+            type=Path,
+            default=None,
+            help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+        )
         p.add_argument("--passphrase", default=None)
 
     list_p = sub.add_parser("list", help="list capability tokens")
@@ -99,10 +105,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 
 def _cmd_list(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
-    with open_vault(args.vault, passphrase) as vc:
+    with open_vault(vault_path, passphrase) as vc:
         sql = (
             "SELECT id, agent_id, client_name, token_class, expires_at, "
             "revoked_at FROM capabilities"
@@ -136,6 +143,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_create(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
@@ -144,7 +152,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
     write_list = _merge_scope_args(args.write, args.write_scope)
     scope = build_scope(read=read_list, write=write_list)
     access_ttl_seconds = _resolve_ttl_seconds(args.token_ttl_days)
-    with open_vault(args.vault, passphrase) as vc:
+    with open_vault(vault_path, passphrase) as vc:
         try:
             agent_id = resolve_agent_id(vc.connection, args.agent_id)
         except CliError as exc:
@@ -177,11 +185,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
 
 def _cmd_revoke(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
     now_epoch = int(datetime.now(UTC).timestamp())
-    with open_vault(args.vault, passphrase) as vc:
+    with open_vault(vault_path, passphrase) as vc:
         changed = tokens.revoke(
             vc.connection,
             token_id=args.token_id,

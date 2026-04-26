@@ -59,7 +59,8 @@ def resolve_config(
 ) -> DaemonConfig:
     """Merge caller overrides, env vars, and built-in defaults."""
 
-    vault = vault_path or Path(os.environ.get("TESSERA_VAULT", "")) or _default_vault_path()
+    env_vault = os.environ.get("TESSERA_VAULT")
+    vault = vault_path or (Path(env_vault).expanduser() if env_vault else _default_vault_path())
     host = http_host or os.environ.get("TESSERA_HTTP_HOST", DEFAULT_HTTP_HOST)
     port = http_port or int(os.environ.get("TESSERA_HTTP_PORT", str(DEFAULT_HTTP_PORT)))
     sock = socket_path or _default_socket_path()

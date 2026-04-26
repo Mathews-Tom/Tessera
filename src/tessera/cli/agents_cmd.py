@@ -7,7 +7,13 @@ from pathlib import Path
 
 from ulid import ULID
 
-from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase
+from tessera.cli._common import (
+    CliError,
+    fail,
+    open_vault,
+    resolve_passphrase,
+    resolve_vault_path,
+)
 from tessera.cli._ui import EMOJI, console, raw, report_table, success
 
 
@@ -16,7 +22,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     def _add_vault_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--vault", type=Path, required=True)
+        p.add_argument(
+            "--vault",
+            type=Path,
+            default=None,
+            help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+        )
         p.add_argument("--passphrase", default=None)
 
     list_p = sub.add_parser("list", help="list agents")
@@ -36,10 +47,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 
 def _cmd_list(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
-    with open_vault(args.vault, passphrase) as vc:
+    with open_vault(vault_path, passphrase) as vc:
         rows = vc.connection.execute(
             "SELECT external_id, name, created_at FROM agents ORDER BY id"
         ).fetchall()
@@ -55,11 +67,12 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_create(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
     external_id = str(ULID())
-    with open_vault(args.vault, passphrase) as vc:
+    with open_vault(vault_path, passphrase) as vc:
         vc.connection.execute(
             "INSERT INTO agents(external_id, name, created_at) VALUES (?, ?, strftime('%s','now'))",
             (external_id, args.name),
@@ -75,10 +88,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
 
 def _cmd_delete(args: argparse.Namespace) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
-    with open_vault(args.vault, passphrase) as vc:
+    with open_vault(vault_path, passphrase) as vc:
         cur = vc.connection.execute("DELETE FROM agents WHERE external_id = ?", (args.external_id,))
         if cur.rowcount == 0:
             return fail(f"no agent with external_id={args.external_id!r}")

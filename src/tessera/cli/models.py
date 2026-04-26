@@ -19,6 +19,7 @@ import sqlcipher3
 from tessera.adapters import models_registry
 from tessera.adapters.ollama_embedder import OllamaEmbedder
 from tessera.adapters.registry import list_embedders, list_rerankers
+from tessera.cli._common import CliError, resolve_passphrase, resolve_vault_path
 from tessera.cli._ui import EMOJI, console, error, report_table, status, success
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, load_salt
@@ -44,8 +45,17 @@ def _make_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="List registered adapters and vault-registered models.")
 
     set_parser = sub.add_parser("set", help="Register an embedding model in a vault.")
-    set_parser.add_argument("--vault", type=Path, required=True)
-    set_parser.add_argument("--passphrase", required=True)
+    set_parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
+    set_parser.add_argument(
+        "--passphrase",
+        default=None,
+        help="vault passphrase; default is $TESSERA_PASSPHRASE",
+    )
     set_parser.add_argument("--name", required=True, help="Adapter name, e.g. 'ollama'")
     set_parser.add_argument("--model", required=True, help="Provider model name")
     set_parser.add_argument("--dim", type=int, required=True)
@@ -72,16 +82,21 @@ def _cmd_list() -> int:
 
 
 def _cmd_set(args: argparse.Namespace) -> int:
-    passphrase = args.passphrase.encode("utf-8")
     try:
-        salt = load_salt(args.vault)
+        vault_path = resolve_vault_path(args.vault)
+        passphrase = resolve_passphrase(args.passphrase)
+    except CliError as exc:
+        error(str(exc))
+        return 1
+    try:
+        salt = load_salt(vault_path)
     except FileNotFoundError:
-        error(f"no KDF salt sidecar for {args.vault}; initialise the vault first")
+        error(f"no KDF salt sidecar for {vault_path}; initialise the vault first")
         return 1
     with (
         status(f"registering {args.name} ({args.dim}-dim)", emoji=EMOJI["models"]),
         derive_key(passphrase, salt) as key,
-        VaultConnection.open(args.vault, key) as vc,
+        VaultConnection.open(vault_path, key) as vc,
     ):
         conn: sqlcipher3.Connection = vc.connection
         model = models_registry.register_embedding_model(

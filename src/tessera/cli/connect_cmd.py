@@ -23,6 +23,7 @@ from tessera.cli._common import (
     open_vault,
     resolve_agent_id,
     resolve_passphrase,
+    resolve_vault_path,
 )
 from tessera.cli._ui import EMOJI, info, kv_panel, status, success
 from tessera.cli.tokens_cmd import _resolve_ttl_seconds
@@ -123,7 +124,12 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
             "sugar for every file-based client (all except chatgpt)"
         ),
     )
-    parser.add_argument("--vault", type=Path, required=True)
+    parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
     parser.add_argument("--passphrase", default=None)
     parser.add_argument("--socket", type=Path, default=None, help="daemon control socket")
 
@@ -212,6 +218,7 @@ def _disconnect_one(args: argparse.Namespace, client_id: str) -> int:
 
 def _connect_file_based(args: argparse.Namespace, connector: Connector) -> int:
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
@@ -219,7 +226,7 @@ def _connect_file_based(args: argparse.Namespace, connector: Connector) -> int:
     with status(f"minting token + writing {connector.display_name} config", emoji=EMOJI["connect"]):
         try:
             raw_token = _mint_token(
-                vault=args.vault,
+                vault=vault_path,
                 passphrase=passphrase,
                 agent_id=args.agent_id,
                 client_id=connector.client_id,
@@ -284,13 +291,14 @@ def _connect_chatgpt(args: argparse.Namespace) -> int:
     """
 
     try:
+        vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
     access_ttl_seconds = _resolve_ttl_seconds(args.token_ttl_days)
     try:
         raw_token = _mint_token(
-            vault=args.vault,
+            vault=vault_path,
             passphrase=passphrase,
             agent_id=args.agent_id,
             client_id="chatgpt",
