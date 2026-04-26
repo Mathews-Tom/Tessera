@@ -1,14 +1,15 @@
 # Tessera — Portable context for AI tools
 
+[![PyPI](https://img.shields.io/pypi/v/tessera-context?include_prereleases&label=pypi&color=blue)](https://pypi.org/project/tessera-context/)
+[![Python](https://img.shields.io/pypi/pyversions/tessera-context)](https://pypi.org/project/tessera-context/)
+[![License](https://img.shields.io/github/license/Mathews-Tom/Tessera?color=blue)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/Mathews-Tom/Tessera/ci.yml?branch=main&label=CI)](https://github.com/Mathews-Tom/Tessera/actions/workflows/ci.yml)
+
 > A local-first context layer for agents and AI tools. Tessera stores durable user and project context in an encrypted SQLite vault, exposes it through a scoped MCP surface, and retrieves cross-facet bundles with hybrid search, rerank, SWCR, and token budgeting.
 
 > Open source. Local-first. Apache 2.0.
 
 ---
-
-## Status
-
-`v0.4.0rc1` is live on PyPI as [`tessera-context`](https://pypi.org/project/tessera-context/0.4.0rc1/). The repo contains the packaged Python CLI, encrypted vault, daemon, HTTP MCP endpoint + REST surface at `/api/v1/*`, first-party stdio MCP bridge, connector writers, retrieval pipeline, named skills synced to disk, people resolution, ChatGPT + Claude conversation-history importers, and the test suite. v0.4 swaps the entire model stack to fastembed (ONNX Runtime) and removes Ollama, sentence-transformers, OpenAI, and Cohere adapters per [ADR-0014](docs/adr/0014-onnx-only-stack.md); install footprint drops from ~600 MB to ~30 MB. General availability gates on external-user demo validation and cross-platform install recording per `docs/smoke-test-v0.4rc1.md`. rc1 is install-stable for technical users; expect real-user feedback to drive a follow-up rc before GA. See [`docs/release-spec.md`](docs/release-spec.md) for the release bar and [`CHANGELOG.md`](CHANGELOG.md) for the full v0.4 surface.
 
 ## Install
 
