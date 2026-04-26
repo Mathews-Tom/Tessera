@@ -6,12 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Ollama embedder, sentence-transformers reranker, Cohere reranker, OpenAI embedder, and the torch-based device-detection helper** — `src/tessera/adapters/{ollama_embedder,st_reranker,cohere_reranker,openai_embedder,devices}.py` deleted. The `ollama_host` field on `DaemonConfig` and the `OLLAMA_HOST` / `TESSERA_OLLAMA_MODEL` environment variables are gone. The doctor's `_check_ollama` is replaced with a fastembed cache check.
+- `ollama` and `sentence-transformers` dropped from `dependencies`. `torch`, `transformers`, `tokenizers`, `safetensors`, `scipy`, `sympy`, `scikit-learn`, and the rest of the torch closure are gone transitively. Install footprint drops from ~600 MB to ~30 MB of Python packages.
+
 ### Added
 
+- **fastembed embedder + reranker** as the sole adapter for both roles. `src/tessera/adapters/fastembed_embedder.py` defaults to `nomic-ai/nomic-embed-text-v1.5` (768 dim); `src/tessera/adapters/fastembed_reranker.py` defaults to `Xenova/ms-marco-MiniLM-L-12-v2` (cross-encoder ONNX export, one layer-count tier above the v0.3 sentence-transformers default). Both run in-process via ONNX Runtime; no separate model server, no torch.
+- ADR-0014 (ONNX-only model stack via fastembed) records the switch and supersedes ADR-0006.
 - REST surface at `/api/v1/*` alongside the existing `/mcp` endpoint, sharing the daemon dispatcher, capability-token auth, and scope checks. Endpoints: `POST /api/v1/capture`, `GET /api/v1/recall`, `GET /api/v1/stats`, `GET /api/v1/facets[/<external_id>]`, `DELETE /api/v1/facets/<external_id>`, `POST /api/v1/skills`, `GET /api/v1/skills[/<name>]`, `GET /api/v1/people`, `GET /api/v1/people/resolve`. Response shape on success: dispatcher result dict directly with HTTP 200 (no JSON-RPC `{"ok": true, "result": ...}` envelope). On failure: `{"error": {"code", "message"}}` with the appropriate 4xx/5xx status. Designed for hooks, skills, and shell scripts where the per-call MCP envelope cost (~50–150 tokens) compounds across high-frequency calls.
 - `tessera curl <verb>` subcommand that prints copy-pasteable curl recipes for each REST endpoint, or executes them and pipes the JSON response. `--print` mode emits the literal curl invocation with `${TESSERA_TOKEN}` left unexpanded so recipes are safe to commit to hook scripts.
 - `docs/api.md` — canonical REST reference with per-endpoint URL/verb/params/response and worked recipes for pre-prompt hooks, post-tool capture hooks, and daily backup scripts.
 - ADR-0013 — REST surface alongside MCP. Records the dual-transport decision and scopes its boundary with ADR-0005.
+
+### Changed
+
+- `embedding_models.name` column now stores the fastembed model identifier directly (e.g. `"nomic-ai/nomic-embed-text-v1.5"`) instead of an adapter slot label. The previous indirection — adapter slot in `name`, provider model behind `TESSERA_OLLAMA_MODEL` — collapsed to a single column once fastembed became the sole adapter. `tessera models set --name <fastembed-id>` now records the identifier verbatim; the registry's "must be a known adapter" pre-check is removed (fastembed validates at first embed call).
 
 ### Changed
 

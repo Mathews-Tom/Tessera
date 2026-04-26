@@ -130,13 +130,13 @@ Some headless Linux sessions lack a running keyring daemon. Three options:
 `tessera init` bootstraps the vault but does not register an embedder. The daemon refuses to start without an active model because the embed worker and retrieval pipeline have nothing to call. Register one and flag it active:
 
 ```bash
-tessera models set --name ollama --model nomic-embed-text --dim 768 --activate
+tessera models set --name nomic-ai/nomic-embed-text-v1.5 --dim 768 --activate
 tessera daemon start
 ```
 
-`--name` is the adapter id (only `ollama` ships in v0.1), `--model` is the Ollama model name, `--dim` matches the model's embedding dimensionality (768 for `nomic-embed-text`), and `--activate` flips the row's `is_active` flag. If you registered a model previously but did not activate it, run the same command again with `--activate` — the registry upserts on `(name, model)` and only one row can be active at a time.
+`--name` is a fastembed model identifier (anything from `TextEmbedding.list_supported_models()` works), `--dim` matches the model's declared embedding dimensionality (768 for `nomic-embed-text-v1.5`), and `--activate` flips the row's `is_active` flag. If you registered a model previously but did not activate it, run the same command again with `--activate` — only one row can be active at a time.
 
-If `nomic-embed-text` is not present locally, `ollama pull nomic-embed-text` first; the prerequisites in `quickstart.md` cover this.
+The first daemon start after activation downloads the model weights to `~/.cache/fastembed` (~520 MB for the default, ~130 MB for the `-Q` quantised variant). No internet needed after that.
 
 ### `Address already in use` / `tessera daemon start` crashes with `OSError: [Errno 48]`
 
@@ -158,20 +158,17 @@ tessera daemon start
 
 All subsequent `tessera connect <client>` invocations must use the same port (`--port 5711`).
 
-### `tessera doctor` flags `ollama: unreachable`
+### `tessera doctor` flags `fastembed: cache not present`
 
-Tessera's default embedder is Ollama. If `ollama serve` isn't running or isn't reachable on `http://localhost:11434`:
-
-1. Start it: `ollama serve` (foreground) or `brew services start ollama` (macOS background).
-2. Pull the default embedding model: `ollama pull nomic-embed-text`.
-3. Re-run `tessera doctor`; the check should flip green.
-
-If you run Ollama on a non-default host or port, point Tessera at it:
+The cache directory at `~/.cache/fastembed` (or `$FASTEMBED_CACHE_DIR` if set) is empty. Harmless on its own — the next embed call downloads weights and the cache populates itself. If you want the download to happen now (e.g. before a demo, while still on Wi-Fi):
 
 ```bash
-export TESSERA_OLLAMA_HOST=http://192.168.1.50:11434
-tessera daemon start
+tessera models test --name nomic-ai/nomic-embed-text-v1.5
 ```
+
+That instantiates a `FastEmbedEmbedder` and runs a health check, which downloads + loads the weights. After it returns OK the doctor check flips green.
+
+If `tessera doctor` flags `fastembed: import failed`, the install is broken — `uv sync --dev` (source install) or `pipx install --pre tessera-context==0.3.0rc1 --force` (PyPI install) usually clears it. Open an issue with the import error if not.
 
 ### `tessera doctor` flags `sqlite-vec: not loaded`
 
@@ -263,7 +260,7 @@ Two typical causes, in order of likelihood:
 Check, in order:
 
 - `tessera doctor` → `embed_backlog` high? Embed worker is saturated; latency will catch up once the backlog drains.
-- `tessera doctor` → `retrieval_rerank_degraded` audit events? The sentence-transformers reranker is failing; the pipeline falls back to RRF-only ordering, which doesn't match the benchmarked latency tier.
+- `tessera doctor` → `retrieval_rerank_degraded` audit events? The fastembed cross-encoder is failing or still warming; the pipeline falls back to RRF-only ordering, which doesn't match the benchmarked latency tier.
 - Vault size vastly larger than the tier's cohort? 10K facets is the "steady-state" tier; 100K+ would be outside v0.1's measured range.
 
 Cite the vault size + `tessera doctor` output when opening an issue.
@@ -340,7 +337,7 @@ If this recurs, collect a diagnostic bundle and open an issue.
 
 Check `~/.tessera/log/tesserad.log` — the last 100 lines usually have the cause. Common culprits:
 
-- Ollama went away mid-embed-pass.
+- fastembed weights download interrupted mid-load (transient network issue). Retry; the resumable download in `~/.cache/fastembed` picks up where it left off.
 - Vault schema mismatch after a Tessera upgrade. `tessera vault migrate <vault.db>` applies pending migrations.
 - Disk full. Vault is a single file; sqlite refuses writes when the filesystem is full.
 
