@@ -16,18 +16,18 @@
 #
 #     brew install --build-from-source packaging/homebrew/Formula/tessera.rb
 #
-# The formula ships a pre-release (0.1.0rc1). The explicit
+# The formula ships a pre-release (0.3.0rc1). The explicit
 # `==#{version}` pin in `pip_install` tells pip's resolver to accept
-# the rc1 without requiring callers to pass `--pre`.
+# the rc without requiring callers to pass `--pre`.
 
 class Tessera < Formula
   include Language::Python::Virtualenv
 
   desc "Portable context layer for T-shaped AI-native users (encrypted SQLite, served over MCP)"
   homepage "https://github.com/Mathews-Tom/Tessera"
-  url "https://files.pythonhosted.org/packages/source/t/tessera-context/tessera_context-0.1.0rc2.tar.gz"
-  version "0.1.0rc2"
-  sha256 "f65bc5c2dd9b172dbe0ae4f9b46622521c68e0113ecaee85d933987c21a035e9"
+  url "https://files.pythonhosted.org/packages/source/t/tessera-context/tessera_context-0.3.0rc1.tar.gz"
+  version "0.3.0rc1"
+  sha256 "f8699b6d1e5dee4b1a506303cbecaaa33959e7591db2c8238b26d1e4ba8bfb79"
   license "Apache-2.0"
   head "https://github.com/Mathews-Tom/Tessera.git", branch: "main"
 
