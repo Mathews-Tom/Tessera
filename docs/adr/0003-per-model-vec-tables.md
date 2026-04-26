@@ -42,7 +42,7 @@ Two storage strategies:
 ```sql
 CREATE TABLE embedding_models (
   id          INTEGER PRIMARY KEY,
-  name        TEXT NOT NULL UNIQUE,       -- 'ollama/nomic-embed-text'
+  name        TEXT NOT NULL UNIQUE,       -- 'nomic-ai/nomic-embed-text-v1.5'
   dim         INTEGER NOT NULL,
   added_at    INTEGER NOT NULL,
   is_active   INTEGER NOT NULL DEFAULT 0  -- exactly one row sets this

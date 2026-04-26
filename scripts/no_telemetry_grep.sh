@@ -10,11 +10,7 @@ set -euo pipefail
 FORBIDDEN='^\s*(import|from)\s+(requests|httpx|aiohttp|urllib\.request)\b'
 
 # Paths to scan: src/tessera minus the adapters subtree and the
-# three daemon/CLI call sites that legitimately need an HTTP client:
-#   - src/tessera/daemon/doctor.py probes Ollama's /api/tags for
-#     reachability as part of the `tessera doctor` health matrix.
-#     It is a bounded, user-initiated, localhost-by-default call with
-#     a 1-second timeout — not telemetry.
+# three CLI/daemon call sites that legitimately need an HTTP client:
 #   - src/tessera/cli/_http.py is the shared CLI loopback client to
 #     tesserad's HTTP MCP endpoint at 127.0.0.1, used by every
 #     subcommand that calls a tool by name (`tessera capture`,
@@ -39,7 +35,6 @@ FORBIDDEN='^\s*(import|from)\s+(requests|httpx|aiohttp|urllib\.request)\b'
 SCAN_ROOT="src/tessera"
 ALLOWLIST="src/tessera/adapters"
 ALLOWLISTED_FILES=(
-  "src/tessera/daemon/doctor.py"
   "src/tessera/cli/_http.py"
   "src/tessera/cli/curl_cmd.py"
   "src/tessera/daemon/stdio_bridge.py"

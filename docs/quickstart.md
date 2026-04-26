@@ -28,9 +28,9 @@ The T-shaped AI-native operator. Deep in one or two domains; horizontal across m
 
 ## What's real today
 
-`v0.3.0rc1` lives on PyPI as `tessera-context`. Five facets plus the v0.3 skill surface, eleven MCP tools (`capture`, `recall`, `show`, `list_facets`, `stats`, `forget`, `learn_skill`, `get_skill`, `list_skills`, `resolve_person`, `list_people`), all-local by default (fastembed for embedding and reranking via ONNX Runtime, fully in-process), encrypted vault (sqlcipher + argon2id), ChatGPT + Claude conversation-history importers, named skills synced to disk, people resolution, zero outbound network unless you explicitly opt in.
+`v0.4.0rc1` lives on PyPI as `tessera-context`. Five facets plus the skill surface, eleven MCP tools (`capture`, `recall`, `show`, `list_facets`, `stats`, `forget`, `learn_skill`, `get_skill`, `list_skills`, `resolve_person`, `list_people`), a parallel REST surface at `/api/v1/*` for hooks and shell scripts, all-local by absence (fastembed via ONNX Runtime in-process for both embedding and reranking — no Ollama, no torch, no cloud adapters), encrypted vault (sqlcipher + argon2id), ChatGPT + Claude conversation-history importers, named skills synced to disk, people resolution, zero outbound network unless you explicitly opt in.
 
-The remaining gates before v0.3.0 GA are a recorded clean-VM walkthrough on macOS / Ubuntu / Windows and verification that the v2 → v3 migration runs cleanly on an existing rc2 vault. Runbook: [`docs/smoke-test-v0.3rc1.md`](smoke-test-v0.3rc1.md). DoD: [`docs/release-spec.md §Definition of Done for v0.3`](release-spec.md).
+The remaining gates before v0.4.0 GA are a recorded clean-VM walkthrough on macOS / Ubuntu / Windows. Runbook: [`docs/smoke-test-v0.4rc1.md`](smoke-test-v0.4rc1.md). DoD: [`docs/release-spec.md`](release-spec.md).
 
 ---
 
@@ -58,12 +58,12 @@ Embedding and reranking run in-process via fastembed (ONNX Runtime). The first d
 
 ```bash
 # pipx is the friendliest path — isolated venv, console script on PATH
-pipx install --pip-args="--pre" tessera-context==0.3.0rc1
+pipx install --pip-args="--pre" tessera-context==0.4.0rc1
 
 # or plain pip (note: --pre is required while we're on rc)
-pip install --pre tessera-context==0.3.0rc1
+pip install --pre tessera-context==0.4.0rc1
 
-tessera --version          # expect 0.3.0rc1
+tessera --version          # expect 0.4.0rc1
 ```
 
 For development against the latest branch (in case you want unreleased fixes between rcs), source-install instead:

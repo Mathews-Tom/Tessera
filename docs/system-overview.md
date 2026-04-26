@@ -123,11 +123,11 @@ Ranked by defensibility. What's genuinely Tessera's, not marketing copy on top o
 
 **4. Single-binary install.** Every direct competitor ships Docker (OpenMemory, doobidoo), npm (CaviraOSS), cloud accounts (SaaS memory products), or a runtime (Letta Code). A real single-binary install — `brew install tessera`, no Docker, no Postgres, no Qdrant, no account — is a friction asymmetry. Mainstream non-technical users are gated by setup friction; first-mover on zero-friction install matters.
 
-**5. All-local default.** Default to Ollama for embedding and extraction, sentence-transformers for rerank. Cloud is opt-in. Most competitors default to OpenAI keys. Aligns structurally with the open-source-LLM movement accelerating in 2026.
+**5. All-local, by absence not by toggle.** fastembed (ONNX Runtime) for both embedding and reranking, fully in-process. No cloud adapters ship; the codebase has no API-key surface to defeat. Most competitors default to OpenAI keys. Aligns structurally with the open-source-LLM movement accelerating in 2026 and removes "cloud is opt-in" from the trust posture in favour of "cloud is absent."
 
 **6. Aesthetic and UX discipline.** Linear vs. Jira. Bear vs. Evernote. Most memory products are dev-tools-ugly. An opinionated, prosumer-quality interface (CLI first, no GUI in v0.1) that competes on shape rather than feature-count is a moat that compounds with brand.
 
-What is *not* a moat: Apache 2.0 license (table stakes), MCP support (everyone has it), local storage (several have it), Ollama support (several have it). Stating these as differentiators would be self-deception.
+What is *not* a moat: Apache 2.0 license (table stakes), MCP support (everyone has it), local storage (several have it), in-process ONNX inference (commodified by fastembed and similar). Stating these as differentiators would be self-deception.
 
 ## Risks — stress-tested
 

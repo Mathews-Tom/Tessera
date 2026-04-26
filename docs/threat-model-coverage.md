@@ -46,9 +46,9 @@
 | Threat | Mitigation | Evidence | Status |
 |--------|------------|----------|--------|
 | API key in config file readable by co-located process | OS keyring (Keychain / secret-service / Credential Manager) stores keys; config stores a reference | `src/tessera/vault/keyring_cache.py` + `tests/unit/test_keyring_cache.py` | Covered |
-| API key in process env readable by co-located process | Adapters refuse env API keys | `tests/unit/test_openai_embedder.py` and `tests/unit/test_cohere_reranker.py` include `mock.patch` on `os.environ.get` returning `None` and assert the adapter fails loud rather than falling back; `tests/conftest.py` clears provider API env vars before every test | Covered |
-| Query and embedding content sent to cloud provider | All-local default; cloud adapters require explicit import | `src/tessera/adapters/__init__.py` does not auto-import `cohere_reranker` or `openai_embedder`; `.github/workflows/ci.yml::no-outbound` job blocks non-loopback traffic and runs the full suite to prove transitive deps stay local | Covered |
-| Adapter silently returns mismatched embedding dim | Adapters verify observed dim against registered value | `src/tessera/adapters/ollama_embedder.py::_embed_one` + `src/tessera/adapters/openai_embedder.py` raise `AdapterResponseError` on dim mismatch; `tests/unit/test_ollama_embedder.py::test_embed_dim_mismatch_is_response_error` | Covered |
+| API key in process env readable by co-located process | No cloud adapter ships in v0.4 onward — there is no API-key surface to expose. fastembed runs in-process. | ADR-0014 records the cloud-adapter removal; no test artefact is needed because the threat surface is gone. | Covered (by removal) |
+| Query and embedding content sent to cloud provider | No cloud adapter ships in v0.4 onward; fastembed embeds and reranks in-process | `src/tessera/adapters/__init__.py` does not import any cloud adapter (none exist after ADR-0014); `.github/workflows/ci.yml::no-outbound` job blocks non-loopback traffic and runs the full suite to prove transitive deps stay local | Covered (by removal) |
+| Adapter silently returns mismatched embedding dim | Adapter verifies observed dim against registered value | `src/tessera/adapters/fastembed_embedder.py::FastEmbedEmbedder.embed` raises `AdapterResponseError` on dim mismatch; `tests/unit/test_fastembed_embedder.py::test_embed_dim_mismatch_raises_response_error` | Covered |
 | Unclassified adapter failure masks retry decision | Narrow error taxonomy | `src/tessera/adapters/errors.py` + `tests/unit/test_retry_policy.py` covers dispatch-by-class for every error | Covered |
 | Outbound traffic beyond configured adapters | CI network-policy test | `.github/workflows/ci.yml::no-outbound` job (visible in the CI check list on PR #17 as "No-outbound network test") runs the full suite with a socket-layer guard blocking every destination except loopback | Covered |
 
@@ -76,7 +76,7 @@ Cross-check of the v0.1 HTTP MCP surface against the OWASP Top 10 attack classes
 | A07 Identification & authentication failures | Token replay / session fixation | Per-token salt + re-validation on every call; URL exchange endpoint with 30-second nonce TTL | `src/tessera/auth/tokens.py`, `tests/security/test_exchange_endpoint.py` |
 | A08 Software & data integrity | Tampered vault | Encryption at rest (HMAC chain is v0.3) | Same as S1 |
 | A09 Logging failures | Content leak via logs | Audit allowlist; bundle scrubber | `src/tessera/vault/audit.py`, `tests/security/test_bundle_scrubber.py` |
-| A10 SSRF | Daemon makes server-side requests on behalf of a caller | No SSRF surface: the daemon's only outbound calls are to Ollama (configured) and optional cloud adapters (explicit user consent) | Code review; `no-outbound` CI job proves no other outbound paths |
+| A10 SSRF | Daemon makes server-side requests on behalf of a caller | No SSRF surface: after ADR-0014 the daemon makes no outbound calls. fastembed runs in-process; weight downloads are user-initiated via `tessera models set --activate` and reach only the model registry (HuggingFace) at the user's request, not on caller's behalf. | Code review; `no-outbound` CI job proves no caller-driven outbound paths |
 
 ---
 

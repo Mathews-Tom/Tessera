@@ -4,37 +4,49 @@ All notable changes to Tessera are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0rc1] — 2026-04-27 (pre-release)
+
+Tessera v0.4 swaps the entire model stack to **fastembed (ONNX Runtime) running fully in-process** and removes Ollama, sentence-transformers, OpenAI, and Cohere adapters from the codebase. The torch dependency closure goes with them. Install footprint drops from ~600 MB to ~30 MB of Python packages. The change is breaking: any vault embedded by v0.1–v0.3 needs a re-embed against fastembed weights (run `tessera models set --name <fastembed-id> --activate` then `tessera vault repair-embeds`, or wipe and re-init for a clean start).
+
+The same release introduces a **REST surface at `/api/v1/*`** alongside the existing `/mcp` endpoint and a `tessera curl` recipe builder for hooks, skills, and shell scripts. Both transports share one daemon dispatcher; the REST envelope is leaner (raw result dict, no JSON-RPC wrapper) so hook authors save 50–150 tokens per call.
+
+CLI ergonomics also tightened: `--vault` and `--passphrase` are optional on every subcommand with `flag → $TESSERA_VAULT/$TESSERA_PASSPHRASE → default` resolution; `tessera init` creates `~/.tessera/vault.db` by default. ADR-0014 records the embedder swap; ADR-0013 records the REST surface decision.
 
 ### Removed
 
 - **Ollama embedder, sentence-transformers reranker, Cohere reranker, OpenAI embedder, and the torch-based device-detection helper** — `src/tessera/adapters/{ollama_embedder,st_reranker,cohere_reranker,openai_embedder,devices}.py` deleted. The `ollama_host` field on `DaemonConfig` and the `OLLAMA_HOST` / `TESSERA_OLLAMA_MODEL` environment variables are gone. The doctor's `_check_ollama` is replaced with a fastembed cache check.
-- `ollama` and `sentence-transformers` dropped from `dependencies`. `torch`, `transformers`, `tokenizers`, `safetensors`, `scipy`, `sympy`, `scikit-learn`, and the rest of the torch closure are gone transitively. Install footprint drops from ~600 MB to ~30 MB of Python packages.
+- `ollama` and `sentence-transformers` dropped from `dependencies`. `torch`, `transformers`, `tokenizers`, `safetensors`, `scipy`, `sympy`, `scikit-learn`, and the rest of the torch closure are gone transitively.
 
 ### Added
 
-- **fastembed embedder + reranker** as the sole adapter for both roles. `src/tessera/adapters/fastembed_embedder.py` defaults to `nomic-ai/nomic-embed-text-v1.5` (768 dim); `src/tessera/adapters/fastembed_reranker.py` defaults to `Xenova/ms-marco-MiniLM-L-12-v2` (cross-encoder ONNX export, one layer-count tier above the v0.3 sentence-transformers default). Both run in-process via ONNX Runtime; no separate model server, no torch.
-- ADR-0014 (ONNX-only model stack via fastembed) records the switch and supersedes ADR-0006.
-- REST surface at `/api/v1/*` alongside the existing `/mcp` endpoint, sharing the daemon dispatcher, capability-token auth, and scope checks. Endpoints: `POST /api/v1/capture`, `GET /api/v1/recall`, `GET /api/v1/stats`, `GET /api/v1/facets[/<external_id>]`, `DELETE /api/v1/facets/<external_id>`, `POST /api/v1/skills`, `GET /api/v1/skills[/<name>]`, `GET /api/v1/people`, `GET /api/v1/people/resolve`. Response shape on success: dispatcher result dict directly with HTTP 200 (no JSON-RPC `{"ok": true, "result": ...}` envelope). On failure: `{"error": {"code", "message"}}` with the appropriate 4xx/5xx status. Designed for hooks, skills, and shell scripts where the per-call MCP envelope cost (~50–150 tokens) compounds across high-frequency calls.
-- `tessera curl <verb>` subcommand that prints copy-pasteable curl recipes for each REST endpoint, or executes them and pipes the JSON response. `--print` mode emits the literal curl invocation with `${TESSERA_TOKEN}` left unexpanded so recipes are safe to commit to hook scripts.
+- **fastembed embedder + reranker** as the sole adapter for both roles. `src/tessera/adapters/fastembed_embedder.py` defaults to `nomic-ai/nomic-embed-text-v1.5` (768 dim); `src/tessera/adapters/fastembed_reranker.py` defaults to `Xenova/ms-marco-MiniLM-L-12-v2` (cross-encoder ONNX export). Both run in-process via ONNX Runtime; no separate model server, no torch.
+- ADR-0014 (ONNX-only model stack via fastembed) records the switch and supersedes ADR-0006. ADR-0008 partially superseded.
+- REST surface at `/api/v1/*` alongside `/mcp`, sharing the daemon dispatcher, capability-token auth, and scope checks. Endpoints: `POST /api/v1/capture`, `GET /api/v1/recall`, `GET /api/v1/stats`, `GET /api/v1/facets[/<external_id>]`, `DELETE /api/v1/facets/<external_id>`, `POST /api/v1/skills`, `GET /api/v1/skills[/<name>]`, `GET /api/v1/people`, `GET /api/v1/people/resolve`. Lean error envelope: `{"error": {"code", "message"}}` with HTTP 4xx/5xx, no top-level `ok` flag.
+- `tessera curl <verb>` subcommand that prints copy-pasteable curl recipes for each REST endpoint, or executes them and pipes the JSON response. `--print` mode keeps `${TESSERA_TOKEN}` unexpanded so recipes are safe to commit to hook scripts.
 - `docs/api.md` — canonical REST reference with per-endpoint URL/verb/params/response and worked recipes for pre-prompt hooks, post-tool capture hooks, and daily backup scripts.
 - ADR-0013 — REST surface alongside MCP. Records the dual-transport decision and scopes its boundary with ADR-0005.
-
-### Changed
-
-- `embedding_models.name` column now stores the fastembed model identifier directly (e.g. `"nomic-ai/nomic-embed-text-v1.5"`) instead of an adapter slot label. The previous indirection — adapter slot in `name`, provider model behind `TESSERA_OLLAMA_MODEL` — collapsed to a single column once fastembed became the sole adapter. `tessera models set --name <fastembed-id>` now records the identifier verbatim; the registry's "must be a known adapter" pre-check is removed (fastembed validates at first embed call).
-
-### Changed
-
-- `--vault` and `--passphrase` are now optional on every CLI subcommand. Resolution order: explicit flag → env var (`TESSERA_VAULT` / `TESSERA_PASSPHRASE`) → default. The default vault path is `~/.tessera/vault.db`. Single-vault solo-developer setups can export `TESSERA_PASSPHRASE` once in the shell and run every subsequent command flag-free. Existing scripted invocations that pass `--vault` / `--passphrase` continue to work unchanged.
-- `tessera init` no longer requires `--vault`; it now creates `~/.tessera/vault.db` (or `$TESSERA_VAULT`) by default and creates the parent directory if missing.
-- The "passphrase required" error now points users at the persistent `export TESSERA_PASSPHRASE` path instead of the per-call `--passphrase` flag.
-
-### Added
-
-- Multi-vault disambiguation: when `~/.tessera/` contains more than one `*.db` file and neither `--vault` nor `$TESSERA_VAULT` is set, the CLI fails loud with the candidate list rather than guessing.
+- `--vault` and `--passphrase` are now optional on every CLI subcommand. Resolution order: explicit flag → env var (`TESSERA_VAULT` / `TESSERA_PASSPHRASE`) → default (`~/.tessera/vault.db`). Multi-vault disambiguation when `~/.tessera/` contains multiple `*.db` files and no choice was made.
 - `docs/quickstart.md §Setup once` — env-var setup for flag-free daily use.
-- `docs/troubleshooting.md` — sections on persistent passphrase setup and multi-vault disambiguation.
+- `docs/troubleshooting.md` sections on persistent passphrase setup, multi-vault disambiguation, and the `NoActiveModelError` symptom.
+- `docs/smoke-test-v0.4rc1.md` — clean-install runbook for v0.4 (replaces the v0.3 runbook).
+
+### Changed
+
+- `embedding_models.name` column now stores the fastembed model identifier directly (e.g. `"nomic-ai/nomic-embed-text-v1.5"`) instead of an adapter slot label. The previous indirection — adapter slot in `name`, provider model behind `TESSERA_OLLAMA_MODEL` — collapsed to a single column once fastembed became the sole adapter. The registry's "must be a known adapter" pre-check is removed (fastembed validates at first embed call).
+- `tessera init` no longer requires `--vault`; it creates `~/.tessera/vault.db` (or `$TESSERA_VAULT`) by default and creates the parent directory if missing.
+- The "passphrase required" error points users at the persistent `export TESSERA_PASSPHRASE` path instead of the per-call `--passphrase` flag.
+- `tessera doctor` replaces the Ollama HTTP probe with a fastembed import + cache-directory check.
+- `tessera models set` defaults updated; `tessera models test` now instantiates a `FastEmbedEmbedder` and calls `health_check`.
+
+### Install
+
+```bash
+pip install --pre tessera-context
+# or pin explicitly:
+pip install tessera-context==0.4.0rc1
+```
+
+The first daemon start after `tessera models set --activate` downloads the embedder weights (~520 MB for `nomic-ai/nomic-embed-text-v1.5`, ~130 MB for the `-Q` quantised variant) plus the reranker weights (~130 MB) to `~/.cache/fastembed`. One-time cost; offline thereafter.
 
 ## [0.3.0rc1] — 2026-04-26 (pre-release)
 

@@ -2,10 +2,11 @@
 
 The retry policy and user-visible surfaces documented in ``system-design.md``
 branch on which class of error a model adapter reports. Surfacing a raw
-``httpx.HTTPError`` at the retrieval boundary would collapse network flakes,
-model-not-loaded states, and authentication failures into one opaque signal;
-the retrieval pipeline needs to distinguish them to pick the right recovery
-path (exponential backoff, ``ollama pull``, surface to the user, etc).
+ONNX-runtime or filesystem exception at the retrieval boundary would collapse
+weight-download failures, model-not-found cases, and OOM into one opaque
+signal; the retrieval pipeline needs to distinguish them to pick the right
+recovery path (exponential backoff for transient I/O, surface to the user
+for unsupported model identifiers, etc).
 """
 
 from __future__ import annotations

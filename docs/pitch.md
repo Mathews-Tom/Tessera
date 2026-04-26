@@ -51,7 +51,7 @@ Three architectural commitments that aren't marketing copy:
 
 2. **SWCR-based cross-facet retrieval.** When you ask ChatGPT to "draft a LinkedIn post about my anneal project," you don't want nearest-neighbor facts — you want your LinkedIn writing voice, your project context, your 5-act workflow, your preferences, *together*, coherent. That's what SWCR (Sequential Weighted Context Recall) delivers. It's topology-aware cross-facet coherence weighting done at query time, not a cosine search dressed up as retrieval.
 
-3. **All-local by default.** Ollama for embedding. sentence-transformers for reranking. Cloud is opt-in, never required. The stack runs on a plane. The DX-pain movement away from hosted model providers is accelerating; Tessera aligns with it structurally, not as a toggle.
+3. **All-local by default.** fastembed (ONNX Runtime) for both embedding and reranking, fully in-process inside the daemon. No model server, no cloud, no torch. The stack runs on a plane. The DX-pain movement away from hosted model providers is accelerating; Tessera aligns with it structurally, not as a toggle.
 
 ## Posture
 

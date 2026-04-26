@@ -10,8 +10,9 @@ Retryable: network errors and OOM — both are transient provider states
 (service bounce, GPU contention) that commonly clear inside the backoff
 window. Terminal: response-schema errors (stable, won't clear on retry),
 auth errors (rotation problem, human must intervene), and model-not-found
-(the configured model is absent from the adapter; retrying is wasted work
-until the user or a higher-level recovery does ``ollama pull``).
+(the configured model is absent from the adapter's catalog; retrying is
+wasted work until the user picks a different identifier with
+``tessera models set``).
 """
 
 from __future__ import annotations

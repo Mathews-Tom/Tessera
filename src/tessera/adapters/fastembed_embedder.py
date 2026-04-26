@@ -6,10 +6,9 @@ server, no HTTP boundary — embeds happen inside ``tesserad`` on
 whichever ONNX provider fastembed picks (CPU by default; CoreML on
 Apple Silicon when present; CUDA when wired).
 
-The default model is ``nomic-ai/nomic-embed-text-v1.5`` (768 dim) —
-the same embedding family Tessera previously served through Ollama,
-just delivered in-process instead of over HTTP. Re-registering with a
-different model name is supported (any entry returned by
+The default model is ``nomic-ai/nomic-embed-text-v1.5`` (768 dim).
+Re-registering with a different model name is supported (any entry
+returned by
 ``TextEmbedding.list_supported_models()``); the registered ``dim``
 must match the model's declared dimensionality or the integration
 tests catch the drift at first embed.

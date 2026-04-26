@@ -2,10 +2,10 @@
 
 fastembed wraps cross-encoder ONNX exports with the same load + ONNX
 Runtime path the embedder uses. Default model is
-``Xenova/ms-marco-MiniLM-L-12-v2`` — the L-12 export of the same MS
-MARCO MiniLM family the project previously served via PyTorch
-sentence-transformers, plus four extra layers for stronger relevance
-calibration on the same input shape.
+``Xenova/ms-marco-MiniLM-L-12-v2`` — an L-12 cross-encoder from the
+MS MARCO MiniLM family. Twelve layers vs. the older L-6 default give
+a measurable relevance lift on MS-MARCO benchmarks at a small size
+delta (~130 MB vs. ~80 MB on disk).
 
 Loading is lazy: a fresh adapter is cheap, the ONNX session loads on
 first ``score`` call. The daemon supervisor warms the embedder
