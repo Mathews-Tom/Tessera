@@ -22,6 +22,7 @@ from tessera import __version__ as TESSERA_VERSION
 from tessera.cli import (
     agents_cmd,
     connect_cmd,
+    curl_cmd,
     daemon_cmd,
     doctor_cmd,
     export_cmd,
@@ -74,6 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
     skills_cmd.register(subparsers)
     people_cmd.register(subparsers)
     import_cmd.register(subparsers)
+    curl_cmd.register(subparsers)
 
     # Existing stubs from earlier phases. Each of these delegates its
     # argv slice to a submodule's own argparse parser; argparse.REMAINDER
