@@ -20,8 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tessera.adapters.fastembed_reranker import FastEmbedReranker
 from tessera.adapters.protocol import Embedder, Reranker
-from tessera.adapters.st_reranker import SentenceTransformersReranker
 from tessera.auth.tokens import VerifiedCapability
 from tessera.daemon.config import DaemonConfig
 from tessera.daemon.control import ControlError, ControlRequest, serve_control_socket
@@ -73,10 +73,8 @@ async def run_daemon(
     with key:
         vault = open_vault_for_daemon(config.vault_path, key)
         try:
-            embedder, active_model_id, vec_table = resolve_embedder(
-                vault.connection, ollama_host=config.ollama_host
-            )
-            reranker = SentenceTransformersReranker(model_name=config.reranker_model)
+            embedder, active_model_id, vec_table = resolve_embedder(vault.connection)
+            reranker = FastEmbedReranker(model_name=config.reranker_model)
             event_log = EventLog.open(config.events_db_path)
             await _warm_adapters(vault, embedder, reranker)
             state = DaemonState(

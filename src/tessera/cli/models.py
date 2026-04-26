@@ -1,11 +1,18 @@
-"""Stub CLI surface for ``tessera models [list|set|test]``.
+"""``tessera models [list|set|test]`` — fastembed model registry CLI.
 
-The full CLI is P9; this module is the narrow slice needed to satisfy the P2
-exit gate ("``tessera models list/set/test`` stub works against Ollama
-adapter"). It is deliberately small — argparse rather than Typer, no daemon
-control — so the P9 rewrite does not have to preserve any contract from here.
+Three subcommands:
 
-Invocation: ``python -m tessera.cli.models <subcommand> [args]``.
+- ``list``   — print the registered adapter slots (one entry, ``fastembed``).
+- ``set``    — record a model identifier in the vault's ``embedding_models``
+  table and optionally flag it active. ``--name`` is the fastembed model
+  identifier (e.g. ``"nomic-ai/nomic-embed-text-v1.5"``); ``--dim`` must
+  match the model's declared embedding dimensionality. The retrieval
+  pipeline reads ``embedding_models.name`` directly to construct a
+  :class:`FastEmbedEmbedder` per request.
+- ``test``   — instantiate a :class:`FastEmbedEmbedder` for the given model
+  identifier and run its ``health_check`` to confirm the weights load and
+  the ONNX session embeds cleanly. Useful before the first daemon start
+  to surface download / model-name failures interactively.
 """
 
 from __future__ import annotations
@@ -17,7 +24,7 @@ from pathlib import Path
 import sqlcipher3
 
 from tessera.adapters import models_registry
-from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.fastembed_embedder import DEFAULT_DIM, DEFAULT_MODEL, FastEmbedEmbedder
 from tessera.adapters.registry import list_embedders, list_rerankers
 from tessera.cli._common import CliError, resolve_passphrase, resolve_vault_path
 from tessera.cli._ui import EMOJI, console, error, report_table, status, success
@@ -56,15 +63,24 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         help="vault passphrase; default is $TESSERA_PASSPHRASE",
     )
-    set_parser.add_argument("--name", required=True, help="Adapter name, e.g. 'ollama'")
-    set_parser.add_argument("--model", required=True, help="Provider model name")
-    set_parser.add_argument("--dim", type=int, required=True)
+    set_parser.add_argument(
+        "--name",
+        required=True,
+        help="fastembed model identifier, e.g. 'nomic-ai/nomic-embed-text-v1.5'",
+    )
+    set_parser.add_argument(
+        "--dim",
+        type=int,
+        required=True,
+        help="embedding dimensionality declared by the model (e.g. 768)",
+    )
     set_parser.add_argument("--activate", action="store_true")
 
-    test_parser = sub.add_parser("test", help="Health-check the ollama embedder.")
-    test_parser.add_argument("--model", default="nomic-embed-text")
-    test_parser.add_argument("--dim", type=int, default=768)
-    test_parser.add_argument("--host", default="http://localhost:11434")
+    test_parser = sub.add_parser(
+        "test", help="Load the fastembed model and run a health check."
+    )
+    test_parser.add_argument("--name", default=DEFAULT_MODEL)
+    test_parser.add_argument("--dim", type=int, default=DEFAULT_DIM)
 
     return parser
 
@@ -110,14 +126,17 @@ def _cmd_set(args: argparse.Namespace) -> int:
 
 
 def _cmd_test(args: argparse.Namespace) -> int:
-    embedder = OllamaEmbedder(model_name=args.model, dim=args.dim, host=args.host)
-    with status(f"probing ollama for {args.model!r}", emoji=EMOJI["models"]):
+    embedder = FastEmbedEmbedder(model_name=args.name, dim=args.dim)
+    with status(f"loading {args.name!r} via fastembed", emoji=EMOJI["models"]):
         try:
             asyncio.run(embedder.health_check())
         except Exception as exc:  # CLI top-level boundary: classify and exit non-zero
-            error(f"health_check failed: {exc}")
+            error(f"health_check failed: {type(exc).__name__}: {exc}")
             return 1
-    success(f"ollama reachable; model {args.model!r} is present", emoji=EMOJI["models"])
+    success(
+        f"fastembed loaded {args.name!r} (dim={args.dim})",
+        emoji=EMOJI["models"],
+    )
     return 0
 
 

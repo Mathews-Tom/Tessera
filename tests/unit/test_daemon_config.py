@@ -17,7 +17,6 @@ def test_resolve_config_uses_defaults_when_env_empty(
         "TESSERA_VAULT",
         "TESSERA_HTTP_HOST",
         "TESSERA_HTTP_PORT",
-        "OLLAMA_HOST",
         "TESSERA_RERANKER",
         "XDG_RUNTIME_DIR",
     ):
@@ -26,7 +25,7 @@ def test_resolve_config_uses_defaults_when_env_empty(
     config = resolve_config()
     assert config.http_host == DEFAULT_HTTP_HOST
     assert config.http_port == DEFAULT_HTTP_PORT
-    assert config.ollama_host == "http://127.0.0.1:11434"
+    assert config.reranker_model == "Xenova/ms-marco-MiniLM-L-12-v2"
     assert config.socket_path.name == "tessera.sock"
     assert config.allowed_origins == frozenset({"http://localhost", "http://127.0.0.1", "null"})
 
@@ -35,11 +34,11 @@ def test_resolve_config_uses_defaults_when_env_empty(
 def test_resolve_config_env_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TESSERA_HTTP_HOST", "127.0.0.2")
     monkeypatch.setenv("TESSERA_HTTP_PORT", "6000")
-    monkeypatch.setenv("OLLAMA_HOST", "http://ollama:11500")
+    monkeypatch.setenv("TESSERA_RERANKER", "Xenova/ms-marco-MiniLM-L-6-v2")
     config = resolve_config()
     assert config.http_host == "127.0.0.2"
     assert config.http_port == 6000
-    assert config.ollama_host == "http://ollama:11500"
+    assert config.reranker_model == "Xenova/ms-marco-MiniLM-L-6-v2"
 
 
 @pytest.mark.unit

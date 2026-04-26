@@ -102,11 +102,13 @@ def register_embedding_model(
     _check_name(name)
     if dim <= 0:
         raise ModelRegistryError(f"dim must be positive; got {dim}")
-    if name not in _python_registry_embedders():
-        raise ModelRegistryError(
-            f"no python adapter registered for embedder {name!r}; "
-            "import the adapter module before register_embedding_model"
-        )
+    # The ``name`` column stores the fastembed model identifier directly
+    # (e.g. ``"nomic-ai/nomic-embed-text-v1.5"``) after the ONNX-only
+    # switch — it is no longer an adapter-slot lookup. fastembed itself
+    # validates the identifier on first ``embed`` call by raising
+    # ``ValueError`` for unsupported models, which the adapter wraps as
+    # ``AdapterModelNotFoundError``; pre-validating here would duplicate
+    # fastembed's catalog and drift on every release.
     ensure_vec_loaded(conn)
     # Duplicate detection runs before BEGIN so raising does not require a
     # rollback that would itself fail on an unopened transaction.

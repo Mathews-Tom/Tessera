@@ -61,7 +61,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         emoji=EMOJI["vault"],
     )
     info(
-        "next: tessera models set --name ollama --model nomic-embed-text --dim 768",
+        "next: tessera models set --name nomic-ai/nomic-embed-text-v1.5 --dim 768 --activate",
         emoji=EMOJI["models"],
     )
     return 0

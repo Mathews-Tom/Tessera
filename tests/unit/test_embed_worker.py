@@ -11,7 +11,7 @@ import pytest
 
 # Registering the Ollama embedder satisfies models_registry's adapter check
 # even though the tests use a fake embedder directly against the worker.
-import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
+import tessera.adapters.fastembed_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
 from tessera.adapters.errors import (
     AdapterError,

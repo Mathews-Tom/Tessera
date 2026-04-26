@@ -17,7 +17,7 @@ from typing import ClassVar
 
 import pytest
 
-import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
+import tessera.adapters.fastembed_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope

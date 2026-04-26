@@ -1,11 +1,12 @@
 """Model adapters: embedder and reranker protocols and reference implementations.
 
 The package exposes the protocol shapes, registry decorators, and error types.
-Concrete adapter modules (``ollama_embedder``, ``openai_embedder``,
-``st_reranker``, ``cohere_reranker``) must be imported explicitly by the code
-that needs them — importing ``tessera.adapters`` does not import any
-individual adapter so that an all-local deployment does not drag cloud
-adapter code (and their keyring surface) into the process.
+The concrete adapter modules (``fastembed_embedder``, ``fastembed_reranker``)
+register themselves on import via ``@register_embedder`` / ``@register_reranker``;
+importing ``tessera.adapters`` itself does not pull them in, so a stripped
+deployment that only consumes the protocols stays small. The daemon supervisor
+imports the concrete modules at startup so the registry is populated by the
+time the dispatcher needs them.
 """
 
 from tessera.adapters.errors import (

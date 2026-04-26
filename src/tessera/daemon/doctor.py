@@ -19,7 +19,6 @@ import socket
 from dataclasses import dataclass
 from enum import StrEnum
 
-import httpx
 import sqlcipher3
 
 from tessera.adapters import models_registry
@@ -58,20 +57,18 @@ async def run_all(
     config: DaemonConfig,
     *,
     conn: sqlcipher3.Connection | None = None,
-    httpx_client: httpx.AsyncClient | None = None,
 ) -> DoctorReport:
     """Run every diagnostic; return a full report.
 
     ``conn`` is optional so the CLI can run doctor against a vault it
     has already unlocked; when omitted, vault-dependent checks
-    downgrade to a "not-unlocked" WARN. ``httpx_client`` can be
-    injected for tests to control Ollama reachability.
+    downgrade to a "not-unlocked" WARN.
     """
 
     results: list[DoctorResult] = []
     results.append(_check_bind_address(config))
     results.append(_check_passphrase_env())
-    results.append(await _check_ollama(config.ollama_host, client=httpx_client))
+    results.append(_check_fastembed_cache())
     if conn is None:
         results.append(
             DoctorResult(
@@ -130,34 +127,38 @@ def _check_passphrase_env() -> DoctorResult:
     )
 
 
-async def _check_ollama(host: str, *, client: httpx.AsyncClient | None = None) -> DoctorResult:
-    own_client = client is None
-    if own_client:
-        client = httpx.AsyncClient(base_url=host, timeout=1.0)
+def _check_fastembed_cache() -> DoctorResult:
+    """OK when fastembed is importable. WARN if its on-disk cache is missing.
+
+    fastembed downloads model weights to its cache on first use; the
+    cache lives at ``~/.cache/fastembed`` by default. A missing cache
+    means the next embed call pays a one-time download cost (a few
+    seconds for a quantised model, ~30 s for an unquantised one) but
+    is otherwise harmless. ERROR is reserved for the import failing,
+    which means the install is broken — the gate is install-time, not
+    runtime.
+    """
+
     try:
-        assert client is not None
-        try:
-            resp = await client.get("/api/tags")
-        except (httpx.HTTPError, OSError) as exc:
-            return DoctorResult(
-                name="ollama",
-                status=DoctorStatus.WARN,
-                detail=f"ollama unreachable at {host}: {type(exc).__name__}",
-            )
-        if resp.status_code != 200:
-            return DoctorResult(
-                name="ollama",
-                status=DoctorStatus.WARN,
-                detail=f"ollama {host} returned HTTP {resp.status_code}",
-            )
+        import fastembed  # noqa: F401 — import-only check
+    except Exception as exc:
         return DoctorResult(
-            name="ollama",
-            status=DoctorStatus.OK,
-            detail=f"ollama reachable at {host}",
+            name="fastembed",
+            status=DoctorStatus.ERROR,
+            detail=f"fastembed import failed: {type(exc).__name__}: {exc}",
         )
-    finally:
-        if own_client and client is not None:
-            await client.aclose()
+    cache_dir = os.path.expanduser(os.environ.get("FASTEMBED_CACHE_DIR", "~/.cache/fastembed"))
+    if not os.path.isdir(cache_dir):
+        return DoctorResult(
+            name="fastembed",
+            status=DoctorStatus.WARN,
+            detail=(f"fastembed cache {cache_dir} not present; first embed call downloads weights"),
+        )
+    return DoctorResult(
+        name="fastembed",
+        status=DoctorStatus.OK,
+        detail=f"fastembed cache present at {cache_dir}",
+    )
 
 
 def _check_sqlite_vec(conn: sqlcipher3.Connection) -> DoctorResult:

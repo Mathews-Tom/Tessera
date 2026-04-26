@@ -6,7 +6,7 @@ import pytest
 
 # Importing the Ollama adapter module registers the "ollama" name in the
 # python-side registry, which register_embedding_model cross-checks.
-import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
+import tessera.adapters.fastembed_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
 from tessera.vault.connection import VaultConnection
 
@@ -28,11 +28,24 @@ def test_register_creates_row_and_vec_table(open_vault: VaultConnection) -> None
 
 
 @pytest.mark.unit
-def test_register_unknown_adapter_rejected(open_vault: VaultConnection) -> None:
-    with pytest.raises(models_registry.ModelRegistryError):
-        models_registry.register_embedding_model(
-            open_vault.connection, name="not-a-registered-adapter", dim=768
-        )
+def test_register_accepts_arbitrary_fastembed_identifier(open_vault: VaultConnection) -> None:
+    """The ``name`` column stores the fastembed model identifier verbatim.
+
+    Validation of whether the identifier is one fastembed knows about
+    happens at first ``embed`` call (``ValueError`` from fastembed,
+    surfaced as ``AdapterModelNotFoundError`` by the adapter). The
+    registry deliberately does not pre-validate against fastembed's
+    catalog because the catalog drifts on every fastembed release; the
+    registry is a ledger, not a gate.
+    """
+
+    model = models_registry.register_embedding_model(
+        open_vault.connection,
+        name="future-model-the-registry-cannot-know-about",
+        dim=768,
+    )
+    assert model.name == "future-model-the-registry-cannot-know-about"
+    assert model.dim == 768
 
 
 @pytest.mark.unit

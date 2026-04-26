@@ -1,7 +1,9 @@
-"""Smoke tests for the ``tessera models`` stub CLI.
+"""Smoke tests for the ``tessera models`` CLI.
 
-The full CLI is P9; this exercises only the stub surface required by the P2
-exit gate ("tessera models list/set/test stub works against Ollama adapter").
+After the v0.3 ONNX-only switch, the subcommand registers fastembed
+model identifiers directly into ``embedding_models.name`` and the
+``test`` subcommand instantiates a :class:`FastEmbedEmbedder` to
+verify the chosen model loads under fastembed.
 """
 
 from __future__ import annotations
@@ -21,8 +23,7 @@ from tessera.vault.encryption import ProtectedKey, save_salt
 def test_list_prints_known_adapters(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli_models.run(["list"]) == 0
     out = capsys.readouterr().out
-    assert "ollama" in out
-    assert "sentence-transformers" in out
+    assert "fastembed" in out
 
 
 @pytest.mark.unit
@@ -57,9 +58,7 @@ def test_set_registers_model(
             "--passphrase",
             "pw",
             "--name",
-            "ollama",
-            "--model",
-            "nomic-embed-text",
+            "nomic-ai/nomic-embed-text-v1.5",
             "--dim",
             "768",
             "--activate",
@@ -71,23 +70,23 @@ def test_set_registers_model(
 
     with VaultConnection.open(vault_path, vault_key) as vc:
         models = models_registry.list_models(vc.connection)
-        assert [m.name for m in models] == ["ollama"]
+        assert [m.name for m in models] == ["nomic-ai/nomic-embed-text-v1.5"]
         assert models[0].is_active is True
 
 
 @pytest.mark.unit
-def test_test_reports_failure_when_ollama_unreachable(
+def test_test_reports_failure_when_load_fails(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _raise_unhealthy(self: Any) -> None:
-        raise RuntimeError("ollama unreachable")
+        raise RuntimeError("model failed to load")
 
     monkeypatch.setattr(
-        "tessera.adapters.ollama_embedder.OllamaEmbedder.health_check",
+        "tessera.adapters.fastembed_embedder.FastEmbedEmbedder.health_check",
         _raise_unhealthy,
     )
-    rc = cli_models.run(["test", "--model", "nomic-embed-text"])
+    rc = cli_models.run(["test", "--name", "nomic-ai/nomic-embed-text-v1.5"])
     assert rc == 1
     assert "health_check failed" in capsys.readouterr().err
 
@@ -101,9 +100,9 @@ def test_test_reports_success(
         return None
 
     monkeypatch.setattr(
-        "tessera.adapters.ollama_embedder.OllamaEmbedder.health_check",
+        "tessera.adapters.fastembed_embedder.FastEmbedEmbedder.health_check",
         _ok,
     )
-    rc = cli_models.run(["test", "--model", "nomic-embed-text"])
+    rc = cli_models.run(["test", "--name", "nomic-ai/nomic-embed-text-v1.5"])
     assert rc == 0
-    assert "reachable" in capsys.readouterr().out
+    assert "fastembed loaded" in capsys.readouterr().out
