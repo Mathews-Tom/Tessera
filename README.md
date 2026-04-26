@@ -8,7 +8,7 @@
 
 ## Status
 
-`v0.1.0rc1` is live on PyPI as [`tessera-context`](https://pypi.org/project/tessera-context/0.1.0rc1/). The repo contains the packaged Python CLI, encrypted vault, daemon, HTTP MCP endpoint, first-party stdio MCP bridge, connector writers, retrieval pipeline, and test suite. General availability gates on external-user demo validation and cross-platform install recording — both scoped to the v0.1.x → v0.5 stabilization window per the decision on 2026-04-25. The rc1 is install-stable for technical users; expect real-user feedback to drive a follow-up rc before GA. See [`docs/release-spec.md`](docs/release-spec.md) for the release bar and [`docs/v0.1-dod-audit.md`](docs/v0.1-dod-audit.md) for DoD status.
+`v0.3.0rc1` is live on PyPI as [`tessera-context`](https://pypi.org/project/tessera-context/0.3.0rc1/). The repo contains the packaged Python CLI, encrypted vault, daemon, HTTP MCP endpoint, first-party stdio MCP bridge, connector writers, retrieval pipeline, named skills synced to disk, people resolution, ChatGPT + Claude conversation-history importers, and the test suite. General availability gates on external-user demo validation and cross-platform install recording per `docs/smoke-test-v0.3rc1.md`. rc1 is install-stable for technical users; expect real-user feedback to drive a follow-up rc before GA. See [`docs/release-spec.md`](docs/release-spec.md) for the release bar and [`CHANGELOG.md`](CHANGELOG.md) for the full v0.3 surface.
 
 ## Install
 
@@ -17,7 +17,7 @@ From PyPI (recommended):
 ```bash
 pip install --pre tessera-context
 # or pin explicitly:
-pip install tessera-context==0.1.0rc1
+pip install tessera-context==0.3.0rc1
 ```
 
 pip's default resolver skips pre-releases, so `--pre` or an explicit version pin is required. The PyPI distribution name is `tessera-context`; the CLI binary and Python import path remain `tessera`. The short `tessera` name on PyPI is held by a 2017-dormant Graphite dashboard project; PEP 541 reclaim is pursued in parallel.

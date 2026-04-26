@@ -28,9 +28,9 @@ The T-shaped AI-native operator. Deep in one or two domains; horizontal across m
 
 ## What's real today
 
-`v0.1.0rc2` lives on PyPI as `tessera-context`. Five facets, six MCP tools, all-local by default (Ollama for embedding, sentence-transformers for rerank), encrypted vault (sqlcipher + argon2id), zero outbound network unless you explicitly opt in.
+`v0.3.0rc1` lives on PyPI as `tessera-context`. Five facets plus the v0.3 skill surface, eleven MCP tools (`capture`, `recall`, `show`, `list_facets`, `stats`, `forget`, `learn_skill`, `get_skill`, `list_skills`, `resolve_person`, `list_people`), all-local by default (Ollama for embedding, sentence-transformers for rerank), encrypted vault (sqlcipher + argon2id), ChatGPT + Claude conversation-history importers, named skills synced to disk, people resolution, zero outbound network unless you explicitly opt in.
 
-`v0.3.0rc1` (named skills synced to disk, people resolution, ChatGPT + Claude conversation-history importers) is implemented on `feat/v0.3-people-skills-importers` but not yet on PyPI. The remaining gates before rc1 cuts are a recorded clean-VM walkthrough on macOS / Ubuntu / Windows and verification that the v2 → v3 migration runs cleanly on an existing rc2 vault. Runbook: [`docs/smoke-test-v0.3rc1.md`](smoke-test-v0.3rc1.md). DoD: [`docs/release-spec.md §Definition of Done for v0.3`](release-spec.md). Until rc1 lands, the v0.3 features in this guide are reachable by source-installing the branch (`git clone … && cd Tessera && uv sync --dev`).
+The remaining gates before v0.3.0 GA are a recorded clean-VM walkthrough on macOS / Ubuntu / Windows and verification that the v2 → v3 migration runs cleanly on an existing rc2 vault. Runbook: [`docs/smoke-test-v0.3rc1.md`](smoke-test-v0.3rc1.md). DoD: [`docs/release-spec.md §Definition of Done for v0.3`](release-spec.md).
 
 ---
 
@@ -59,15 +59,15 @@ ollama pull nomic-embed-text
 
 ```bash
 # pipx is the friendliest path — isolated venv, console script on PATH
-pipx install --pip-args="--pre" tessera-context==0.1.0rc2
+pipx install --pip-args="--pre" tessera-context==0.3.0rc1
 
 # or plain pip (note: --pre is required while we're on rc)
-pip install --pre tessera-context==0.1.0rc2
+pip install --pre tessera-context==0.3.0rc1
 
-tessera --version          # expect 0.1.0rc2
+tessera --version          # expect 0.3.0rc1
 ```
 
-Once `0.3.0rc1` lands on PyPI the install line becomes `pipx install --pip-args="--pre" tessera-context==0.3.0rc1` and the v0.3 features below activate automatically. To use them today, source-install instead:
+For development against the latest branch (in case you want unreleased fixes between rcs), source-install instead:
 
 ```bash
 git clone https://github.com/Mathews-Tom/Tessera.git
