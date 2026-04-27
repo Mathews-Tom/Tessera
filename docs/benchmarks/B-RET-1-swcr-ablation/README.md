@@ -20,7 +20,7 @@ The next serious run adds a `vector_only` arm. The current harness does not impl
 
 ## Dataset (S1, v0.1)
 
-Seed-controlled synthetic vault. `dataset/generate.py` produces `s1.json` with N facets across 5 personas. The current generator produces three facet types; the generator will be updated to the v0.1 facet vocabulary (identity, preference, workflow, project, style) when the harness is re-aligned with the reframe. Each persona has a disjoint entity vocabulary; 30 % of facets also carry one of four ambient entities (`python`, `2026`, `slack`, `github`) that appear across personas as noise. The v0.1.x harder variant introduces cross-persona entity overlap to probe the regime SWCR targets.
+Seed-controlled synthetic vault. `dataset/generate.py` produces `s1.json` with N facets across 5 personas and the v0.1 facet vocabulary (identity, preference, workflow, project, style). Each persona has a disjoint entity vocabulary; 30 % of facets also carry one of four ambient entities (`python`, `2026`, `slack`, `github`) that appear across personas as noise.
 
 Default: 2 000 facets, 50 queries. The spec's target 10 000 / 50 rater-scored bundles is P12 territory; 2 000 is the session-scale first pass.
 
@@ -29,6 +29,22 @@ Reproduce:
 ```bash
 uv run python docs/benchmarks/B-RET-1-swcr-ablation/dataset/generate.py \
     --n-facets 2000 --n-queries 50 --seed 0
+```
+
+## Dataset (S1′, person/skill graph-backing probe)
+
+`dataset/s1_prime.json` is the harder variant used to unblock graph-backing experiments for person/skill coherence. It keeps the same five persona buckets, adds `skill` facets, adds `people` rows compatible with ADR 0012, and records per-facet `people` arrays that the harness loads into `person_mentions`. The default committed file has 2 000 facets, 10 people, 2 000 person-mention links, and 25 bridge queries:
+
+- 20 `person_skill_bridge` queries that name one canonical collaborator plus one skill.
+- 5 `ambiguous_person_skill_bridge` queries that use duplicate first names (`Maya`, `Riley`, `Leo`) so graph variants can test canonical person links rather than raw token overlap.
+
+The dataset deliberately includes `skill_names` in facet metadata and relevant-facet ground truth per query. It is not a production schema change; it is a benchmark input for comparing the current Jaccard β-term against experiment-only graph-neighborhood β-term variants.
+
+Reproduce S1′:
+
+```bash
+uv run python docs/benchmarks/B-RET-1-swcr-ablation/dataset/generate.py \
+    --variant s1-prime --n-facets 2000 --n-queries 25 --seed 0
 ```
 
 ## Metrics
@@ -50,10 +66,25 @@ Fake adapters (deterministic, offline):
 uv run python docs/benchmarks/B-RET-1-swcr-ablation/run.py
 ```
 
-Real adapters (requires Ollama running locally with `nomic-embed-text` pulled, plus a populated HuggingFace cache for `cross-encoder/ms-marco-MiniLM-L-6-v2`):
+Real adapters (requires local fastembed ONNX model weights or an allowed first-run cache fill):
 
 ```bash
 uv run python docs/benchmarks/B-RET-1-swcr-ablation/run.py --adapters real
+```
+
+S1′ fake-adapter run (deterministic, offline):
+
+```bash
+uv run python docs/benchmarks/B-RET-1-swcr-ablation/run.py \
+    --dataset docs/benchmarks/B-RET-1-swcr-ablation/dataset/s1_prime.json
+```
+
+Real adapters use the current ONNX-only stack (`fastembed` embedder + reranker). They require local model weights or an allowed first-run download/cache fill:
+
+```bash
+uv run python docs/benchmarks/B-RET-1-swcr-ablation/run.py \
+    --adapters real \
+    --dataset docs/benchmarks/B-RET-1-swcr-ablation/dataset/s1_prime.json
 ```
 
 Results land under `results/<utc-timestamp>.json`. The harness refuses to overwrite.
@@ -107,6 +138,6 @@ Per [ADR 0011](../../adr/0011-swcr-default-on-cross-facet-coherence.md), this be
 
 1. A harder S1′ dataset (cross-persona entity overlap, near-duplicate cross-type content) across the full five-facet v0.1 vocabulary.
 2. Human-rater coherence scoring on 50 `recall(facet_types=all)` bundles × 3 blind raters, 5-point "does this hang together as one user's operating model across facet types?" scale.
-3. Real adapters (Ollama `nomic-embed-text` + sentence-transformers cross-encoder, per v0.1 DoD defaults).
+3. Real adapters (the current fastembed ONNX embedder + reranker stack).
 
 If the harder run clears coherence-human ≥ 4.0 / 5 with ≥ +0.3 absolute improvement over `rerank_only`, the secondary retrieval-depth moat claim gets added back to `system-overview.md §Moat` as separately-evidenced. If it does not clear, SWCR remains default-on per ADR 0011 (the primary gate is the T-shape demo) but the secondary moat claim stays unmade.

@@ -1,0 +1,81 @@
+{
+  "arms": {
+    "A_rrf_only": {
+      "latency_p50_ms": 223.27462500834372,
+      "latency_p95_ms": 255.23329099814873,
+      "latency_p99_ms": 258.23212500836235,
+      "mean_latency_ms": 212.82062164100353,
+      "mrr_at_k": 0.12133333333333333,
+      "ndcg_at_k": 0.05805937129052627,
+      "persona_purity_at_k": 0.168
+    },
+    "B_rrf_rerank": {
+      "latency_p50_ms": 222.71216700028162,
+      "latency_p95_ms": 229.41370800253935,
+      "latency_p99_ms": 230.48720900260378,
+      "mean_latency_ms": 205.9673700807616,
+      "mrr_at_k": 0.7466666666666667,
+      "ndcg_at_k": 0.43655220993099986,
+      "persona_purity_at_k": 0.848
+    },
+    "C_rrf_rerank_swcr": {
+      "latency_p50_ms": 222.72087499732152,
+      "latency_p95_ms": 229.28404100821353,
+      "latency_p99_ms": 229.41808299219701,
+      "mean_latency_ms": 207.66412656055763,
+      "mrr_at_k": 0.6333333333333333,
+      "ndcg_at_k": 0.39574829155854657,
+      "persona_purity_at_k": 0.816
+    }
+  },
+  "benchmark_id": "B-RET-1",
+  "decision": {
+    "latency_p95_delta_ms_C_minus_B": -0.12966699432581663,
+    "latency_p95_pct_regression": -0.0565210315699101,
+    "mrr_regression_C_vs_B": true,
+    "ndcg_pct_improvement_C_over_B": -9.346858736301582,
+    "thresholds": {
+      "coherence_human_deferred": true,
+      "latency_p95_regression_lte_15pct_or_100ms": true,
+      "mrr_no_regression": false,
+      "ndcg_improvement_gte_10pct": false
+    },
+    "verdict": "opt_in_recommended",
+    "verdict_notes": "coherence_human gate requires 3 blind raters by 50 bundles and is deferred outside this single-session run. Final default-on ship decision blocks on that evidence per swcr-spec.md \u00a7Acceptance thresholds."
+  },
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.4.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "41a3a83620cd80a5759db90acf4337c5ac17fdbd"
+  },
+  "inputs": {
+    "adapters": "fake",
+    "cohere_arm": "skipped \u2014 no licensed key in session",
+    "dataset": "benchmarks/B-RET-1-swcr-ablation/dataset/s1_prime.json",
+    "dataset_variant": "s1_prime_person_skill",
+    "dim": 16,
+    "embedder": "hash-fake",
+    "facet_types": [
+      "identity",
+      "preference",
+      "workflow",
+      "project",
+      "style",
+      "skill"
+    ],
+    "human_raters": "deferred \u2014 requires 3 raters by 50 bundles",
+    "k": 5,
+    "n_facets": 2000,
+    "n_people": 10,
+    "n_person_mentions": 2000,
+    "n_queries": 25,
+    "query_classes": [
+      "ambiguous_person_skill_bridge",
+      "person_skill_bridge"
+    ],
+    "rerank_k": null,
+    "reranker": "keyword-overlap-fake"
+  },
+  "timestamp": "2026-04-27T15:54:58Z"
+}

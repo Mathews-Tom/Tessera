@@ -54,16 +54,18 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar
 
-import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
-from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.fastembed_embedder import DEFAULT_DIM as FASTEMBED_DIM
+from tessera.adapters.fastembed_embedder import DEFAULT_MODEL as FASTEMBED_EMBED_MODEL
+from tessera.adapters.fastembed_embedder import FastEmbedEmbedder
+from tessera.adapters.fastembed_reranker import DEFAULT_MODEL as FASTEMBED_RERANK_MODEL
+from tessera.adapters.fastembed_reranker import FastEmbedReranker
 from tessera.adapters.protocol import Embedder, Reranker
-from tessera.adapters.st_reranker import SentenceTransformersReranker
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
 from tessera.retrieval.pipeline import PipelineContext, recall
 from tessera.retrieval.seed import RetrievalConfig, RetrievalMode
-from tessera.vault import capture
+from tessera.vault import capture, people
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt
 
@@ -71,10 +73,8 @@ HERE = Path(__file__).parent
 DATASET_PATH = HERE / "dataset" / "s1.json"
 RESULTS_DIR = HERE / "results"
 FAKE_DIM = 16
-OLLAMA_MODEL = "nomic-embed-text"
-OLLAMA_DIM = 768
-OLLAMA_HOST = "http://localhost:11434"
 K = 5
+FACET_TYPE_ORDER = ("identity", "preference", "workflow", "project", "style", "skill")
 
 
 class _HashEmbedder:
@@ -221,7 +221,7 @@ def _env_block() -> dict[str, Any]:
 async def _populate_vault(
     vc: VaultConnection, dataset: dict[str, Any]
 ) -> tuple[int, dict[int, str], dict[str, str], list[dict[str, Any]]]:
-    """Insert the S1 facets, return agent_id + id lookups + queries."""
+    """Insert dataset facets and people, returning agent_id + query lookups."""
 
     vc.connection.execute(
         "INSERT INTO agents(external_id, name, created_at) VALUES ('01S1', 'agent', 0)"
@@ -232,11 +232,26 @@ async def _populate_vault(
     synthetic_id_to_external: dict[int, str] = {}
     synthetic_id_to_persona: dict[int, str] = {}
     external_to_persona: dict[str, str] = {}
+    person_name_to_external: dict[str, str] = {}
+    for person in dataset.get("people", []):
+        external_id, _ = people.insert(
+            vc.connection,
+            agent_id=agent_id,
+            canonical_name=person["canonical_name"],
+            aliases=person.get("aliases", []),
+            metadata={"persona": person.get("persona"), "synthetic_person_id": person["person_id"]},
+            created_at=1_900_000 + int(person["person_id"]),
+        )
+        person_name_to_external[person["canonical_name"]] = external_id
     for facet in dataset["facets"]:
         metadata = {
             "persona": facet["persona"],
             "entities": facet["entities"],
         }
+        if facet.get("people"):
+            metadata["people"] = facet["people"]
+        if facet.get("skill_names"):
+            metadata["skill_names"] = facet["skill_names"]
         result = capture.capture(
             vc.connection,
             agent_id=agent_id,
@@ -249,6 +264,15 @@ async def _populate_vault(
         synthetic_id_to_external[facet["facet_id"]] = result.external_id
         synthetic_id_to_persona[facet["facet_id"]] = facet["persona"]
         external_to_persona[result.external_id] = facet["persona"]
+        for canonical_name in facet.get("people", []):
+            person_external_id = person_name_to_external.get(canonical_name)
+            if person_external_id is not None:
+                people.link_facet_mention(
+                    vc.connection,
+                    facet_external_id=result.external_id,
+                    person_external_id=person_external_id,
+                    confidence=1.0,
+                )
     # Rewrite queries' relevant_facet_ids to external_ids now that the
     # vault assigned ULIDs.
     rewritten_queries: list[dict[str, Any]] = []
@@ -263,9 +287,19 @@ async def _populate_vault(
                 "query_text": q["query_text"],
                 "persona": q["persona"],
                 "relevant_external_ids": relevant,
+                "query_class": q.get("query_class", "persona_recall"),
+                "expected_people": q.get("expected_people", []),
+                "expected_skills": q.get("expected_skills", []),
             }
         )
     return agent_id, synthetic_id_to_external, external_to_persona, rewritten_queries
+
+
+def _facet_types_for_dataset(dataset: dict[str, Any]) -> tuple[str, ...]:
+    present = {str(f["facet_type"]) for f in dataset["facets"]}
+    ordered = tuple(facet_type for facet_type in FACET_TYPE_ORDER if facet_type in present)
+    extras = tuple(sorted(present.difference(FACET_TYPE_ORDER)))
+    return (*ordered, *extras)
 
 
 async def _run_arm(
@@ -355,18 +389,23 @@ def _select_adapters(
     """Return ``(embedder, reranker, dim, embedder_id, reranker_id)``.
 
     ``adapters="fake"`` keeps the harness deterministic and network-free;
-    ``adapters="real"`` swaps in the v0.1 DoD reference pair (Ollama
-    ``nomic-embed-text`` + sentence-transformers MiniLM cross-encoder)
-    so the ablation measures what the shipping default will actually
-    see at recall time.
+    ``adapters="real"`` swaps in the current ONNX-only reference pair
+    (fastembed embedder and reranker) so the ablation measures what the
+    shipping default sees at recall time.
     """
 
     if adapters == "fake":
         return _HashEmbedder(), _KeywordReranker(), FAKE_DIM, "hash-fake", "keyword-overlap-fake"
     if adapters == "real":
-        embedder = OllamaEmbedder(model_name=OLLAMA_MODEL, dim=OLLAMA_DIM, host=OLLAMA_HOST)
-        reranker = SentenceTransformersReranker()
-        return embedder, reranker, OLLAMA_DIM, f"ollama/{OLLAMA_MODEL}", reranker.model_name
+        embedder = FastEmbedEmbedder(model_name=FASTEMBED_EMBED_MODEL, dim=FASTEMBED_DIM)
+        reranker = FastEmbedReranker(model_name=FASTEMBED_RERANK_MODEL)
+        return (
+            embedder,
+            reranker,
+            FASTEMBED_DIM,
+            f"fastembed/{FASTEMBED_EMBED_MODEL}",
+            f"fastembed/{FASTEMBED_RERANK_MODEL}",
+        )
     raise SystemExit(f"unknown --adapters value: {adapters!r}")
 
 
@@ -394,6 +433,7 @@ async def _run(adapters: str, dataset_path: Path, rerank_k: int | None) -> int:
         return 1
     dataset: dict[str, Any] = json.loads(dataset_path.read_text())
     embedder, reranker, dim, embedder_id, reranker_id = _select_adapters(adapters)
+    facet_types = _facet_types_for_dataset(dataset)
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-1.db"
         passphrase = b"b-ret-1-ablation"
@@ -433,7 +473,7 @@ async def _run(adapters: str, dataset_path: Path, rerank_k: int | None) -> int:
                         ),
                         tool_budget_tokens=4000,
                         k=K,
-                        facet_types=("identity", "preference", "workflow", "project", "style"),
+                        facet_types=facet_types,
                         rerank_candidate_limit=rerank_k,
                     )
 
@@ -464,8 +504,15 @@ async def _run(adapters: str, dataset_path: Path, rerank_k: int | None) -> int:
         "env": _env_block(),
         "inputs": {
             "dataset": _dataset_label(dataset_path),
+            "dataset_variant": dataset.get("dataset_variant", "s1"),
+            "facet_types": list(facet_types),
             "n_facets": len(dataset["facets"]),
+            "n_people": len(dataset.get("people", [])),
+            "n_person_mentions": sum(len(f.get("people", [])) for f in dataset["facets"]),
             "n_queries": len(dataset["queries"]),
+            "query_classes": sorted(
+                {q.get("query_class", "persona_recall") for q in dataset["queries"]}
+            ),
             "dim": dim,
             "k": K,
             "adapters": adapters,
@@ -509,8 +556,8 @@ def _cli(argv: list[str] | None = None) -> int:
         default="fake",
         help=(
             "'fake' (default) runs deterministic hash embedder + keyword "
-            "reranker. 'real' requires Ollama (nomic-embed-text) and the "
-            "sentence-transformers MiniLM cross-encoder."
+            "reranker. 'real' requires fastembed ONNX model weights "
+            "for the default embedder and reranker."
         ),
     )
     parser.add_argument(
