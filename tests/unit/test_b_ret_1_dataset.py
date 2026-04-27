@@ -39,7 +39,7 @@ def test_s1_prime_contains_skill_facets_and_person_mentions() -> None:
 
 def test_s1_prime_has_person_skill_bridge_queries_with_ground_truth() -> None:
     data = _load()
-    facet_ids = {f["facet_id"] for f in data["facets"]}
+    facets_by_id = {f["facet_id"]: f for f in data["facets"]}
     people_by_name = {p["canonical_name"] for p in data["people"]}
     skill_names = {skill for f in data["facets"] for skill in f.get("skill_names", [])}
 
@@ -52,8 +52,14 @@ def test_s1_prime_has_person_skill_bridge_queries_with_ground_truth() -> None:
 
     for query in bridge_queries:
         assert query["relevant_facet_ids"]
-        assert set(query["relevant_facet_ids"]).issubset(facet_ids)
+        assert set(query["relevant_facet_ids"]).issubset(facets_by_id)
         assert query["expected_people"]
         assert set(query["expected_people"]).issubset(people_by_name)
         assert query["expected_skills"]
         assert set(query["expected_skills"]).issubset(skill_names)
+        expected_people = set(query["expected_people"])
+        expected_skills = set(query["expected_skills"])
+        for facet_id in query["relevant_facet_ids"]:
+            facet = facets_by_id[facet_id]
+            assert expected_people.intersection(facet.get("people", []))
+            assert expected_skills.intersection(facet.get("skill_names", []))

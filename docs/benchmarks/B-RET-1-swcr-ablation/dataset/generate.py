@@ -493,7 +493,7 @@ def _build_prime_queries(
                 relevant = [
                     f.facet_id
                     for f in persona_facets
-                    if collaborator in f.people or skill.name in f.skill_names
+                    if collaborator in f.people and skill.name in f.skill_names
                 ]
                 project = rng.choice(persona.projects)
                 queries.append(
@@ -519,7 +519,8 @@ def _build_prime_queries(
             f.facet_id
             for f in facets
             if f.persona == persona.id
-            and (collaborator in f.people or skill.name in f.skill_names)
+            and collaborator in f.people
+            and skill.name in f.skill_names
         ]
         queries.append(
             Query(
