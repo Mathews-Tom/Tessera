@@ -33,6 +33,7 @@ import sys
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 import sqlcipher3
@@ -48,6 +49,16 @@ from tessera.vault import audit
 # default — B-RET-2 at 1K facets records p95 around 100 ms on fake
 # adapters, so 1500 ms only fires on genuine outliers.
 DEFAULT_SLOW_RECALL_MS = 1500.0
+# Scores at or below this floor are treated as no reliable retrieval signal.
+# The current rerank/SWCR paths produce positive scores for normal matches;
+# zero-or-negative scores are a stable way for adapters/tests to indicate
+# that a candidate should not be surfaced as user context.
+RECALL_RELEVANCE_FLOOR = 0.0
+
+
+class RecallDegradedReason(StrEnum):
+    EMPTY_VAULT = "empty_vault"
+    NO_SIGNAL_ABOVE_FLOOR = "no_signal_above_floor"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +77,7 @@ class RecallResult:
     matches: tuple[RecallMatch, ...]
     total_found: int
     warnings: tuple[str, ...]
+    degraded_reason: RecallDegradedReason | None
     stage_ms: dict[str, float]
     seed: int
     rerank_degraded: bool
@@ -178,6 +190,7 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
             ordered = [
                 _ScoredCandidate(facet_id=r.facet_id, score=r.score) for r in rerank_outcome.results
             ]
+        ordered = _apply_relevance_floor(ordered)
 
         # Embed the ordered working set once; SWCR and MMR both consume it.
         working_ids = [c.facet_id for c in ordered]
@@ -200,6 +213,7 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
             ]
             swcr_results = swcr.apply(swcr_input, params=ctx.swcr_params)
             ordered = [_ScoredCandidate(facet_id=r.facet_id, score=r.score) for r in swcr_results]
+            ordered = _apply_relevance_floor(ordered)
         stage_ms["swcr"] = _elapsed_ms(t0)
 
         # Stage 5 — MMR diversification.
@@ -280,11 +294,18 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
         )
 
     total_found = len({r.facet_id for r in fused})
+    degraded_reason = _degraded_reason(
+        ctx,
+        matches=matches,
+        total_found=total_found,
+        truncated=truncated,
+    )
     warnings = _warnings(rerank_outcome.degraded, truncated)
     return RecallResult(
         matches=matches,
         total_found=total_found,
         warnings=warnings,
+        degraded_reason=degraded_reason,
         stage_ms=dict(stage_ms),
         seed=call_seed,
         rerank_degraded=rerank_outcome.degraded,
@@ -296,6 +317,51 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
 class _ScoredCandidate:
     facet_id: int
     score: float
+
+
+def _apply_relevance_floor(candidates: list[_ScoredCandidate]) -> list[_ScoredCandidate]:
+    return [cand for cand in candidates if cand.score > RECALL_RELEVANCE_FLOOR]
+
+
+def _degraded_reason(
+    ctx: PipelineContext,
+    *,
+    matches: tuple[RecallMatch, ...],
+    total_found: int,
+    truncated: bool,
+) -> RecallDegradedReason | None:
+    if matches:
+        return None
+    # If an unrealistically tiny response budget dropped all otherwise-valid
+    # matches, the call is already represented by truncated=True rather than a
+    # low-signal degraded reason.
+    if truncated and total_found > 0:
+        return None
+    if _live_facet_count(ctx.conn, agent_id=ctx.agent_id, facet_types=ctx.facet_types) == 0:
+        return RecallDegradedReason.EMPTY_VAULT
+    return RecallDegradedReason.NO_SIGNAL_ABOVE_FLOOR
+
+
+def _live_facet_count(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    facet_types: tuple[str, ...],
+) -> int:
+    if not facet_types:
+        return 0
+    placeholders = ",".join("?" for _ in facet_types)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM facets
+        WHERE agent_id = ?
+          AND is_deleted = 0
+          AND facet_type IN ({placeholders})
+        """,
+        (agent_id, *facet_types),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 async def _gather_candidates(
