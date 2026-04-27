@@ -172,6 +172,7 @@ If the v0.1.x run clears that target, the retrieval-depth moat claim can be adde
 - **Per-facet-type rerankers.** A single cross-encoder tuned for QA may underperform on style. Evaluate at v0.3: separate reranker for style vs. other types.
 - **Learned edge weights.** In v0.5+, fit (α, β, γ, λ) per user on implicit feedback (which bundles led to continued session vs. abandonment). Currently out of scope; risks privacy posture.
 - **Temporal decay in the coherence graph.** Recent facets may deserve higher edge weights to other recent facets. Deferred to v0.5 (episodic temporal upgrades).
+- **Cross-session coherence.** SWCR optimizes coherence within a single recall call (cross-facet, spatial). Coherence across sessions of the same project over weeks or months is a distinct property, currently delivered only through the typed-facet stability invariant. Deferred to v0.5 episodic temporal upgrades.
 
 ## References
 
