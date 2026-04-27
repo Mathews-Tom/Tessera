@@ -1,0 +1,52 @@
+{
+  "benchmark_id": "B-RET-1-graph-backing-experiment",
+  "delta_cte_minus_baseline": {
+    "latency_p95_ms": 48.137250007130206,
+    "mrr_at_5": 0.005333333333333301,
+    "ndcg_at_5": 0.001535001004978609,
+    "persona_purity_at_5": 0.0
+  },
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.4.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "69291cd86d173df92beb2d926317983e5585eb64"
+  },
+  "inputs": {
+    "adapters": "deterministic fake hash embedder + keyword reranker proxy",
+    "cte_depth": 2,
+    "dataset": "docs/benchmarks/B-RET-1-swcr-ablation/dataset/s1_prime.json",
+    "dataset_variant": "s1_prime_person_skill",
+    "graph_model": "typed_entity_graph",
+    "n_facets": 2000,
+    "n_people": 10,
+    "n_queries": 25,
+    "production_code_changed": false,
+    "query_classes": [
+      "ambiguous_person_skill_bridge",
+      "person_skill_bridge"
+    ]
+  },
+  "interpretation": "SQLite recursive-CTE typed entity neighborhoods did not materially improve automated S1 prime ranking metrics over the current entity-Jaccard beta-term in this offline fake-adapter proxy. Treat as decision input, not a production metric.",
+  "timestamp": "2026-04-27T16:00:09Z",
+  "variants": {
+    "baseline_jaccard": {
+      "latency_p50_ms": 22.163124987855554,
+      "latency_p95_ms": 23.059917002683505,
+      "latency_p99_ms": 24.861166006303392,
+      "mean_latency_ms": 22.128840000368655,
+      "mrr_at_5": 0.968,
+      "ndcg_at_5": 0.9584649989950214,
+      "persona_purity_at_5": 1.0
+    },
+    "sqlite_cte_typed_entity": {
+      "latency_p50_ms": 63.44050000188872,
+      "latency_p95_ms": 71.19716700981371,
+      "latency_p99_ms": 80.27687499998137,
+      "mean_latency_ms": 64.49745688238181,
+      "mrr_at_5": 0.9733333333333333,
+      "ndcg_at_5": 0.96,
+      "persona_purity_at_5": 1.0
+    }
+  }
+}
