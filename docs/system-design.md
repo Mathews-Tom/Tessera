@@ -237,7 +237,7 @@ Six tools. The heavy lifting is done by `recall`, which is cross-facet by defaul
 | Tool | Args | Returns | Token budget | Notes |
 |---|---|---|---|---|
 | `capture` | `content: str`, `facet_type: str`, `source_tool: str?`, `metadata: dict?` | `{external_id, is_duplicate, facet_type}` | 512 | Dedups by content hash; embedding happens async |
-| `recall` | `query_text: str`, `facet_types: list[str]? = all readable facets`, `k: int = 10`, `requested_budget_tokens: int?` | `{matches, warnings, seed, truncated, rerank_degraded, total_tokens}` | 6000 | **Cross-facet by default.** SWCR coherence weighting. |
+| `recall` | `query_text: str`, `facet_types: list[str]? = all readable facets`, `k: int = 10`, `requested_budget_tokens: int?` | `{matches, warnings, degraded_reason, seed, truncated, rerank_degraded, total_tokens}` | 6000 | **Cross-facet by default.** SWCR coherence weighting. Empty/low-signal calls return no padded context and set `degraded_reason`. |
 | `show` | `external_id: str` | facet snippet + provenance fields | 2048 | Drill-down |
 | `list_facets` | `facet_type: str`, `limit: int = 20`, `since: int?` | array of summaries | 2048 | Browse mode |
 | `stats` | (none) | `{embed_health, by_source, vault_size, active_models, facet_count}` | 1024 | Corpus overview |
