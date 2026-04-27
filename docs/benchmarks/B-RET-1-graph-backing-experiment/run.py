@@ -245,8 +245,11 @@ def _run_variant(variant: Variant, facets: list[Facet], queries: list[Query]) ->
     facets_by_id = {facet.facet_id: facet for facet in facets}
     neighborhoods: dict[int, frozenset[str]] = {}
     if variant == "sqlite_cte_typed_entity":
-        with _build_graph(facets) as conn:
+        conn = _build_graph(facets)
+        try:
             neighborhoods = _cte_neighborhoods(conn)
+        finally:
+            conn.close()
 
     def beta_source(a: Facet, b: Facet) -> float:
         if variant == "baseline_jaccard":
