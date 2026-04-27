@@ -49,7 +49,7 @@ Three architectural commitments that aren't marketing copy:
 
 1. **Single file, not a service.** The vault is a SQLite database at `~/.tessera/vault.db`. You can `cp` it. Email it. Inspect it with any SQLite browser. No Docker. No Postgres. No Qdrant. No account. The file is the product.
 
-2. **SWCR-based cross-facet retrieval.** When you ask ChatGPT to "draft a LinkedIn post about my anneal project," you don't want nearest-neighbor facts — you want your LinkedIn writing voice, your project context, your 5-act workflow, your preferences, *together*, coherent. That's what SWCR (Sequential Weighted Context Recall) delivers. It's topology-aware cross-facet coherence weighting done at query time, not a cosine search dressed up as retrieval.
+2. **SWCR-based cross-facet retrieval.** When you ask ChatGPT to "draft a LinkedIn post about my anneal project," you don't want nearest-neighbor facts — you want your LinkedIn writing voice, your project context, your 5-act workflow, your preferences, *together*, coherent in that one recall bundle. That's what SWCR (Sequential Weighted Context Recall) delivers. It's topology-aware cross-facet coherence weighting done at query time, not a cosine search dressed up as retrieval.
 
 3. **All-local by default.** fastembed (ONNX Runtime) for both embedding and reranking, fully in-process inside the daemon. No model server, no cloud, no torch. The stack runs on a plane. The DX-pain movement away from hosted model providers is accelerating; Tessera aligns with it structurally, not as a toggle.
 

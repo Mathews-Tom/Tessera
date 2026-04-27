@@ -32,6 +32,7 @@ Non-goals come in three categories:
 | Optional hosted sync                                    | v0.1 through v0.5 | v1.0 (optional) | Solo-dev cannot operate user-facing infrastructure pre-v1.0; BYO S3 always free                                                            |
 | Token binding (UID, client fingerprint)                 | v0.1              | v0.3            | Opt-in hardening in v0.3; mandatory for service tokens under v1.0 consideration                                                            |
 | Audit-log HMAC chain                                    | v0.1              | v0.3            | Operational need in v0.1 is convention-based; cryptographic tamper-evidence is v0.3                                                        |
+| In-process Python plugins                               | v0.1 through v1.0 | None planned    | Extensibility is delivered through hooks, the REST surface at `/api/v1/*`, and the MCP surface at `/mcp`. Tessera does not expose a Python extension API; third-party code does not import `tessera.*` to extend the daemon. Connectors and importers under `src/tessera/connectors/` and `src/tessera/importers/` are first-party only. |
 
 ## Ideology bars — will never ship
 
