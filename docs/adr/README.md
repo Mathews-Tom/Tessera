@@ -36,6 +36,9 @@ ADRs are numbered sequentially. Numbers are never reused. Superseding decisions 
 | 0010 | [Five-facet user-context model](0010-five-facet-user-context-model.md) | Accepted |
 | 0011 | [SWCR default-on as cross-facet coherence primitive](0011-swcr-default-on-cross-facet-coherence.md) | Accepted |
 | 0012 | [v0.3 People + Skills design](0012-v0-3-people-and-skills-design.md) | Accepted |
+| 0013 | [REST surface alongside MCP](0013-rest-surface-alongside-mcp.md) | Accepted |
+| 0014 | [ONNX-only model stack via fastembed](0014-onnx-only-stack.md) | Accepted |
+| 0015 | [Graph backing for person/skill coherence](0015-graph-backing-for-person-skill-coherence.md) | Accepted |
 
 ## When to write an ADR
 
