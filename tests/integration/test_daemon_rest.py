@@ -187,6 +187,7 @@ async def test_rest_recall_query_string(open_vault: VaultConnection, tmp_path: P
         assert "matches" in body
         assert isinstance(body["matches"], list)
         assert "warnings" in body
+        assert "degraded_reason" in body
     finally:
         await _stop(server)
 

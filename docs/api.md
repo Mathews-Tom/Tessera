@@ -67,7 +67,7 @@ Required scope: `write` on `facet_type`.
 
 ### `GET /api/v1/recall`
 
-Cross-facet hybrid recall with SWCR ordering. Returns a budgeted bundle of matches.
+Cross-facet hybrid recall with SWCR ordering. Returns a budgeted bundle of matches. When Tessera has no trustworthy context to return, it returns an empty `matches` array and a stable `degraded_reason` instead of padding the bundle.
 
 ```bash
 curl -s 'http://127.0.0.1:5710/api/v1/recall?q=LinkedIn+post&k=10' \
@@ -81,7 +81,12 @@ Query params:
 - `facet_types` (optional) — comma-separated list, or repeated parameter. Defaults to every type the token can read.
 - `requested_budget_tokens` (optional) — override the response token budget.
 
-Response: `{matches: [...], warnings: [...], seed: int, truncated: bool, rerank_degraded: bool, total_tokens: int}`.
+Response: `{matches: [...], warnings: [...], degraded_reason: string|null, seed: int, truncated: bool, rerank_degraded: bool, total_tokens: int}`.
+
+`degraded_reason` is `null` when at least one match is returned or when an empty result is explained by another explicit response flag such as `truncated`. Stable enum values:
+
+- `empty_vault` — the requested readable facet set contains no live facets.
+- `no_signal_above_floor` — live facets exist, but every candidate scored at or below the recall relevance floor, so no context is returned.
 
 Required scope: `read` on each requested `facet_type`.
 

@@ -111,6 +111,7 @@ async def _do_recall(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, A
     return {
         "matches": [_match_to_json(m) for m in resp.matches],
         "warnings": list(resp.warnings),
+        "degraded_reason": str(resp.degraded_reason) if resp.degraded_reason is not None else None,
         "seed": resp.seed,
         "truncated": resp.truncated,
         "rerank_degraded": resp.rerank_degraded,

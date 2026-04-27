@@ -52,7 +52,7 @@ from tessera.auth.scopes import Scope, ScopeOp
 from tessera.auth.tokens import VerifiedCapability, record_scope_denial
 from tessera.observability.events import EventLog
 from tessera.retrieval.budget import BudgetedItem, apply_budget, count_tokens, truncate_snippet
-from tessera.retrieval.pipeline import PipelineContext, RecallResult
+from tessera.retrieval.pipeline import PipelineContext, RecallDegradedReason, RecallResult
 from tessera.retrieval.pipeline import recall as _pipeline_recall
 from tessera.vault import audit as vault_audit
 from tessera.vault import capture as vault_capture
@@ -448,6 +448,7 @@ class RecallMatchView:
 class RecallResponse:
     matches: tuple[RecallMatchView, ...]
     warnings: tuple[str, ...]
+    degraded_reason: RecallDegradedReason | None
     seed: int
     truncated: bool
     rerank_degraded: bool
@@ -662,6 +663,7 @@ async def recall(
     return RecallResponse(
         matches=trimmed,
         warnings=result.warnings,
+        degraded_reason=result.degraded_reason,
         seed=result.seed,
         truncated=truncated or result.truncated,
         rerank_degraded=result.rerank_degraded,
