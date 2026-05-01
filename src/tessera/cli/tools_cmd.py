@@ -15,7 +15,7 @@ from typing import Any
 from tessera.cli._common import fail
 from tessera.cli._http import add_http_args, call, print_json
 from tessera.cli._ui import EMOJI, console, report_table, status, success
-from tessera.vault.facets import WRITABLE_FACET_TYPES
+from tessera.vault.facets import WRITABLE_FACET_TYPES, WRITABLE_VOLATILITIES
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -33,6 +33,18 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         help="one of the writable facet types",
     )
     capture.add_argument("--source-tool", default=None)
+    capture.add_argument(
+        "--volatility",
+        default="persistent",
+        choices=sorted(WRITABLE_VOLATILITIES),
+        help="ADR-0016 lifecycle: persistent (default), session, or ephemeral",
+    )
+    capture.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=None,
+        help="override the default TTL for session/ephemeral rows (positive integer)",
+    )
     capture.set_defaults(handler=_cmd_capture)
 
     recall = subparsers.add_parser("recall", help="hybrid recall")
@@ -59,9 +71,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 
 
 def _cmd_capture(args: argparse.Namespace) -> int:
-    payload = {"content": args.content, "facet_type": args.facet_type}
+    payload: dict[str, Any] = {"content": args.content, "facet_type": args.facet_type}
     if args.source_tool:
         payload["source_tool"] = args.source_tool
+    if args.volatility != "persistent":
+        payload["volatility"] = args.volatility
+    if args.ttl_seconds is not None:
+        payload["ttl_seconds"] = args.ttl_seconds
     with status(f"capturing {args.facet_type} facet", emoji=EMOJI["capture"]):
         try:
             result = call(args, "capture", payload)

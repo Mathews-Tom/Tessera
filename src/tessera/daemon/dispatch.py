@@ -91,11 +91,15 @@ async def _do_capture(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, 
         facet_type=_require_str(args, "facet_type"),
         source_tool=args.get("source_tool"),
         metadata=args.get("metadata"),
+        volatility=args.get("volatility", "persistent"),
+        ttl_seconds=args.get("ttl_seconds"),
     )
     return {
         "external_id": resp.external_id,
         "is_duplicate": resp.is_duplicate,
         "facet_type": resp.facet_type,
+        "volatility": resp.volatility,
+        "ttl_seconds": resp.ttl_seconds,
     }
 
 
