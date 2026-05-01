@@ -44,6 +44,7 @@ ADRs are numbered sequentially. Numbers are never reused. Superseding decisions 
 | 0018 | [Verification + retrospective facets](0018-verification-retrospective-facets.md) | Accepted |
 | 0019 | [Compiled notebook as the AgenticOS Playbook](0019-compiled-notebook-as-agenticos-playbook.md) | Accepted |
 | 0020 | [Automation registry, storage-only](0020-automation-registry-storage-only.md) | Accepted |
+| 0021 | [Audit-chain tamper evidence](0021-audit-chain-tamper-evidence.md) | Accepted |
 
 ## When to write an ADR
 

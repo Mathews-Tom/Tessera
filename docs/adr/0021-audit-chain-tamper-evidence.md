@@ -1,0 +1,142 @@
+# ADR 0021 — Audit-chain tamper evidence
+
+**Status:** Accepted
+**Date:** May 2026
+**Deciders:** Tom Mathews
+**Related:** [ADR 0019](0019-compiled-notebook-as-agenticos-playbook.md), `docs/threat-model.md` §S4 (Audit log), `docs/migration-contract.md`, `docs/system-design.md`, `.docs/animocerebro-followup-development-plan.md` §Phase D
+**Supersedes:** AnimoCerebro plan §Phase D placeholder for the audit-chain ADR
+
+## Context
+
+The audit log (`audit_log` table) records every operation that mutates the vault: capture, soft-delete (forget), token issue/revoke, schema migration, and from v0.5 onward profile/checklist/retrospective/automation/playbook writes. The v0.4 schema stores rows in insertion order. There is no cryptographic linkage between rows. An attacker (or a buggy migration) that can write to `audit_log` can silently delete, modify, reorder, or insert rows; nothing in Tessera detects the change.
+
+The v0.4 threat model (`docs/threat-model.md` §S4) flagged "HMAC-chained audit log" as v0.3 work. v0.3 shipped without it (the line moved to "v0.5"). v0.5 cannot ship without it because:
+
+1. **V0.5-P4 (write-time compilation) introduces synthesized state.** A `compiled_notebook` row has content that did not exist in any source — it was synthesized by the compiler. If a user (or a reviewer, or a third party) cannot tell whether a synthesized row was tampered with after the fact, the trust posture of the v0.5 product collapses. Write-time mode without a defensible audit story is the wrong order — AnimoCerebro plan §Phase D names this exact failure mode.
+2. **AgenticOS Playbook compilation crosses agent boundaries.** A digest agent's profile drives a Playbook compile that pulls verification checklists, retrospectives, project context, and skill markdown into one synthesized artifact. Auditability of every step is a precondition for users to trust the artifact.
+3. **BYO sync (V0.5-P9) extends across hosts.** A vault that round-trips through S3 must be verifiable on the receiving host. Without a chain, the receiver has no way to detect that the sender's audit_log was edited in transit.
+
+The AnimoCerebro plan §Phase D names the core risk: a plain local linear hash chain has well-understood limits. It detects accidental corruption and tampering by an adversary who does not recompute hashes. It does **not** detect tampering by an adversary who can recompute hashes (because the chain payload is unkeyed and recomputable). Public-facing trust language must respect this boundary or it overpromises.
+
+## Decision
+
+Add an append-only linear hash chain to `audit_log` with an explicit, narrow security claim. Land before V0.5-P4 (write-time compilation) ships.
+
+### Schema delta
+
+Two new columns on `audit_log`:
+
+```sql
+ALTER TABLE audit_log ADD COLUMN prev_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_log ADD COLUMN row_hash  TEXT NOT NULL DEFAULT '';
+```
+
+`prev_hash` carries the previous row's `row_hash` (or `''` for the genesis row). `row_hash` is computed in Python at insert time from `prev_hash || canonical_json(chain_payload)`, where `chain_payload` is `{id, at, actor, agent_id, op, target_external_id, payload}`. Both columns are forward-only — the migration populates them in chain order at upgrade.
+
+### Insert path
+
+A single `audit_log_append(event)` function owns every audit insert:
+
+```
+1. BEGIN TRANSACTION
+2. SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1   (or '' if empty)
+3. row_hash = sha256(prev_hash || canonical_json(event))
+4. INSERT INTO audit_log(..., prev_hash, row_hash) VALUES (..., prev_hash, row_hash)
+5. COMMIT
+```
+
+Concurrency: single-daemon-per-vault is an existing v0.1 invariant. Multi-writer audit support is out of scope until v1.0.
+
+### `canonical_json`
+
+Project-local canonicalizer. Sorted keys, no whitespace, datetimes formatted as `YYYY-MM-DDTHH:MM:SS.uuuuuuZ`, integers as decimal, floats as their shortest round-trip form. Implemented in `src/tessera/vault/canonical_json.py` (V0.5-P8). Determinism is a non-negotiable invariant; CI runs `audit-chain-determinism` on a fixed input vector across every PR touching the canonicalizer.
+
+### Verify CLI
+
+```
+tessera audit verify [--vault <path>]
+```
+
+Exit codes:
+
+- `0` — full chain integrity. Reports total rows, genesis row id and timestamp.
+- `1` — first broken row. Reports row id, expected `row_hash`, actual `row_hash`, and the row's `op`.
+- `2` — schema/migration error. Reports the missing column or other structural problem.
+
+### Security claim — exact boundary
+
+Tessera's audit chain detects:
+
+- **Accidental corruption.** A truncated write, a flipped bit on disk, a partial backup restore.
+- **Deletion of any row, including the most recent.** Walking the chain from genesis fails at the deletion point.
+- **Modification of any row's recorded fields.** The recomputed `row_hash` does not match the stored value.
+- **Reordering of rows.** Row N's `prev_hash` no longer matches row N-1's `row_hash`.
+- **Insertion of forged rows.** The forged row's `row_hash` either does not match `sha256(prev_hash || canonical_json(forged_event))` (forger did not bother) or its `prev_hash` does not chain to the prior row (forger inserted in the middle).
+
+Tessera's audit chain does **not** detect:
+
+- **Tampering by an attacker who has write access to the vault and can recompute hashes.** The chain payload is unkeyed and the canonicalizer is published. An attacker who modifies row N can recompute every subsequent `row_hash` from scratch and produce a chain that walks cleanly. The vault's ciphertext-at-rest mitigates the disk-access vector (the attacker needs the passphrase), but the chain itself does not stand alone against a recompute-capable attacker.
+- **Pre-upgrade tampering.** Rows written before the v3→v4 migration are chained at upgrade in the order they appear in the vault. Tampering that happened **before** upgrade is not retroactively detectable. `docs/migration-contract.md` documents this as a known limitation; `tessera audit verify` reports the genesis row's id so users know which rows predate the chain.
+- **Loss of the entire `audit_log` table.** If the table is dropped, the chain is gone. Detection here requires an external anchor (signed checkpoints, exported chain heads, off-host backup) that v0.5 does not ship.
+
+The keyed/signed/anchored variants are out of scope for v0.5. If a v1.0 trust posture requires malicious-rewrite detection, a follow-up ADR commits one of: (a) HMAC chain with a key outside the vault; (b) signed checkpoints; (c) periodic anchor exports (timestamped chain heads written to an append-only external service). All three are reviewed-but-not-built designs at v0.5.
+
+### Public language guardrails
+
+- The release notes, `docs/threat-model.md`, the CLI help text, and any public-facing language about the chain refer to it as **tamper-evidence within the stated claim boundary**, never as **tamper-proof** or **immutable**.
+- The `tessera audit verify` help text quotes the boundary directly.
+- ADR 0021's claim boundary is the canonical source. When a doc cites the chain, it links here.
+
+## Rationale
+
+1. **V0.5-P4 ship-gate is non-negotiable.** Write-time synthesis without auditability is the wrong order. Locking the gate at the ADR layer keeps the v0.5 sequencing constraint in writing and prevents the gate being relitigated in code review.
+2. **Plain local linear hash chain is the right size for v0.5.** Stronger schemes (HMAC with a key outside the DB, signed checkpoints, external anchors) introduce key management, signing infrastructure, and external service dependencies that v0.5 cannot absorb on solo-dev velocity. The narrow claim is honest and defensible; the stronger claim is deferred.
+3. **Single insert path is enforceable.** `audit_log_append` becomes the only function that writes the table. Code review and a static check enforce it. Direct INSERTs on `audit_log` from anywhere else in `src/` is a CI failure.
+4. **Project-local `canonical_json` is mandatory.** SQLite's JSON serialization, Python's `json.dumps`, and various RFC 8785 implementations differ on edge cases (NaN, non-ASCII surrogates, integer vs. float boundaries, datetime formats). A project-local canonicalizer with a fixed contract and a determinism CI gate is the only stable foundation.
+5. **Pre-upgrade rows are chained-at-upgrade with an explicit limitation.** Replaying every operation from genesis to compute a "true" chain is impossible (the operations are not recoverable from the audit_log alone — they were recorded, not replayed). The honest answer is that the chain starts at upgrade time; pre-upgrade rows are forensic record only. The claim boundary names this limitation.
+6. **`tessera audit verify` is the canonical verification surface.** Hiding verification behind a daemon endpoint conflicts with the use case (verification often runs on a vault file the daemon is not opening — backup audits, post-restore checks, sync round-trip verification). The CLI reads the vault directly.
+7. **No keyed mode at v0.5.** A keyed chain (HMAC) requires key management Tessera does not currently have. The argon2id-derived passphrase key is not appropriate (it derives from a user secret; rotating the passphrase would invalidate every prior `row_hash`). A separate audit-chain key with its own rotation story is v1.0 work.
+
+## Consequences
+
+**Positive:**
+- V0.5-P4 (write-time compilation) ships into a vault with a defensible audit story.
+- Accidental corruption — the most common real-world failure mode — is caught.
+- Non-recomputed tampering is caught. Most threat actors fall here (a casual file editor, a buggy migration, a sync bug).
+- BYO sync (V0.5-P9) gains a verification primitive. The receiver can run `tessera audit verify` after import.
+- Public language stays honest. The v0.5 release notes describe what the chain detects and what it does not.
+
+**Negative:**
+- Two new columns on `audit_log`. Forward-only migration; rollback is "drop the columns" (acceptable on pre-1.0 lines).
+- Single insert path becomes a coordination point. Multi-process audit writes are a v1.0 problem.
+- Stronger malicious-rewrite-detection claim is not made. External reviewers expecting "immutable audit log" must read the claim boundary; release notes explicitly state the limit.
+- Determinism CI gate adds a coordination cost on canonicalizer changes — every change runs the gate, every change must be byte-stable.
+- Pre-upgrade rows are forensic record only. Existing vaults (Tom's dogfood vault) inherit a "chain starts here" boundary at upgrade. Documented in the migration contract.
+
+## Alternatives considered
+
+- **HMAC chain with a key in the vault.** Rejected. Key in the vault means an attacker who breaks the passphrase has the HMAC key; the chain provides no marginal protection over a plain hash chain.
+- **HMAC chain with a key outside the vault (OS keyring).** Considered. Rejected at v0.5 because rotation, recovery, and BYO sync portability are not solved on the v0.5 timeline. Reconsidered for v1.0.
+- **Signed checkpoints (Ed25519).** Rejected for v0.5. Signing key management is the same problem as HMAC; checkpoints add complexity (when to checkpoint, how to verify partial chains) that does not fit the storage-only stance v0.5 is shipping.
+- **External anchors (rfc3161 timestamps, OpenTimestamps).** Rejected for v0.5. Outbound calls violate `docs/non-goals.md`. v1.0 may add this as opt-in.
+- **No chain; rely on encryption-at-rest.** Rejected. Encryption protects at-rest disclosure but not in-vault tampering by anyone with the passphrase or via a buggy in-process write path.
+- **Defer V0.5-P4 instead of building the chain.** Rejected. V0.5-P4 is the v0.5 reframe's load-bearing feature; deferring it to v1.0 collapses the v0.5 reframe.
+- **Skip the project-local canonicalizer; use `json.dumps(..., sort_keys=True, separators=(',', ':'))`.** Rejected. Python's `json.dumps` is not byte-stable across Python versions and floating-point edge cases. The determinism CI gate would catch the drift, but the canonicalizer's contract is too load-bearing to leave to a stdlib that may shift.
+- **Make `audit verify` a daemon endpoint instead of a CLI.** Rejected. Verification often runs on offline vault files (backup audit, post-restore check, sync round-trip). CLI matches the use case.
+
+## Revisit triggers
+
+- Real-user signal calls for malicious-rewrite-detection. Open a follow-up ADR to commit one of HMAC / signed checkpoints / external anchors.
+- Determinism CI gate flags a `canonical_json` drift. Stop, investigate root cause, do not relax the gate.
+- BYO sync round-trip surfaces a chain-break that is not actual tampering (e.g., an S3 client coalesces writes in a non-deterministic order). Investigate the sync path; do not relax the chain.
+- `audit_log` write throughput becomes a bottleneck under V0.5-P4 compile-storms. Add a benchmark; consider periodic checkpoint rows for sub-range verification (chunked verify) without changing the chain shape.
+- A v0.5+ feature wants to write the audit log from a process other than the daemon. That feature opens a follow-up ADR; the single insert path is part of this ADR's claim.
+
+## Related documents
+
+- `docs/adr/0019-compiled-notebook-as-agenticos-playbook.md` — ship-gate paired with this ADR.
+- `docs/threat-model.md §S4 (Audit log)` — V0.5-P8 updates the table to record the chain's claim boundary verbatim.
+- `docs/migration-contract.md` — V0.5-P8 schema delta and the pre-upgrade-rows-are-not-retroactively-chained limitation.
+- `docs/system-design.md` — V0.5-P8 audit section gains the chain construction and the verify CLI behavior.
+- `docs/release-spec.md §v0.5` — DoD bullet for the chain and the seven security tests.
+- `.docs/animocerebro-followup-development-plan.md §Phase D` — folded into V0.5-P8; the master plan owns the schedule.
