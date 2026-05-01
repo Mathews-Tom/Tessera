@@ -41,6 +41,7 @@ ADRs are numbered sequentially. Numbers are never reused. Superseding decisions 
 | 0015 | [Graph backing for person/skill coherence](0015-graph-backing-for-person-skill-coherence.md) | Accepted |
 | 0016 | [Memory volatility model](0016-memory-volatility-model.md) | Accepted |
 | 0017 | [Agent profile as a first-class facet](0017-agent-profile-facet.md) | Accepted |
+| 0018 | [Verification + retrospective facets](0018-verification-retrospective-facets.md) | Accepted |
 
 ## When to write an ADR
 
