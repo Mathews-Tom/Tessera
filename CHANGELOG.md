@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - ADR-0016 — memory volatility model. Documents the planned `volatility` column on `facets` (`persistent` | `session` | `ephemeral`), TTL + auto-compaction policy, and SWCR freshness weighting for non-persistent rows. Documents-only landing as part of the v0.5 ADR sequence; the schema delta is implemented in a later v0.5 sub-phase.
+- ADR-0017 — agent profile as a first-class facet. Documents the planned `facet_type='agent_profile'`, its structured metadata shape, and the nullable FK linkage from `agents.profile_facet_external_id` to a profile facet. Records the explicit boundary that the `agents` table remains the JWT subject store while the profile facet is the recallable context — the two are linked, not merged. Documents-only as part of the v0.5 ADR sequence.
 
 ## [0.4.0rc2] — 2026-04-27 (pre-release)
 
