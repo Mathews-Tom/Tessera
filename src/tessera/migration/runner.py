@@ -13,11 +13,14 @@ The runner handles three flows:
   ``schema_target``. Every step is idempotent and checks ``_migration_steps``
   before re-applying; rollback is the other (user-invoked) option.
 
-Two upgrade targets are registered: v1 → v2 (post-reframe five-facet
-schema per ADR 0010) and v2 → v3 (v0.3 People + Skills surface — adds
+Three upgrade targets are registered: v1 → v2 (post-reframe five-facet
+schema per ADR 0010), v2 → v3 (v0.3 People + Skills surface — adds
 ``disk_path`` column on ``facets`` plus the ``people`` and
-``person_mentions`` tables). Future versions plug in by registering a
-new step list against their target in ``_STEPS_BY_TARGET``.
+``person_mentions`` tables), and v3 → v4 (V0.5-P1 memory volatility
+column per ADR 0016 — adds ``volatility`` and ``ttl_seconds`` to
+``facets`` plus a partial index for the auto-compaction sweep).
+Future versions plug in by registering a new step list against their
+target in ``_STEPS_BY_TARGET``.
 """
 
 from __future__ import annotations
@@ -388,6 +391,55 @@ _V2_TO_V3_STEPS: Final[tuple[MigrationStep, ...]] = (
 )
 
 
+# ---- v3 -> v4 forward migration steps -----------------------------------
+#
+# Schema v4 adds ADR 0016 memory volatility. Two columns land on ``facets``:
+# ``volatility`` (CHECK over the three values) defaulting to ``persistent``
+# so every existing row is treated as long-lived without caller change, and
+# ``ttl_seconds`` (nullable) carrying the per-row TTL override that the
+# auto-compaction sweep consults. A partial index on
+# ``(volatility, captured_at)`` makes the sweep cheap on vaults dominated
+# by ``persistent`` rows. Each step is a guarded ALTER / CREATE so the
+# resume path replays cleanly.
+
+
+def _facets_has_column(conn: sqlcipher3.Connection, name: str) -> bool:
+    cols = conn.execute("PRAGMA table_info(facets)").fetchall()
+    return any(str(row[1]) == name for row in cols)
+
+
+def _step_add_volatility_column(conn: sqlcipher3.Connection) -> None:
+    if _facets_has_column(conn, "volatility"):
+        return
+    conn.execute(
+        "ALTER TABLE facets ADD COLUMN volatility TEXT NOT NULL DEFAULT 'persistent' "
+        "CHECK (volatility IN ('persistent', 'session', 'ephemeral'))"
+    )
+
+
+def _step_add_ttl_seconds_column(conn: sqlcipher3.Connection) -> None:
+    if _facets_has_column(conn, "ttl_seconds"):
+        return
+    conn.execute("ALTER TABLE facets ADD COLUMN ttl_seconds INTEGER")
+
+
+def _step_create_volatility_sweep_index(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_volatility_sweep
+            ON facets(volatility, captured_at)
+            WHERE is_deleted = 0 AND volatility IN ('session', 'ephemeral')
+        """
+    )
+
+
+_V3_TO_V4_STEPS: Final[tuple[MigrationStep, ...]] = (
+    MigrationStep("add_volatility_column", 4, _step_add_volatility_column),
+    MigrationStep("add_ttl_seconds_column", 4, _step_add_ttl_seconds_column),
+    MigrationStep("create_volatility_sweep_index", 4, _step_create_volatility_sweep_index),
+)
+
+
 # Forward-migration step registry keyed by target version. Bootstrap (target 1
 # from a fresh vault) is intentionally absent: it cannot use the step runner
 # because `_meta` and `_migration_steps` do not exist until the schema DDL has
@@ -397,6 +449,7 @@ _V2_TO_V3_STEPS: Final[tuple[MigrationStep, ...]] = (
 _STEPS_BY_TARGET: Final[dict[int, Sequence[MigrationStep]]] = {
     2: _V1_TO_V2_STEPS,
     3: _V2_TO_V3_STEPS,
+    4: _V3_TO_V4_STEPS,
 }
 
 

@@ -1,6 +1,14 @@
-"""v3 vault schema per docs/system-design.md §Vault schema and §Failure taxonomy.
+"""v4 vault schema per docs/system-design.md §Vault schema and §Failure taxonomy.
 
-Schema v3 activates the v0.3 People + Skills surface: ``facets`` carries
+Schema v4 (V0.5-P1, ADR 0016) adds a ``volatility`` column to ``facets``
+covering AgenticOS Layer 4 (Memory) lifecycles: ``persistent``,
+``session``, and ``ephemeral``. The column is orthogonal to facet type
+so a row of any type can be marked working memory without fragmenting
+the type vocabulary. SWCR consumes the column through a closed-form
+``freshness(f)`` term; auto-compaction sweeps non-persistent rows after
+their TTL expires via the existing soft-delete + audit pipeline.
+
+Schema v3 activated the v0.3 People + Skills surface: ``facets`` carries
 an optional ``disk_path`` for skills synced to disk, the ``people`` and
 ``person_mentions`` tables make canonical-name resolution and facet
 linking first-class, and the v2 reserved facet-type vocabulary stays
@@ -18,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 3
+SCHEMA_VERSION: Final[int] = 4
 
 _PRAGMAS: Final[tuple[str, ...]] = (
     "PRAGMA foreign_keys = ON",
@@ -86,6 +94,9 @@ _TABLES: Final[tuple[str, ...]] = (
         embed_last_error       TEXT,
         embed_last_attempt_at  INTEGER,
         disk_path              TEXT,
+        volatility             TEXT NOT NULL DEFAULT 'persistent'
+            CHECK (volatility IN ('persistent', 'session', 'ephemeral')),
+        ttl_seconds            INTEGER,
         UNIQUE(agent_id, content_hash)
     )
     """,
@@ -115,6 +126,11 @@ _TABLES: Final[tuple[str, ...]] = (
     CREATE UNIQUE INDEX IF NOT EXISTS facets_disk_path
         ON facets(agent_id, disk_path)
         WHERE disk_path IS NOT NULL AND is_deleted = 0
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS facets_volatility_sweep
+        ON facets(volatility, captured_at)
+        WHERE is_deleted = 0 AND volatility IN ('session', 'ephemeral')
     """,
     """
     CREATE VIRTUAL TABLE IF NOT EXISTS facets_fts USING fts5(
