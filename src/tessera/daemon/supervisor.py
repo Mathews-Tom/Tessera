@@ -31,7 +31,7 @@ from tessera.daemon.http_mcp import serve_http_mcp
 from tessera.daemon.state import DaemonState, open_vault_for_daemon, resolve_embedder
 from tessera.observability.events import EventLog
 from tessera.retrieval import embed_worker
-from tessera.vault import audit
+from tessera.vault import audit, compaction
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import ProtectedKey, derive_key, load_salt
 
@@ -42,6 +42,11 @@ _EMBED_WORKER_IDLE_SECONDS = 5.0
 # dogfooding vaults without waking the CPU more than once per 3600
 # iterations of the embed loop.
 _EVENTS_SWEEP_SECONDS = 3600.0
+# Run the volatility auto-compaction pass every 5 minutes. ADR 0016
+# session/ephemeral TTLs are minutes-to-hours; a 5-minute cadence
+# keeps the soft-delete latency well inside the shortest TTL while
+# leaving the daemon idle the rest of the time.
+_COMPACTION_SWEEP_SECONDS = 300.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +58,7 @@ class DaemonHandles:
     control_server: asyncio.AbstractServer
     embed_task: asyncio.Task[None]
     events_task: asyncio.Task[None]
+    compaction_task: asyncio.Task[None]
     event_log: EventLog
 
 
@@ -109,6 +115,10 @@ async def run_daemon(
             events_task = asyncio.create_task(
                 _events_sweep_loop(event_log, stop), name="tessera.events_sweep"
             )
+            compaction_task = asyncio.create_task(
+                _compaction_sweep_loop(state, stop, event_log),
+                name="tessera.compaction_sweep",
+            )
             _write_pid_file(config.pid_path)
             if ready is not None:
                 ready.set()
@@ -122,6 +132,7 @@ async def run_daemon(
                         control_server=control_server,
                         embed_task=embed_task,
                         events_task=events_task,
+                        compaction_task=compaction_task,
                         event_log=event_log,
                     ),
                     socket_path=config.socket_path,
@@ -208,6 +219,47 @@ async def _events_sweep_loop(event_log: EventLog, stop: asyncio.Event) -> None:
                 f"[tesserad] events sweep failed: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
+
+
+async def _compaction_sweep_loop(
+    state: DaemonState, stop: asyncio.Event, event_log: EventLog
+) -> None:
+    """Run the volatility auto-compaction sweep on a slow cadence.
+
+    Per ADR 0016 the sweep soft-deletes ``session`` and ``ephemeral``
+    rows whose TTL has elapsed. Cadence is :data:`_COMPACTION_SWEEP_SECONDS`
+    (5 minutes) — well inside the shortest TTL (60 minutes for
+    ``ephemeral``) but slow enough that idle vaults do not wake the
+    CPU. Each pass emits one ``volatility.sweep`` event when at least
+    one row was compacted; a failing sweep logs to stderr and retries
+    on the next interval.
+    """
+
+    while not stop.is_set():
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=_COMPACTION_SWEEP_SECONDS)
+        if stop.is_set():
+            return
+        try:
+            result = compaction.sweep(state.vault.connection)
+        except Exception as exc:
+            print(
+                f"[tesserad] compaction sweep failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        if result.compacted == 0:
+            continue
+        event_log.emit(
+            level="info",
+            category="vault",
+            event="volatility_sweep",
+            attrs={
+                "inspected": result.inspected,
+                "compacted": result.compacted,
+                "skipped": result.skipped,
+            },
+        )
 
 
 async def _embed_worker_loop(state: DaemonState, stop: asyncio.Event) -> None:
@@ -306,10 +358,13 @@ async def _shutdown(handles: DaemonHandles, *, socket_path: Path, pid_path: Path
     await handles.control_server.wait_closed()
     handles.embed_task.cancel()
     handles.events_task.cancel()
+    handles.compaction_task.cancel()
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await handles.embed_task
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await handles.events_task
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await handles.compaction_task
     with contextlib.suppress(Exception):
         handles.event_log.close()
     with contextlib.suppress(FileNotFoundError):
