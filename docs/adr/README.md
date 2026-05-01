@@ -42,6 +42,7 @@ ADRs are numbered sequentially. Numbers are never reused. Superseding decisions 
 | 0016 | [Memory volatility model](0016-memory-volatility-model.md) | Accepted |
 | 0017 | [Agent profile as a first-class facet](0017-agent-profile-facet.md) | Accepted |
 | 0018 | [Verification + retrospective facets](0018-verification-retrospective-facets.md) | Accepted |
+| 0019 | [Compiled notebook as the AgenticOS Playbook](0019-compiled-notebook-as-agenticos-playbook.md) | Accepted |
 
 ## When to write an ADR
 
