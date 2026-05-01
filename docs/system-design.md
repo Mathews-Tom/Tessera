@@ -146,6 +146,15 @@ CREATE TABLE facets (
   metadata        TEXT NOT NULL DEFAULT '{}',        -- JSON: type-specific fields
   is_deleted      INTEGER NOT NULL DEFAULT 0,
   deleted_at      INTEGER,
+  -- ADR 0016 (V0.5-P1): orthogonal lifecycle on every row. Default is
+  -- 'persistent' so existing data and v0.4 callers are unchanged.
+  -- Non-persistent rows carry a TTL in seconds (or NULL when the
+  -- row defers to the volatility default — 24 h for session, 60 min
+  -- for ephemeral) and are auto-compacted via soft-delete after the
+  -- window elapses.
+  volatility      TEXT NOT NULL DEFAULT 'persistent'
+                    CHECK (volatility IN ('persistent', 'session', 'ephemeral')),
+  ttl_seconds     INTEGER,
   UNIQUE(user_id, content_hash)
 );
 
@@ -153,6 +162,12 @@ CREATE INDEX facets_user_type  ON facets(user_id, facet_type, captured_at DESC)
                                WHERE is_deleted = 0;
 CREATE INDEX facets_captured   ON facets(captured_at DESC) WHERE is_deleted = 0;
 CREATE INDEX facets_mode       ON facets(mode, facet_type) WHERE is_deleted = 0;
+-- Partial index drives the auto-compaction sweep without touching the
+-- (much larger) persistent partition of the table.
+CREATE INDEX facets_volatility_sweep
+              ON facets(volatility, captured_at)
+              WHERE is_deleted = 0
+                AND volatility IN ('session', 'ephemeral');
 
 -- Full-text index over content
 CREATE VIRTUAL TABLE facets_fts USING fts5(
@@ -226,6 +241,7 @@ INSERT INTO _meta VALUES ('vault_id', /* ULID */);
 
 - `facet_type` CHECK constraint lists all facets (v0.1 + reserved). Adding a v0.3 facet type is a small migration, not a schema rewrite.
 - `mode` column is set on every facet. v0.1 always writes `query_time`. Write-time and hybrid are reserved for v0.5. The column exists now so v0.5 is an additive change.
+- `volatility` column is set on every facet (V0.5-P1, ADR 0016). `persistent` is the default and what every v0.4 vault carries after the v3→v4 migration; `session` and `ephemeral` are caller opt-ins for AgenticOS Layer 4 working memory. SWCR weights freshness by a closed-form decay; an idle-time sweep soft-deletes expired rows so the audit trail captures the lifecycle.
 - `compiled_artifacts` table is reserved. v0.1 never writes to it. v0.5 populates it from the write-time compiler. Shipping the table empty is a 50-byte SQL cost; retrofitting it later is a migration.
 - `source_tool` on every facet answers "which AI tool captured this?" — important for diagnosing bad captures later.
 - Soft delete preserves audit trail; hard delete happens only via explicit `vault vacuum` command.
@@ -236,7 +252,7 @@ Six tools. The heavy lifting is done by `recall`, which is cross-facet by defaul
 
 | Tool | Args | Returns | Token budget | Notes |
 |---|---|---|---|---|
-| `capture` | `content: str`, `facet_type: str`, `source_tool: str?`, `metadata: dict?` | `{external_id, is_duplicate, facet_type}` | 512 | Dedups by content hash; embedding happens async |
+| `capture` | `content: str`, `facet_type: str`, `source_tool: str?`, `metadata: dict?`, `volatility: str = 'persistent'`, `ttl_seconds: int?` | `{external_id, is_duplicate, facet_type, volatility, ttl_seconds}` | 512 | Dedups by content hash; embedding happens async. ADR-0016 lifecycle: `persistent` default; `session` and `ephemeral` callers opt in and may override the per-row TTL. |
 | `recall` | `query_text: str`, `facet_types: list[str]? = all readable facets`, `k: int = 10`, `requested_budget_tokens: int?` | `{matches, warnings, degraded_reason, seed, truncated, rerank_degraded, total_tokens}` | 6000 | **Cross-facet by default.** SWCR coherence weighting. Empty/low-signal calls return no padded context and set `degraded_reason`. |
 | `show` | `external_id: str` | facet snippet + provenance fields | 2048 | Drill-down |
 | `list_facets` | `facet_type: str`, `limit: int = 20`, `since: int?` | array of summaries | 2048 | Browse mode |

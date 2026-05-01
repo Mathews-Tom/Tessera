@@ -55,6 +55,27 @@ WRITABLE_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES
 # the write path rejects that type today.
 ALL_FACET_TYPES: Final[frozenset[str]] = V0_5_FACET_TYPES
 
+# v0.5-P1 memory volatility (ADR 0016). The CHECK constraint on
+# ``facets.volatility`` mirrors this set; capture writes default to
+# ``persistent``; SWCR weights ``session``/``ephemeral`` rows by the
+# closed-form ``freshness(f)`` term.
+WRITABLE_VOLATILITIES: Final[frozenset[str]] = frozenset({"persistent", "session", "ephemeral"})
+
+# Default TTLs per volatility. ADR 0016 fixes ``session=24h`` and
+# ``ephemeral=60min``; ``persistent`` rows have no TTL. Callers may
+# override per row with ``ttl_seconds`` up to the per-volatility ceiling.
+_SECONDS_PER_HOUR: Final[int] = 3600
+DEFAULT_TTL_SECONDS: Final[dict[str, int | None]] = {
+    "persistent": None,
+    "session": 24 * _SECONDS_PER_HOUR,
+    "ephemeral": 60 * 60,
+}
+MAX_TTL_SECONDS: Final[dict[str, int | None]] = {
+    "persistent": None,
+    "session": 7 * 24 * _SECONDS_PER_HOUR,  # one week ceiling on session rows
+    "ephemeral": 24 * _SECONDS_PER_HOUR,  # ADR 0016: ephemeral max 24h
+}
+
 
 class FacetError(Exception):
     """Base class for facets-module failures."""
@@ -62,6 +83,14 @@ class FacetError(Exception):
 
 class UnsupportedFacetTypeError(FacetError):
     """Facet type is outside the v0.1 supported set."""
+
+
+class UnsupportedVolatilityError(FacetError):
+    """Volatility value is outside the ADR-0016 set."""
+
+
+class InvalidTTLError(FacetError):
+    """TTL is not consistent with the row's volatility."""
 
 
 class UnknownAgentError(FacetError):
@@ -81,6 +110,36 @@ class Facet:
     metadata: dict[str, Any]
     is_deleted: bool
     embed_status: str
+    volatility: str = "persistent"
+    ttl_seconds: int | None = None
+
+
+def resolve_ttl_seconds(volatility: str, ttl_seconds: int | None) -> int | None:
+    """Pick the effective TTL for a row given its volatility and override.
+
+    Persistent rows force ``ttl_seconds=None`` regardless of the override.
+    Non-persistent rows take the override when provided and inside the
+    per-volatility ceiling, else the volatility's default.
+    """
+
+    if volatility not in WRITABLE_VOLATILITIES:
+        raise UnsupportedVolatilityError(
+            f"volatility {volatility!r} not in {sorted(WRITABLE_VOLATILITIES)}"
+        )
+    if volatility == "persistent":
+        if ttl_seconds is not None:
+            raise InvalidTTLError("persistent rows cannot carry a TTL")
+        return None
+    ceiling = MAX_TTL_SECONDS[volatility]
+    if ttl_seconds is None:
+        return DEFAULT_TTL_SECONDS[volatility]
+    if ttl_seconds <= 0:
+        raise InvalidTTLError(f"ttl_seconds must be positive; got {ttl_seconds}")
+    if ceiling is not None and ttl_seconds > ceiling:
+        raise InvalidTTLError(
+            f"ttl_seconds={ttl_seconds} exceeds {volatility} ceiling of {ceiling}s"
+        )
+    return ttl_seconds
 
 
 def content_hash(content: str) -> str:
@@ -97,6 +156,8 @@ def insert(
     source_tool: str,
     metadata: dict[str, Any] | None = None,
     captured_at: int | None = None,
+    volatility: str = "persistent",
+    ttl_seconds: int | None = None,
 ) -> tuple[str, bool]:
     """Insert a facet, deduplicating on ``(agent_id, content_hash)``.
 
@@ -109,6 +170,7 @@ def insert(
         raise UnsupportedFacetTypeError(
             f"facet_type {facet_type!r} not writable; expected one of {sorted(WRITABLE_FACET_TYPES)}"
         )
+    effective_ttl = resolve_ttl_seconds(volatility, ttl_seconds)
     digest = content_hash(content)
     # Dedup sees live AND soft-deleted rows because the UNIQUE(agent_id,
     # content_hash) constraint covers both. A live hit returns the existing
@@ -138,8 +200,8 @@ def insert(
             """
             INSERT INTO facets(
                 external_id, agent_id, facet_type, content, content_hash,
-                source_tool, captured_at, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                source_tool, captured_at, metadata, volatility, ttl_seconds
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 external_id,
@@ -150,6 +212,8 @@ def insert(
                 source_tool,
                 captured,
                 meta_json,
+                volatility,
+                effective_ttl,
             ),
         )
     except (sqlite3.IntegrityError, sqlcipher3.IntegrityError) as exc:
@@ -159,13 +223,16 @@ def insert(
     return external_id, True
 
 
+_FACET_SELECT_COLS: Final[str] = (
+    "id, external_id, agent_id, facet_type, content, content_hash, "
+    "source_tool, captured_at, metadata, is_deleted, embed_status, "
+    "volatility, ttl_seconds"
+)
+
+
 def get(conn: sqlcipher3.Connection, external_id: str) -> Facet | None:
     row = conn.execute(
-        """
-        SELECT id, external_id, agent_id, facet_type, content, content_hash,
-               source_tool, captured_at, metadata, is_deleted, embed_status
-        FROM facets WHERE external_id = ?
-        """,
+        f"SELECT {_FACET_SELECT_COLS} FROM facets WHERE external_id = ?",
         (external_id,),
     ).fetchone()
     if row is None:
@@ -185,9 +252,8 @@ def list_by_type(
         raise UnsupportedFacetTypeError(f"facet_type {facet_type!r} not writable")
     if since is None:
         rows = conn.execute(
-            """
-            SELECT id, external_id, agent_id, facet_type, content, content_hash,
-                   source_tool, captured_at, metadata, is_deleted, embed_status
+            f"""
+            SELECT {_FACET_SELECT_COLS}
             FROM facets
             WHERE agent_id = ? AND facet_type = ? AND is_deleted = 0
             ORDER BY captured_at DESC
@@ -197,9 +263,8 @@ def list_by_type(
         ).fetchall()
     else:
         rows = conn.execute(
-            """
-            SELECT id, external_id, agent_id, facet_type, content, content_hash,
-                   source_tool, captured_at, metadata, is_deleted, embed_status
+            f"""
+            SELECT {_FACET_SELECT_COLS}
             FROM facets
             WHERE agent_id = ? AND facet_type = ? AND is_deleted = 0
               AND captured_at >= ?
@@ -259,7 +324,49 @@ def _row_to_facet(row: tuple[Any, ...]) -> Facet:
         metadata=json.loads(row[8]) if row[8] else {},
         is_deleted=bool(row[9]),
         embed_status=str(row[10]),
+        volatility=str(row[11]) if row[11] is not None else "persistent",
+        ttl_seconds=int(row[12]) if row[12] is not None else None,
     )
+
+
+def list_expired_volatile(
+    conn: sqlcipher3.Connection,
+    *,
+    now: int,
+    limit: int = 256,
+) -> list[Facet]:
+    """Return non-persistent rows whose TTL has elapsed.
+
+    Used by the auto-compaction sweep. Rows missing ``ttl_seconds`` (a
+    schema-v3 row migrated to v4 with a non-default volatility but no TTL
+    yet) fall back to the volatility's default TTL so the sweep cannot
+    miss them. Persistent rows are filtered out by the partial index.
+    """
+
+    rows = conn.execute(
+        f"""
+        SELECT {_FACET_SELECT_COLS}
+        FROM facets
+        WHERE is_deleted = 0
+          AND volatility IN ('session', 'ephemeral')
+          AND captured_at + COALESCE(
+                ttl_seconds,
+                CASE volatility
+                    WHEN 'session' THEN ?
+                    WHEN 'ephemeral' THEN ?
+                END
+            ) <= ?
+        ORDER BY captured_at ASC
+        LIMIT ?
+        """,
+        (
+            DEFAULT_TTL_SECONDS["session"],
+            DEFAULT_TTL_SECONDS["ephemeral"],
+            now,
+            limit,
+        ),
+    ).fetchall()
+    return [_row_to_facet(r) for r in rows]
 
 
 def _now_epoch() -> int:

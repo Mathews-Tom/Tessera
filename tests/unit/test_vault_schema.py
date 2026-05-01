@@ -10,11 +10,13 @@ from tessera.vault import schema
 
 
 @pytest.mark.unit
-def test_schema_version_matches_v0_3_surface() -> None:
-    # v3 activates the v0.3 People + Skills surface: ``disk_path`` column
-    # on facets, ``people`` and ``person_mentions`` tables. The v2
-    # post-reframe vocabulary (ADR 0010) is preserved.
-    assert schema.SCHEMA_VERSION == 3
+def test_schema_version_matches_current_surface() -> None:
+    # v4 activates ADR-0016 memory volatility on top of the v0.3 People
+    # + Skills surface (v3 disk_path + people + person_mentions) and the
+    # v2 post-reframe five-facet vocabulary (ADR 0010). The CHECK
+    # constraint, ``volatility`` column, and the v0.5-P1 partial index
+    # exit gate is the version bump landing at 4.
+    assert schema.SCHEMA_VERSION == 4
 
 
 @pytest.mark.unit

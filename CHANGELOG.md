@@ -6,7 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Schema v4 (additive over v3, V0.5-P1, ADR 0016)
+
+- New `volatility TEXT NOT NULL DEFAULT 'persistent' CHECK (volatility IN ('persistent', 'session', 'ephemeral'))` column on `facets`. Existing rows default to `persistent` so v0.4 behaviour is preserved.
+- New `ttl_seconds INTEGER` column on `facets` carrying the per-row TTL override; `NULL` defers to the volatility default (24 h for `session`, 60 min for `ephemeral`).
+- New partial index `facets_volatility_sweep` on `(volatility, captured_at) WHERE is_deleted = 0 AND volatility IN ('session', 'ephemeral')` driving the auto-compaction sweep.
+- Migration step list `_V3_TO_V4_STEPS` registered in `migration/runner.py`. Forward, idempotent, resume-safe; documented under `docs/migration-contract.md §Schema v3 → v4`.
+
 ### Added
+
+- **Memory volatility surface (V0.5-P1, ADR 0016).** `tessera capture` now accepts `--volatility {persistent, session, ephemeral}` and `--ttl-seconds <int>`; the MCP `capture` tool and the REST `POST /api/v1/capture` body gain matching parameters with structured-error rejection on illegal combinations (`persistent` rows cannot carry a TTL; `ephemeral` ceiling is 24 h; `session` ceiling is 7 days). The capture audit row records `volatility` and `ttl_seconds` per the §S4 closed-allowlist contract; no content crosses the boundary.
+- **SWCR `freshness(f)` term.** SWCR scores are now multiplied by a closed-form decay function: persistent rows contribute `1.0`, `session` rows decay linearly from capture to TTL, `ephemeral` rows step from `1.0` inside the window to `0.0` past it. Deterministic given fixed `now`; the determinism CI gate is unchanged. `swcr.spec.md §Algorithm` documents the closed form alongside the existing `(α, β, γ, λ)` parameters.
+- **Auto-compaction sweep.** New `vault/compaction.py` module plus a daemon idle-time loop running every 5 minutes (`_COMPACTION_SWEEP_SECONDS`) that soft-deletes expired session/ephemeral rows via the existing `facets.soft_delete` path. Each compaction emits a `facet_auto_compacted` audit row carrying `facet_type`, `volatility`, and `age_seconds` — no content. Sweeps that compact at least one row also emit a `volatility_sweep` event into `events.db` with totals.
+
+### ADRs
 
 - ADR-0016 — memory volatility model. Documents the planned `volatility` column on `facets` (`persistent` | `session` | `ephemeral`), TTL + auto-compaction policy, and SWCR freshness weighting for non-persistent rows. Documents-only landing as part of the v0.5 ADR sequence; the schema delta is implemented in a later v0.5 sub-phase.
 - ADR-0017 — agent profile as a first-class facet. Documents the planned `facet_type='agent_profile'`, its structured metadata shape, and the nullable FK linkage from `agents.profile_facet_external_id` to a profile facet. Records the explicit boundary that the `agents` table remains the JWT subject store while the profile facet is the recallable context — the two are linked, not merged. Documents-only as part of the v0.5 ADR sequence.

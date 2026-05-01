@@ -206,7 +206,7 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
         name="capture",
         description=(
             "Capture a new facet into the vault. Required args: content, facet_type. "
-            "Optional args: source_tool, metadata."
+            "Optional args: source_tool, metadata, volatility, ttl_seconds."
         ),
         input_schema={
             "type": "object",
@@ -223,6 +223,16 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
                 "metadata": {
                     "type": "object",
                     "maxProperties": _MAX_METADATA_KEYS,
+                },
+                "volatility": {
+                    "type": "string",
+                    "enum": sorted(vault_facets.WRITABLE_VOLATILITIES),
+                    "default": "persistent",
+                },
+                "ttl_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": vault_facets.MAX_TTL_SECONDS["session"],
                 },
             },
             "required": ["content", "facet_type"],
@@ -431,6 +441,8 @@ class CaptureResponse:
     external_id: str
     is_duplicate: bool
     facet_type: str
+    volatility: str
+    ttl_seconds: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -589,6 +601,8 @@ async def capture(
     facet_type: str,
     source_tool: str | None = None,
     metadata: dict[str, Any] | None = None,
+    volatility: str = "persistent",
+    ttl_seconds: int | None = None,
 ) -> CaptureResponse:
     """MCP ``capture`` — insert a facet.
 
@@ -596,12 +610,17 @@ async def capture(
     enforcement. ``source_tool`` defaults to the capability's
     ``client_name`` when omitted; callers may override to attribute a
     capture to a specific sub-agent, but the capability's client_name
-    is what lands in the audit row regardless.
+    is what lands in the audit row regardless. ``volatility`` per ADR
+    0016 defaults to ``persistent``; callers writing working memory
+    pass ``session`` or ``ephemeral`` and may override the default TTL
+    inside the per-volatility ceiling.
     """
 
     _validate_length("content", content, _MAX_CONTENT_CHARS, allow_empty=False)
     _validate_facet_type(facet_type)
     _validate_metadata(metadata)
+    _validate_volatility(volatility)
+    _validate_ttl_seconds(ttl_seconds, volatility=volatility)
     resolved_source = source_tool or tctx.verified.client_name
     _validate_source_tool(resolved_source)
     _require_scope(tctx, op="write", facet_type=facet_type)
@@ -613,16 +632,22 @@ async def capture(
             content=content,
             source_tool=resolved_source,
             metadata=metadata,
+            volatility=volatility,
+            ttl_seconds=ttl_seconds,
         )
     except vault_facets.UnknownAgentError as exc:
         # Agent rows are the vault's stable root; a capability pointing
         # at a vanished agent is a data-integrity break that the MCP
         # boundary surfaces as a storage error with a stable code.
         raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
+    except (vault_facets.UnsupportedVolatilityError, vault_facets.InvalidTTLError) as exc:
+        raise ValidationError(str(exc)) from exc
     return CaptureResponse(
         external_id=result.external_id,
         is_duplicate=result.is_duplicate,
         facet_type=facet_type,
+        volatility=result.volatility,
+        ttl_seconds=result.ttl_seconds,
     )
 
 
@@ -1017,6 +1042,31 @@ def _validate_facet_type(facet_type: str) -> None:
     if facet_type not in vault_facets.WRITABLE_FACET_TYPES:
         raise ValidationError(
             f"facet_type {facet_type!r} not in {sorted(vault_facets.WRITABLE_FACET_TYPES)}"
+        )
+
+
+def _validate_volatility(volatility: str) -> None:
+    if not isinstance(volatility, str):
+        raise ValidationError("volatility must be a string")
+    if volatility not in vault_facets.WRITABLE_VOLATILITIES:
+        raise ValidationError(
+            f"volatility {volatility!r} not in {sorted(vault_facets.WRITABLE_VOLATILITIES)}"
+        )
+
+
+def _validate_ttl_seconds(ttl_seconds: int | None, *, volatility: str) -> None:
+    if ttl_seconds is None:
+        return
+    if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool):
+        raise ValidationError("ttl_seconds must be an integer")
+    if ttl_seconds <= 0:
+        raise ValidationError(f"ttl_seconds={ttl_seconds} must be positive")
+    if volatility == "persistent":
+        raise ValidationError("ttl_seconds is not allowed when volatility='persistent'")
+    ceiling = vault_facets.MAX_TTL_SECONDS.get(volatility)
+    if ceiling is not None and ttl_seconds > ceiling:
+        raise ValidationError(
+            f"ttl_seconds={ttl_seconds} exceeds {volatility} ceiling of {ceiling}s"
         )
 
 

@@ -172,6 +172,20 @@ After a successful migration, `_migration_steps` rows for the prior target are d
 - **Downgrade migrations.** Restore from backup is the downgrade path. No `v0.3 → v0.1` downgrade script ships.
 - **Migration during active daemon.** The daemon takes an exclusive lock for the duration of the migration; no MCP calls are served.
 
+## Schema v3 → v4 (V0.5-P1, ADR 0016)
+
+Additive forward migration. Two columns added to `facets`, one partial index for the auto-compaction sweep. No row data is rewritten; existing rows default to `volatility='persistent'` with `ttl_seconds=NULL` so the v0.4 behaviour (every facet is long-lived) is preserved.
+
+Steps registered in `_V3_TO_V4_STEPS` (in apply order):
+
+1. `add_volatility_column` — `ALTER TABLE facets ADD COLUMN volatility TEXT NOT NULL DEFAULT 'persistent' CHECK (volatility IN ('persistent', 'session', 'ephemeral'))`. Guarded by a `PRAGMA table_info` check so resume replays cleanly.
+2. `add_ttl_seconds_column` — `ALTER TABLE facets ADD COLUMN ttl_seconds INTEGER`. Same guard.
+3. `create_volatility_sweep_index` — partial index on `(volatility, captured_at)` filtering `is_deleted = 0 AND volatility IN ('session', 'ephemeral')`. Used by the daemon's idle-time compaction sweep so the common case (a vault dominated by persistent rows) sees no contention.
+
+Each step is idempotent — a resume re-runs every step whose marker is absent, the savepoint pattern keeps the apply + marker-write atomic, and `IF NOT EXISTS` plus the column-presence check prevent double-add errors. No backup is required for a column-add but the runner takes one anyway per the contract.
+
+Forward, idempotent, and rollback tests live in `tests/unit/test_volatility.py::test_v3_to_v4_*` and `tests/unit/test_migration_runner.py`.
+
 ## DoD for every migration
 
 A migration ships only when:

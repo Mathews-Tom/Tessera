@@ -435,12 +435,13 @@ def test_v1_to_v2_migration_maps_retired_facet_types(tmp_path: Path) -> None:
     k.wipe()
 
     # Run the real upgrade. The runner advances all the way to the
-    # binary's BINARY_SCHEMA_VERSION (currently v3) — both the v1 -> v2
-    # remapping and the v2 -> v3 additive surface land in one call.
+    # binary's BINARY_SCHEMA_VERSION — both the v1 -> v2 remapping
+    # and every additive surface up to the current version land in
+    # one call.
     k2 = derive_key(bytearray(_PASS), _SALT)
     state = upgrade(vault_path, k2)
     k2.wipe()
-    assert state.schema_version == 3
+    assert state.schema_version == SCHEMA_VERSION
 
     # Verify the remapping: episodic -> project, semantic -> preference,
     # style -> style, skill -> skill, relationship -> person,
@@ -524,7 +525,7 @@ def test_v2_to_v3_migration_adds_disk_path_and_people_tables(tmp_path: Path) -> 
     k2 = derive_key(bytearray(_PASS), _SALT)
     state = upgrade(vault_path, k2)
     k2.wipe()
-    assert state.schema_version == 3
+    assert state.schema_version == SCHEMA_VERSION
 
     k3 = derive_key(bytearray(_PASS), _SALT)
     with VaultConnection.open(vault_path, k3) as vc:
@@ -555,7 +556,7 @@ def test_v2_to_v3_migration_adds_disk_path_and_people_tables(tmp_path: Path) -> 
 
 @pytest.mark.unit
 def test_v2_to_v3_migration_is_idempotent_under_resume(tmp_path: Path) -> None:
-    """Running upgrade twice must leave the vault at v3 with no errors."""
+    """Running upgrade twice must leave the vault at the current schema with no errors."""
 
     vault_path = tmp_path / "v2-resume.db"
     _bootstrap_v2_vault(vault_path)
@@ -569,7 +570,7 @@ def test_v2_to_v3_migration_is_idempotent_under_resume(tmp_path: Path) -> None:
     k2 = derive_key(bytearray(_PASS), _SALT)
     state = upgrade(vault_path, k2)
     k2.wipe()
-    assert state.schema_version == 3
+    assert state.schema_version == SCHEMA_VERSION
 
 
 @pytest.mark.unit

@@ -29,6 +29,8 @@ from tessera.vault import audit, facets
 class CaptureResult:
     external_id: str
     is_duplicate: bool
+    volatility: str
+    ttl_seconds: int | None
 
 
 def capture(
@@ -40,15 +42,20 @@ def capture(
     source_tool: str,
     metadata: dict[str, Any] | None = None,
     captured_at: int | None = None,
+    volatility: str = "persistent",
+    ttl_seconds: int | None = None,
 ) -> CaptureResult:
     """Insert a facet and write the matching audit entry.
 
     Raises :class:`~tessera.vault.facets.UnsupportedFacetTypeError` for facet
-    types outside the v0.1 set, and
-    :class:`~tessera.vault.facets.UnknownAgentError` when ``agent_id`` does
-    not correspond to a live ``agents`` row.
+    types outside the v0.1 set,
+    :class:`~tessera.vault.facets.UnsupportedVolatilityError` /
+    :class:`~tessera.vault.facets.InvalidTTLError` for ADR-0016 lifecycle
+    misuses, and :class:`~tessera.vault.facets.UnknownAgentError` when
+    ``agent_id`` does not correspond to a live ``agents`` row.
     """
 
+    effective_ttl = facets.resolve_ttl_seconds(volatility, ttl_seconds)
     external_id, is_new = facets.insert(
         conn,
         agent_id=agent_id,
@@ -57,6 +64,8 @@ def capture(
         source_tool=source_tool,
         metadata=metadata,
         captured_at=captured_at,
+        volatility=volatility,
+        ttl_seconds=effective_ttl,
     )
     audit.write(
         conn,
@@ -69,6 +78,13 @@ def capture(
             "source_tool": source_tool,
             "is_duplicate": not is_new,
             "content_hash_prefix": facets.content_hash(content)[:8],
+            "volatility": volatility,
+            "ttl_seconds": effective_ttl,
         },
     )
-    return CaptureResult(external_id=external_id, is_duplicate=not is_new)
+    return CaptureResult(
+        external_id=external_id,
+        is_duplicate=not is_new,
+        volatility=volatility,
+        ttl_seconds=effective_ttl,
+    )

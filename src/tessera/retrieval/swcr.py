@@ -10,6 +10,14 @@ bundle (style sample that matches the project facet's register,
 workflow whose procedural shape matches the project in scope, and so
 on).
 
+V0.5-P1 (ADR 0016) augments the score with a closed-form
+``freshness(f)`` term so non-persistent rows (``volatility=session`` or
+``ephemeral``) decay across their TTL window. Persistent rows always
+score ``freshness=1.0`` and the algorithm collapses to its v0.4 form
+when the candidate set is entirely persistent. The decay is
+deterministic given fixed ``now`` so the determinism CI gate continues
+to hold.
+
 This module is pure: no DB, no adapters, no async. The inputs are the
 candidate set and the derived scores; the output is a new ranked list.
 The B-RET-1 ablation harness exists exactly because every decision here
@@ -25,6 +33,14 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
+
+# ADR 0016 default TTLs. Mirrored from
+# ``tessera.vault.facets.DEFAULT_TTL_SECONDS`` so the SWCR module stays
+# pure and testable without importing the storage layer.
+_DEFAULT_TTL_BY_VOLATILITY: Final[dict[str, int]] = {
+    "session": 24 * 3600,
+    "ephemeral": 60 * 60,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +78,12 @@ class SWCRCandidate:
     embedding: Sequence[float]
     facet_type: str
     entities: frozenset[str]
+    # ADR 0016 lifecycle metadata. Defaults reproduce v0.4 behaviour
+    # so call sites that have not yet plumbed volatility through still
+    # score ``freshness=1.0`` per the persistent contract.
+    volatility: str = "persistent"
+    captured_at: int = 0
+    ttl_seconds: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,10 +93,51 @@ class SWCRResult:
     rank: int
 
 
+def freshness(
+    *,
+    volatility: str,
+    captured_at: int,
+    now: int,
+    ttl_seconds: int | None = None,
+) -> float:
+    """Closed-form freshness term per ADR 0016.
+
+    * ``persistent``: always ``1.0``.
+    * ``session``: linear decay from ``1.0`` at capture to ``0.0`` at the
+      end of the TTL window. Past the window the term is ``0.0``.
+    * ``ephemeral``: step decay — ``1.0`` inside the TTL window, ``0.0``
+      after.
+
+    Deterministic given fixed ``now``. Negative values are clamped to
+    zero so the SWCR algorithm cannot produce a negative bonus from a
+    badly-clocked row.
+    """
+
+    if volatility == "persistent":
+        return 1.0
+    ttl = ttl_seconds if ttl_seconds is not None else _DEFAULT_TTL_BY_VOLATILITY.get(volatility)
+    if ttl is None or ttl <= 0:
+        # Volatility outside the known set or a zero/negative TTL falls
+        # back to step decay with the known default; if no default
+        # exists either the row is treated as expired immediately so a
+        # misconfigured row cannot dominate the bundle.
+        return 0.0
+    age = now - captured_at
+    if age <= 0:
+        return 1.0
+    if age >= ttl:
+        return 0.0
+    if volatility == "ephemeral":
+        return 1.0
+    # session: linear decay.
+    return 1.0 - (age / ttl)
+
+
 def apply(
     candidates: Sequence[SWCRCandidate],
     *,
     params: SWCRParams = DEFAULT_PARAMS,
+    now: int | None = None,
 ) -> list[SWCRResult]:
     """Reweight ``candidates`` by adding the cross-facet coherence bonus.
 
@@ -82,6 +145,11 @@ def apply(
     returned list is sorted by SWCR score descending with a deterministic
     ``facet_id`` tie-break. Callers that need the original positions keep
     them on the source ``SWCRCandidate`` structs.
+
+    ``now`` (Unix epoch seconds) seeds the per-candidate ``freshness(f)``
+    term per ADR 0016. When omitted the algorithm degrades to the v0.4
+    behaviour (no freshness weighting) so callers that have not yet
+    plumbed volatility through retain their existing semantics.
     """
 
     if not candidates:
@@ -89,6 +157,7 @@ def apply(
     # Top-M cap per the spec; beyond M the graph's O(M^2) cost grows.
     top = list(candidates)[: params.max_candidates]
     n = len(top)
+    fresh = _freshness_vector(top, now=now)
     weights = _coherence_graph(top, params=params)
     bonuses = [0.0] * n
     for i in range(n):
@@ -99,14 +168,35 @@ def apply(
             w = weights[i][j]
             if w == 0.0:
                 continue
-            total += w * top[j].rerank_score
+            total += w * top[j].rerank_score * fresh[j]
         bonuses[i] = params.lam * total
     # Tie-break: score DESC, then facet_id ASC (non-negotiable per spec).
-    rescored = [(cand.facet_id, cand.rerank_score + bonuses[idx]) for idx, cand in enumerate(top)]
+    rescored = [
+        (cand.facet_id, cand.rerank_score * fresh[idx] + bonuses[idx])
+        for idx, cand in enumerate(top)
+    ]
     rescored.sort(key=lambda pair: (-pair[1], pair[0]))
     return [
         SWCRResult(facet_id=facet_id, score=score, rank=new_rank)
         for new_rank, (facet_id, score) in enumerate(rescored)
+    ]
+
+
+def _freshness_vector(
+    candidates: Sequence[SWCRCandidate],
+    *,
+    now: int | None,
+) -> list[float]:
+    if now is None:
+        return [1.0 for _ in candidates]
+    return [
+        freshness(
+            volatility=c.volatility,
+            captured_at=c.captured_at,
+            now=now,
+            ttl_seconds=c.ttl_seconds,
+        )
+        for c in candidates
     ]
 
 

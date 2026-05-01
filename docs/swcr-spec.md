@@ -74,12 +74,24 @@ Self-loops are excluded. Edges with $w < 0.1$ are dropped (sparsification).
 For each candidate $f$, define:
 
 $$
-s_{\text{SWCR}}(f) = s_r(f) + \lambda \cdot \sum_{f' \in F \setminus \{f\}} w(f, f') \cdot s_r(f')
+s_{\text{SWCR}}(f) = s_r(f) \cdot \phi(f) + \lambda \cdot \sum_{f' \in F \setminus \{f\}} w(f, f') \cdot s_r(f') \cdot \phi(f')
 $$
 
-where $\lambda$ is the coherence weight (default 0.25).
+where $\lambda$ is the coherence weight (default 0.25) and $\phi(f) \in [0, 1]$ is the closed-form **freshness term** introduced in V0.5-P1 per [ADR 0016](adr/0016-memory-volatility-model.md):
 
-Intuition: a facet's SWCR score is its own relevance plus a boost proportional to how strongly it connects to other high-relevance candidates across the graph — especially across facet types. A style sample that aligns with the entities appearing in the project facets and with the workflow in scope is boosted; a style sample that is topically isolated from the rest of the candidate set is not.
+$$
+\phi(f) = \begin{cases}
+1 & \text{if } \text{volatility}(f) = \texttt{persistent} \\
+1 & \text{if } \text{volatility}(f) = \texttt{ephemeral} \text{ and } \text{age}(f) < \text{ttl}(f) \\
+0 & \text{if } \text{volatility}(f) = \texttt{ephemeral} \text{ and } \text{age}(f) \ge \text{ttl}(f) \\
+1 - \dfrac{\text{age}(f)}{\text{ttl}(f)} & \text{if } \text{volatility}(f) = \texttt{session} \text{ and } \text{age}(f) < \text{ttl}(f) \\
+0 & \text{if } \text{volatility}(f) = \texttt{session} \text{ and } \text{age}(f) \ge \text{ttl}(f)
+\end{cases}
+$$
+
+with $\text{age}(f) = \text{now} - \text{captured\_at}(f)$ and $\text{ttl}(f) = $ row-level override or the volatility default (24 h for `session`, 60 min for `ephemeral`). $\phi$ is deterministic given a fixed `now`, which is captured once per `recall` call and threaded through both terms; the determinism CI gate covers it.
+
+Intuition: a facet's SWCR score is its own relevance plus a boost proportional to how strongly it connects to other high-relevance candidates across the graph — especially across facet types. A style sample that aligns with the entities appearing in the project facets and with the workflow in scope is boosted; a style sample that is topically isolated from the rest of the candidate set is not. After V0.5-P1, that boost is also weighted by freshness: a `session`-scoped working-memory note halfway through its TTL contributes half the coherence weight a persistent row would, and an `ephemeral` row past its window contributes nothing.
 
 ### Per-facet-type budget enforcement (cross-facet `recall`)
 

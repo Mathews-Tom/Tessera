@@ -29,10 +29,24 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     "migration_resumed": frozenset({"schema_target"}),
     "migration_rolledback": frozenset({"from_version", "backup_path"}),
     "facet_inserted": frozenset(
-        {"facet_type", "source_tool", "is_duplicate", "content_hash_prefix"}
+        {
+            "facet_type",
+            "source_tool",
+            "is_duplicate",
+            "content_hash_prefix",
+            # ADR 0016: capture records lifecycle so forensics can tell a
+            # session-scoped row from a persistent capture. ``ttl_seconds``
+            # is an integer or null and never carries content.
+            "volatility",
+            "ttl_seconds",
+        }
     ),
     "facet_soft_deleted": frozenset({"facet_type"}),
     "facet_hard_deleted": frozenset({"facet_type"}),
+    # Auto-compaction sweep (V0.5-P1). The sweep soft-deletes expired
+    # session/ephemeral rows. Forensics correlates via target_external_id;
+    # the payload records why and at what age in seconds.
+    "facet_auto_compacted": frozenset({"facet_type", "volatility", "age_seconds"}),
     # ``forget`` is the MCP-surface soft-delete primitive post-reframe
     # (ADR 0010). The op carries the facet type and an optional free-text
     # reason the caller supplied; external_id lives on the audit row's
