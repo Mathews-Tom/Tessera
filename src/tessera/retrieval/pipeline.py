@@ -33,8 +33,9 @@ import sys
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 import sqlcipher3
 
@@ -200,6 +201,7 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
         t0 = time.perf_counter()
         if mode == "swcr":
             entities_lookup = _fetch_entities(ctx.conn, working_ids)
+            volatility_lookup = _fetch_volatility(ctx.conn, working_ids)
             swcr_input = [
                 swcr.SWCRCandidate(
                     facet_id=cand.facet_id,
@@ -207,11 +209,15 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
                     embedding=embeddings[cand.facet_id],
                     facet_type=type_lookup.get(cand.facet_id, ""),
                     entities=entities_lookup.get(cand.facet_id, frozenset()),
+                    volatility=volatility_lookup.get(cand.facet_id, _PERSISTENT)[0],
+                    captured_at=volatility_lookup.get(cand.facet_id, _PERSISTENT)[1],
+                    ttl_seconds=volatility_lookup.get(cand.facet_id, _PERSISTENT)[2],
                 )
                 for cand in ordered
                 if cand.facet_id in embeddings
             ]
-            swcr_results = swcr.apply(swcr_input, params=ctx.swcr_params)
+            swcr_now = _now_epoch()
+            swcr_results = swcr.apply(swcr_input, params=ctx.swcr_params, now=swcr_now)
             ordered = [_ScoredCandidate(facet_id=r.facet_id, score=r.score) for r in swcr_results]
             ordered = _apply_relevance_floor(ordered)
         stage_ms["swcr"] = _elapsed_ms(t0)
@@ -475,6 +481,46 @@ async def _embed_working_set(
     contents = [content_lookup.get(fid, "") for fid in facet_ids]
     vectors = await ctx.embedder.embed(contents)
     return {fid: list(vec) for fid, vec in zip(facet_ids, vectors, strict=True)}
+
+
+# Default tuple used when a candidate has no volatility row in the
+# fetched lookup (defensive only — every facet row has volatility after
+# the v3→v4 migration). Treating as persistent collapses ``freshness``
+# to 1.0, matching the v0.4 behaviour.
+_PERSISTENT: Final[tuple[str, int, int | None]] = ("persistent", 0, None)
+
+
+def _fetch_volatility(
+    conn: sqlcipher3.Connection, facet_ids: Iterable[int]
+) -> dict[int, tuple[str, int, int | None]]:
+    """Return ``{facet_id: (volatility, captured_at, ttl_seconds)}``.
+
+    Used by the SWCR stage to weight each candidate's freshness term per
+    ADR 0016. ``captured_at`` is the wall-clock epoch the row was
+    written; ``ttl_seconds`` is the per-row override or NULL when the
+    row is using the volatility default.
+    """
+
+    ids = list(facet_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"SELECT id, volatility, captured_at, ttl_seconds FROM facets WHERE id IN ({placeholders})",
+        tuple(ids),
+    ).fetchall()
+    out: dict[int, tuple[str, int, int | None]] = {}
+    for row in rows:
+        facet_id = int(row[0])
+        volatility = str(row[1]) if row[1] is not None else "persistent"
+        captured_at = int(row[2]) if row[2] is not None else 0
+        ttl_seconds = int(row[3]) if row[3] is not None else None
+        out[facet_id] = (volatility, captured_at, ttl_seconds)
+    return out
+
+
+def _now_epoch() -> int:
+    return int(datetime.now(UTC).timestamp())
 
 
 def _fetch_entities(
