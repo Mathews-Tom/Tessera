@@ -4,6 +4,12 @@ All notable changes to Tessera are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- ADR-0016 — memory volatility model. Documents the planned `volatility` column on `facets` (`persistent` | `session` | `ephemeral`), TTL + auto-compaction policy, and SWCR freshness weighting for non-persistent rows. Documents-only landing as part of the v0.5 ADR sequence; the schema delta is implemented in a later v0.5 sub-phase.
+
 ## [0.4.0rc2] — 2026-04-27 (pre-release)
 
 First-run ergonomics fix on the v0.4 line. rc1 shipped earlier the same day with a 30 s `tessera daemon start --timeout` default that proved too tight after the ONNX-only migration: the daemon's first start now downloads ~650 MB of fastembed weights on the critical startup path, which routinely takes 30–90 s on a typical residential link. When the CLI hit the timeout, the spawned `tesserad` kept running in the background and eventually bound port 5710 — but the user's next `tessera daemon start` then hit `OSError [Errno 48] address already in use` against the orphan it had just abandoned. rc2 raises the default so the timeout no longer races the download.
