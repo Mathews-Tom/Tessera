@@ -28,6 +28,9 @@ def test_contract_lists_dispatchable_tools_in_order() -> None:
         "list_skills",
         "resolve_person",
         "list_people",
+        "register_agent_profile",
+        "get_agent_profile",
+        "list_agent_profiles",
     ]
     assert set(names) == set(dispatch._HANDLERS)
 

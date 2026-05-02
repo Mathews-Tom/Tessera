@@ -261,6 +261,50 @@ async def _do_list_people(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[s
     }
 
 
+async def _do_register_agent_profile(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    metadata = args.get("metadata")
+    if not isinstance(metadata, dict):
+        raise mcp.ValidationError("metadata must be an object")
+    set_active_link = args.get("set_active_link", True)
+    if not isinstance(set_active_link, bool):
+        raise mcp.ValidationError("set_active_link must be a boolean")
+    resp = await mcp.register_agent_profile(
+        tctx,
+        content=_require_str(args, "content"),
+        metadata=metadata,
+        source_tool=args.get("source_tool"),
+        set_active_link=set_active_link,
+    )
+    return {
+        "external_id": resp.external_id,
+        "is_new": resp.is_new,
+        "is_active_link": resp.is_active_link,
+    }
+
+
+async def _do_get_agent_profile(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.get_agent_profile(
+        tctx,
+        external_id=_require_str(args, "external_id"),
+    )
+    if resp is None:
+        return {"profile": None}
+    return {"profile": _agent_profile_view_to_json(resp)}
+
+
+async def _do_list_agent_profiles(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.list_agent_profiles(
+        tctx,
+        limit=_optional_int(args, "limit", default=20),
+        since=args.get("since"),
+    )
+    return {
+        "items": [_agent_profile_summary_to_json(s) for s in resp.items],
+        "truncated": resp.truncated,
+        "total_tokens": resp.total_tokens,
+    }
+
+
 _HandlerT = Callable[[mcp.ToolContext, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _HANDLERS: dict[str, _HandlerT] = {
@@ -275,6 +319,9 @@ _HANDLERS: dict[str, _HandlerT] = {
     "list_skills": _do_list_skills,
     "resolve_person": _do_resolve_person,
     "list_people": _do_list_people,
+    "register_agent_profile": _do_register_agent_profile,
+    "get_agent_profile": _do_get_agent_profile,
+    "list_agent_profiles": _do_list_agent_profiles,
 }
 
 
@@ -327,6 +374,35 @@ def _person_to_json(p: mcp.PersonMatch) -> dict[str, Any]:
         "canonical_name": p.canonical_name,
         "aliases": list(p.aliases),
         "created_at": p.created_at,
+    }
+
+
+def _agent_profile_view_to_json(view: mcp.AgentProfileView) -> dict[str, Any]:
+    return {
+        "external_id": view.external_id,
+        "content": view.content,
+        "purpose": view.purpose,
+        "inputs": list(view.inputs),
+        "outputs": list(view.outputs),
+        "cadence": view.cadence,
+        "skill_refs": list(view.skill_refs),
+        "verification_ref": view.verification_ref,
+        "captured_at": view.captured_at,
+        "embed_status": view.embed_status,
+        "is_active_link": view.is_active_link,
+        "truncated": view.truncated,
+        "token_count": view.token_count,
+    }
+
+
+def _agent_profile_summary_to_json(s: mcp.AgentProfileSummary) -> dict[str, Any]:
+    return {
+        "external_id": s.external_id,
+        "purpose": s.purpose,
+        "cadence": s.cadence,
+        "skill_refs": list(s.skill_refs),
+        "captured_at": s.captured_at,
+        "is_active_link": s.is_active_link,
     }
 
 
