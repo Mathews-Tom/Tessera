@@ -254,14 +254,115 @@ def test_hydrate_returns_empty_for_empty_id_list(
 def test_hydrate_skips_unknown_facet_id(
     open_vault: VaultConnection,
 ) -> None:
-    """An id that does not match any row should be absent from the
-    result dict, not surfaced with synthetic defaults. Callers
-    handle the missing-key case via ``dict.get(..., default)``."""
+    """An id that does not match any row is absent from the result
+    dict at the helper level. The consumer (``_to_matches``) treats
+    a missing-from-result key as an invariant violation and raises;
+    the helper itself stays a pure SQL adapter."""
 
     conn = open_vault.connection
     _seed_agent(conn)
     enriched = _hydrate_match_metadata(conn, [99_999])
     assert enriched == {}
+
+
+@pytest.mark.unit
+def test_hydrate_filters_soft_deleted(
+    open_vault: VaultConnection,
+) -> None:
+    """Defense-in-depth: the helper itself filters ``is_deleted=0``
+    so a row soft-deleted between candidate generation and
+    hydration drops out cleanly. The consumer's missing-row guard
+    then raises rather than fabricating defaults."""
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    cap = capture.capture(
+        conn,
+        agent_id=agent_id,
+        facet_type="project",
+        content="Project facet that will be soft-deleted before hydration.",
+        source_tool="cli",
+    )
+    facet_id = int(
+        conn.execute(
+            "SELECT id FROM facets WHERE external_id = ?",
+            (cap.external_id,),
+        ).fetchone()[0]
+    )
+    facets.soft_delete(conn, cap.external_id)
+    enriched = _hydrate_match_metadata(conn, [facet_id])
+    assert facet_id not in enriched
+
+
+@pytest.mark.unit
+def test_hydrate_raises_on_orphaned_compiled_notebook(
+    open_vault: VaultConnection,
+) -> None:
+    """A ``compiled_notebook`` facet (mode='write_time') without a
+    paired ``compiled_artifacts`` row is an integrity violation per
+    ADR 0019's pair-write contract. The helper raises rather than
+    fabricating a ``mode='write_time'`` / ``is_stale=False`` row
+    that would tell the caller "fresh authoritative brief" when
+    no artifact exists. Possible vectors: a partial BYO sync
+    restore (V0.5-P9), an aborted pair-write before V0.5-P4
+    atomicity, manual repair.
+    """
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    profile_id = _seed_profile(conn, agent_id)
+    artifact_id = _register_playbook(conn, agent_id=agent_id, sources=[profile_id])
+    facet_id = int(
+        conn.execute(
+            "SELECT id FROM facets WHERE external_id = ?",
+            (artifact_id,),
+        ).fetchone()[0]
+    )
+    # Surgically delete the paired compiled_artifacts row to
+    # simulate the orphan condition. The pair-write transaction
+    # prevents this on the production write path; this test
+    # plants the impossible-via-public-write shape directly.
+    conn.execute(
+        "DELETE FROM compiled_artifacts WHERE external_id = ?",
+        (artifact_id,),
+    )
+    with pytest.raises(RuntimeError, match="recall_hydration_orphan"):
+        _hydrate_match_metadata(conn, [facet_id])
+
+
+@pytest.mark.unit
+def test_hydrate_returns_hybrid_mode_unchanged(
+    open_vault: VaultConnection,
+) -> None:
+    """The schema CHECK admits ``hybrid`` alongside ``query_time``
+    and ``write_time``. Today no caller writes ``hybrid``, but the
+    helper passes the column through verbatim so a future hybrid
+    facet writer (e.g., a partial-recompile that reuses query-time
+    embeddings) surfaces correctly without a code change here."""
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    cap = capture.capture(
+        conn,
+        agent_id=agent_id,
+        facet_type="project",
+        content="Project facet that we will switch to hybrid mode.",
+        source_tool="cli",
+    )
+    facet_id = int(
+        conn.execute(
+            "SELECT id FROM facets WHERE external_id = ?",
+            (cap.external_id,),
+        ).fetchone()[0]
+    )
+    conn.execute(
+        "UPDATE facets SET mode = 'hybrid' WHERE id = ?",
+        (facet_id,),
+    )
+    enriched = _hydrate_match_metadata(conn, [facet_id])
+    _, mode, is_stale = enriched[facet_id]
+    assert mode == "hybrid"
+    assert is_stale is False
 
 
 # ---- end-to-end recall propagation --------------------------------------

@@ -73,12 +73,15 @@ class RecallMatch:
     token_count: int
     # V0.5-P7 (ADR 0019 §Retrieval surface): every match carries the
     # row's production method and staleness so callers can render
-    # ``compiled_notebook`` rows differently from raw context. For
-    # non-``compiled_notebook`` facets, ``mode`` always reads as
-    # ``query_time`` (the schema CHECK default) and ``is_stale`` is
-    # always ``False`` (no paired ``compiled_artifacts`` row to flag).
-    mode: str = "query_time"
-    is_stale: bool = False
+    # ``compiled_notebook`` rows differently from raw context. Both
+    # fields are required at construction — no defaults — so a
+    # future caller that adds a new construction site is forced to
+    # supply them and a regression that drops the propagation in
+    # ``_shape_recall_matches`` or ``_to_matches`` cannot land
+    # silently with fabricated ``query_time`` / ``False`` values
+    # (CLAUDE.md "no defaults masking errors").
+    mode: str
+    is_stale: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,14 +694,29 @@ def _to_matches(
     for row in _iter_all_candidates(bm25_by_type, dense_by_type):
         candidate_meta.setdefault(row.facet_id, (row.external_id, row.facet_type))
     survivor_ids = [int(item.key) for item in items if int(item.key) in candidate_meta]
-    enrichment = _hydrate_match_metadata(conn, survivor_ids) if survivor_ids else {}
+    enrichment = _hydrate_match_metadata(conn, survivor_ids)
     matches: list[RecallMatch] = []
     for rank_idx, item in enumerate(items):
         facet_id = int(item.key)
         if facet_id not in candidate_meta:
             continue
         external_id, facet_type = candidate_meta[facet_id]
-        captured_at, mode, is_stale = enrichment.get(facet_id, (0, "query_time", False))
+        if facet_id not in enrichment:
+            # Survivors come from BM25/dense candidates that already
+            # filtered ``is_deleted = 0``. A missing hydration row
+            # means the facet was hard-deleted (or soft-deleted)
+            # mid-pipeline — an invariant violation per the v0.5
+            # single-daemon-per-vault model. Fail loud rather than
+            # surface a fabricated ``mode='query_time'`` /
+            # ``is_stale=False`` ghost row to the caller; the
+            # outer ``recall`` try/except converts this into the
+            # ``pipeline_error`` audit row and a degraded result.
+            raise RuntimeError(
+                f"recall_hydration_miss facet_id={facet_id} survived "
+                f"ranking but has no row at hydration time "
+                f"(survivors={len(survivor_ids)})"
+            )
+        captured_at, mode, is_stale = enrichment[facet_id]
         matches.append(
             RecallMatch(
                 external_id=external_id,
@@ -725,26 +743,57 @@ def _hydrate_match_metadata(
     the row's production method (``mode``) and the compiled-artifact
     staleness flag so callers can render ``compiled_notebook`` rows
     differently from raw context. The LEFT JOIN against
-    ``compiled_artifacts`` defaults non-compiled facet types to
-    ``is_stale=0`` via ``COALESCE`` — there is no nullable surface for
-    a non-compiled row, the field reads as ``False``.
+    ``compiled_artifacts`` reads ``is_stale`` directly off the paired
+    artifact row when present.
 
     One SQL pass against the K survivors keeps cost proportional to
     response size rather than to the ~50 BM25/dense candidates the
     earlier stages consider.
+
+    Two integrity guards:
+
+    1. ``f.is_deleted = 0`` filters out rows that were soft-deleted
+       between candidate generation and hydration — defense-in-depth
+       beyond the candidate-generation filter so the helper is
+       standalone-correct.
+    2. A ``compiled_notebook`` facet (``f.mode = 'write_time'``)
+       without a paired ``compiled_artifacts`` row (``a.id IS NULL``)
+       is an integrity violation per ADR 0019's pair-write contract.
+       Surfacing such a row with ``is_stale=False`` would tell the
+       caller "fresh authoritative brief" when there is no artifact
+       at all — fabricated answer. Raise instead so the outer
+       ``recall`` try/except records the breach and a future caller
+       (BYO sync repair, manual restoration) can investigate.
     """
 
+    if not facet_ids:
+        return {}
     placeholders = ",".join("?" for _ in facet_ids)
     rows = conn.execute(
         f"""
-        SELECT f.id, f.captured_at, f.mode, COALESCE(a.is_stale, 0)
+        SELECT f.id, f.captured_at, f.mode,
+               a.id IS NOT NULL AS has_artifact,
+               COALESCE(a.is_stale, 0)
         FROM facets AS f
         LEFT JOIN compiled_artifacts AS a ON a.external_id = f.external_id
-        WHERE f.id IN ({placeholders})
+        WHERE f.id IN ({placeholders}) AND f.is_deleted = 0
         """,
         tuple(facet_ids),
     ).fetchall()
-    return {int(row[0]): (int(row[1]), str(row[2]), bool(row[3])) for row in rows}
+    out: dict[int, tuple[int, str, bool]] = {}
+    for row in rows:
+        facet_id = int(row[0])
+        captured_at = int(row[1])
+        mode = str(row[2])
+        has_artifact = bool(row[3])
+        is_stale = bool(row[4])
+        if mode == "write_time" and not has_artifact:
+            raise RuntimeError(
+                f"recall_hydration_orphan facet_id={facet_id} "
+                f"mode='write_time' has no paired compiled_artifacts row"
+            )
+        out[facet_id] = (captured_at, mode, is_stale)
+    return out
 
 
 def _warnings(rerank_degraded: bool, truncated: bool) -> tuple[str, ...]:

@@ -810,9 +810,11 @@ class RecallMatchView:
     # before treating the artifact as authoritative. For
     # non-``compiled_notebook`` facets, ``mode == 'query_time'`` and
     # ``is_stale is False`` — uniform fields rather than nullable so
-    # callers do not need facet-type-specific branches.
-    mode: str = "query_time"
-    is_stale: bool = False
+    # callers do not need facet-type-specific branches. Required at
+    # construction (no defaults) to keep the propagation from
+    # ``_shape_recall_matches`` honest under future refactors.
+    mode: str
+    is_stale: bool
 
 
 @dataclass(frozen=True, slots=True)
