@@ -30,6 +30,13 @@ FORBIDDEN='^\s*(import|from)\s+(requests|httpx|aiohttp|urllib\.request)\b'
 #     hook script, hitting only `$TESSERA_DAEMON_URL` (default
 #     `http://127.0.0.1:5710`). Same loopback shape as cli/_http.py
 #     and stdio_bridge.py; --print mode skips the HTTP call entirely.
+#   - src/tessera/sync/s3.py is the V0.5-P9b BYO sync S3 adapter. Per
+#     ADR-0022 D5 it is the ONLY new outbound surface added at v0.5.
+#     Every request goes to the user-configured S3 endpoint
+#     (S3Config.endpoint); no other host is reachable from this code
+#     path. The boundary statement from ADR 0019 / 0020 / 0021 extends:
+#     Tessera stores; the caller-configured BlobStore receives. A
+#     future feature wanting outbound-by-default opens its own ADR.
 # Extending this list requires a matching §CI enforcement note in
 # docs/determinism-and-observability.md.
 SCAN_ROOT="src/tessera"
@@ -38,6 +45,7 @@ ALLOWLISTED_FILES=(
   "src/tessera/cli/_http.py"
   "src/tessera/cli/curl_cmd.py"
   "src/tessera/daemon/stdio_bridge.py"
+  "src/tessera/sync/s3.py"
 )
 
 if [[ ! -d "${SCAN_ROOT}" ]]; then

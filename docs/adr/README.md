@@ -45,6 +45,7 @@ ADRs are numbered sequentially. Numbers are never reused. Superseding decisions 
 | 0019 | [Compiled notebook as the AgenticOS Playbook](0019-compiled-notebook-as-agenticos-playbook.md) | Accepted |
 | 0020 | [Automation registry, storage-only](0020-automation-registry-storage-only.md) | Accepted |
 | 0021 | [Audit-chain tamper evidence](0021-audit-chain-tamper-evidence.md) | Accepted |
+| 0022 | [BYO sync transport: S3 adapter, CLI, watermark persistence](0022-byo-sync-transport.md) | Accepted |
 
 ## When to write an ADR
 

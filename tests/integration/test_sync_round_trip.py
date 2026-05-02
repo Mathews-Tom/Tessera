@@ -41,7 +41,7 @@ from tessera.sync.pull import (
     VaultIdMismatchError,
     pull,
 )
-from tessera.sync.push import push
+from tessera.sync.push import PushChainBreakError, push
 from tessera.sync.storage import LocalFilesystemStore
 from tessera.vault.audit_chain import verify_chain
 from tessera.vault.connection import VaultConnection
@@ -512,6 +512,52 @@ def test_pull_failure_preserves_pre_existing_target(
     with pytest.raises(BlobIntegrityError):
         pull(store=store, target_path=dst, master_key=master_key_bytes)
     assert dst.read_bytes() == sentinel_bytes
+
+
+@pytest.mark.security
+def test_push_refuses_when_source_chain_is_broken(
+    populated_vault: tuple[Path, ProtectedKey, bytes],
+    tmp_path: Path,
+) -> None:
+    """V0.5-P9 part 1 wired ``PushChainBreakError`` into the
+    ``verify_chain`` exception path but PR #65 deferred the
+    regression test. Plant a chain break by overwriting one row's
+    ``payload`` column (the ``row_hash`` no longer matches the
+    recomputed value) and assert the typed exception fires before
+    any blob or manifest reaches the store. Pushing a broken chain
+    would propagate the corruption to the BlobStore and pin it
+    into the manifest's signed ``audit_chain_head`` field, so the
+    refusal is the v0.5 exit-gate's chain-integrity property
+    enforced at the push boundary."""
+
+    src, key, _salt = populated_vault
+    store_root = tmp_path / "sync_store"
+    store = LocalFilesystemStore(store_root)
+    store.initialize()
+    master_key_bytes = bytes.fromhex(key.hex())
+
+    with VaultConnection.open(src, key) as vc:
+        vc.connection.execute(
+            "UPDATE audit_log SET payload='{\"tampered\": true}' "
+            "WHERE id = (SELECT MAX(id) FROM audit_log)"
+        )
+
+    with (
+        VaultConnection.open(src, key) as vc,
+        pytest.raises(PushChainBreakError, match="audit chain failed"),
+    ):
+        push(
+            vault_path=src,
+            conn=vc.connection,
+            store=store,
+            master_key=master_key_bytes,
+        )
+
+    # The store must remain empty: refusal happens before either
+    # ``put_blob`` or ``put_manifest`` is called, so a broken-chain
+    # push leaves no orphan ciphertext or stub manifest behind.
+    assert store.latest_manifest_sequence() is None
+    assert not (store_root / "blobs").exists() or not any((store_root / "blobs").iterdir())
 
 
 @pytest.mark.security

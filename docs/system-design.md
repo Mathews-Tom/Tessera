@@ -520,8 +520,8 @@ Critically: **the v0.1 architecture does not foreclose any of this.** The `mode`
 | Process model | Single async Python daemon. No Docker. No external services. |
 | OS support | macOS, Linux first-class. Windows via pip. |
 | Auto-start | `launchd` (macOS), systemd user unit (Linux), manual on Windows |
-| Network | `127.0.0.1:5710` (HTTP MCP) + Unix socket (control). No outbound calls except to configured model adapters. |
-| Telemetry | None. Verified by source review and CI grep check (`scripts/no_telemetry_grep.sh`). |
+| Network | `127.0.0.1:5710` (HTTP MCP) + Unix socket (control). No outbound calls except to configured model adapters and the user-configured BYO sync target (V0.5-P9b, ADR 0022 D5). The boundary statement extends: Tessera stores; the caller-configured BlobStore receives. |
+| Telemetry | None. Verified by source review and CI grep check (`scripts/no_telemetry_grep.sh`). The allowlist enumerates every legitimate outbound import (cli/_http.py, cli/curl_cmd.py for loopback to tesserad; daemon/stdio_bridge.py for the Claude Desktop bridge; sync/s3.py for BYO sync). Any other module importing httpx / requests / aiohttp / urllib.request fails the gate. |
 | Updates | Standard `pip install -U tessera-context`. Semver. Vault schema migrations are explicit and reviewable. |
 
 ## What's deferred (honest scope discipline)
