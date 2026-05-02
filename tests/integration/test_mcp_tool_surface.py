@@ -749,6 +749,28 @@ def _profile_metadata() -> dict[str, object]:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_mcp_capture_rejects_agent_profile_facet_type(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """ADR 0017: ``agent_profile`` writes go through
+    ``register_agent_profile`` so the structured-metadata contract
+    cannot be bypassed by a write-scoped caller targeting the
+    generic ``capture`` tool."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P2_SCOPES, scope_write=_V0_5_P2_SCOPES
+    )
+    with pytest.raises(mcp.ValidationError, match="register_agent_profile"):
+        await mcp.capture(
+            tctx,
+            content="bypass attempt",
+            facet_type="agent_profile",
+            metadata={"any_shape": "would otherwise poison reads"},
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_register_agent_profile_creates_facet_and_active_link(
     open_vault: VaultConnection, vault_path: Path
 ) -> None:

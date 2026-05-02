@@ -378,23 +378,23 @@ def test_register_writes_facet_inserted_audit_with_agent_profile_type(
 
 
 @pytest.mark.unit
-def test_capture_does_not_unlock_agent_profile_metadata_validation(
+def test_vault_capture_of_agent_profile_skips_metadata_validation(
     open_vault: VaultConnection,
 ) -> None:
-    """Capturing an agent_profile through the generic ``capture`` path
-    bypasses the structured-metadata validation. That path is reserved
-    for callers that already validated the metadata themselves —
-    register_agent_profile is the supported public surface."""
+    """The ``vault.capture.capture`` storage primitive does not parse
+    agent_profile metadata — that contract lives one layer up in
+    ``agent_profiles.register``. The MCP boundary blocks this path
+    entirely (see ``test_mcp_capture_rejects_agent_profile_facet_type``
+    in the integration suite); this test only documents that the
+    storage layer itself remains agnostic."""
 
     agent_id = _seed_agent(open_vault.connection)
-    # capture() accepts any dict because it does not parse agent_profile
-    # shape; the metadata validation lives in agent_profiles.register.
     result = capture.capture(
         open_vault.connection,
         agent_id=agent_id,
         facet_type="agent_profile",
-        content="raw write",
+        content="raw write — direct storage call only",
         source_tool="cli",
-        metadata={"any_shape": "permitted_at_this_layer"},
+        metadata={"any_shape": "permitted_at_storage_layer"},
     )
     assert result.external_id

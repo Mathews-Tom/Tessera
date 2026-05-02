@@ -745,6 +745,17 @@ async def capture(
 
     _validate_length("content", content, _MAX_CONTENT_CHARS, allow_empty=False)
     _validate_facet_type(facet_type)
+    if facet_type == "agent_profile":
+        # ADR 0017: agent_profile carries a structured metadata contract
+        # that the generic capture path does not enforce. Routing writes
+        # exclusively through ``register_agent_profile`` keeps every
+        # stored profile parseable by the read tools and prevents a
+        # write-scoped caller from poisoning subsequent reads with a
+        # row whose metadata fails ``validate_metadata`` on retrieval.
+        raise ValidationError(
+            "agent_profile facets must be written via register_agent_profile, "
+            "not the generic capture tool"
+        )
     _validate_metadata(metadata)
     _validate_volatility(volatility)
     _validate_ttl_seconds(ttl_seconds, volatility=volatility)
@@ -1158,12 +1169,14 @@ async def register_agent_profile(
         raise ValidationError(str(exc)) from exc
     except vault_facets.UnknownAgentError as exc:
         raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
-    is_active = False
-    if set_active_link:
-        is_active = (
-            vault_agent_profiles.read_active_link(tctx.conn, agent_id=tctx.verified.agent_id)
-            == external_id
-        )
+    # Reflect ground truth: even when the caller staged a draft with
+    # ``set_active_link=False``, the new facet may already be the
+    # canonical row if it dedupes to the currently linked profile.
+    # Read the link unconditionally so the response cannot mislabel.
+    is_active = (
+        vault_agent_profiles.read_active_link(tctx.conn, agent_id=tctx.verified.agent_id)
+        == external_id
+    )
     return RegisterAgentProfileResponse(
         external_id=external_id,
         is_new=is_new,
