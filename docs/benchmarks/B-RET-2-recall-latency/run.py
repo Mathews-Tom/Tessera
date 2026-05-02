@@ -29,12 +29,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar
 
-# Registering the Ollama adapter name satisfies models_registry's adapter check.
-import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
-from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.fastembed_embedder import DEFAULT_DIM as FASTEMBED_DIM
+from tessera.adapters.fastembed_embedder import DEFAULT_MODEL as FASTEMBED_EMBED_MODEL
+from tessera.adapters.fastembed_embedder import FastEmbedEmbedder
+from tessera.adapters.fastembed_reranker import DEFAULT_MODEL as FASTEMBED_RERANK_MODEL
+from tessera.adapters.fastembed_reranker import FastEmbedReranker
 from tessera.adapters.protocol import Embedder, Reranker
-from tessera.adapters.st_reranker import SentenceTransformersReranker
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
 from tessera.retrieval.pipeline import PipelineContext, recall
@@ -45,9 +46,6 @@ from tessera.vault.encryption import derive_key, new_salt
 
 RESULTS_DIR = Path(__file__).parent / "results"
 FAKE_DIM = 8
-OLLAMA_MODEL = "nomic-embed-text"
-OLLAMA_DIM = 768
-OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_TRIALS = 100
 
 
@@ -67,22 +65,26 @@ class _HashEmbedder:
         return None
 
 
-def _select_adapters(adapters: str, device: str) -> tuple[Embedder, Reranker, int, str, str]:
+def _select_adapters(adapters: str) -> tuple[Embedder, Reranker, int, str, str]:
     """Return ``(embedder, reranker, dim, embedder_id, reranker_id)``.
 
     ``adapters='fake'`` is the reproducible default; ``adapters='real'``
-    swaps in the v0.1 DoD reference pair (Ollama ``nomic-embed-text`` +
-    sentence-transformers MiniLM cross-encoder). ``device`` is passed
-    through to the reranker for ``real`` runs — ``auto`` (default) picks
-    CUDA > MPS > CPU.
+    swaps in the current ONNX-only reference pair (fastembed embedder
+    and reranker) so the latency run measures the shipping adapter stack.
     """
 
     if adapters == "fake":
         return _HashEmbedder(), _LengthReranker(), FAKE_DIM, "hash-fake", "length-fake"
     if adapters == "real":
-        embedder = OllamaEmbedder(model_name=OLLAMA_MODEL, dim=OLLAMA_DIM, host=OLLAMA_HOST)
-        reranker = SentenceTransformersReranker(device=device)
-        return embedder, reranker, OLLAMA_DIM, f"ollama/{OLLAMA_MODEL}", reranker.model_name
+        embedder = FastEmbedEmbedder(model_name=FASTEMBED_EMBED_MODEL, dim=FASTEMBED_DIM)
+        reranker = FastEmbedReranker(model_name=FASTEMBED_RERANK_MODEL)
+        return (
+            embedder,
+            reranker,
+            FASTEMBED_DIM,
+            f"fastembed/{FASTEMBED_EMBED_MODEL}",
+            f"fastembed/{FASTEMBED_RERANK_MODEL}",
+        )
     raise SystemExit(f"unknown --adapters value: {adapters!r}")
 
 
@@ -136,9 +138,8 @@ async def _run(
     retrieval_mode: RetrievalMode,
     adapters: str,
     rerank_k: int | None,
-    device: str,
 ) -> int:
-    embedder, reranker, dim, embedder_id, reranker_id = _select_adapters(adapters, device)
+    embedder, reranker, dim, embedder_id, reranker_id = _select_adapters(adapters)
     with TemporaryDirectory() as tmp:
         vault_path = Path(tmp) / "b-ret-2.db"
         passphrase = b"b-ret-2-passphrase"
@@ -155,7 +156,7 @@ async def _run(
                     ).fetchone()[0]
                 )
                 model = models_registry.register_embedding_model(
-                    vc.connection, name="ollama", dim=dim, activate=True
+                    vc.connection, name="fastembed", dim=dim, activate=True
                 )
                 for i in range(n_facets):
                     capture.capture(
@@ -219,8 +220,6 @@ async def _run(
             "reranker": reranker_id,
             "retrieval_mode": retrieval_mode,
             "rerank_k": rerank_k,
-            "device": device,
-            "resolved_device": getattr(reranker, "resolved_device", "") or None,
         },
         "metrics": metrics,
     }
@@ -253,18 +252,13 @@ def _cli(argv: list[str] | None = None) -> int:
         "--adapters",
         choices=("fake", "real"),
         default="fake",
-        help="'real' requires Ollama with nomic-embed-text and the sentence-transformers MiniLM cross-encoder",
+        help="'real' requires local fastembed ONNX model weights or an allowed first-run cache fill",
     )
     parser.add_argument(
         "--rerank-k",
         type=int,
         default=None,
         help="cap the number of RRF-ranked candidates sent into the cross-encoder; omit to rerank the full fused list",
-    )
-    parser.add_argument(
-        "--device",
-        default="auto",
-        help="reranker device for --adapters real: auto (default) picks CUDA > MPS > CPU; or force cpu / mps / cuda / cuda:N",
     )
     args = parser.parse_args(argv)
     return asyncio.run(
@@ -274,7 +268,6 @@ def _cli(argv: list[str] | None = None) -> int:
             retrieval_mode=args.retrieval_mode,
             adapters=args.adapters,
             rerank_k=args.rerank_k,
-            device=args.device,
         )
     )
 

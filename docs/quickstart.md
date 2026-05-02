@@ -28,9 +28,9 @@ The T-shaped AI-native operator. Deep in one or two domains; horizontal across m
 
 ## What's real today
 
-`v0.4.0rc2` lives on PyPI as `tessera-context`. Five facets plus the skill surface, eleven MCP tools (`capture`, `recall`, `show`, `list_facets`, `stats`, `forget`, `learn_skill`, `get_skill`, `list_skills`, `resolve_person`, `list_people`), a parallel REST surface at `/api/v1/*` for hooks and shell scripts, all-local by absence (fastembed via ONNX Runtime in-process for both embedding and reranking — no Ollama, no torch, no cloud adapters), encrypted vault (sqlcipher + argon2id), ChatGPT + Claude conversation-history importers, named skills synced to disk, people resolution, zero outbound network unless you explicitly opt in.
+`v0.5.0rc1` lives on PyPI as `tessera-context`. Five base facets plus people, skills, agent profiles, verification checklists, retrospectives, compiled notebooks, automations, audit-chain verification, and BYO sync are active. Tessera exposes MCP tools plus a parallel REST surface at `/api/v1/*` for hooks and shell scripts. Embedding and reranking are all-local through fastembed via ONNX Runtime — no Ollama, no torch, no cloud model adapters. The encrypted vault uses sqlcipher + argon2id, imports ChatGPT + Claude conversation history, syncs named skills to disk, resolves people, and makes no outbound network calls except the operator-configured BYO sync target.
 
-The remaining gates before v0.4.0 GA are a recorded clean-VM walkthrough on macOS / Ubuntu / Windows. Runbook: [`docs/smoke-test-v0.4rc1.md`](smoke-test-v0.4rc1.md). DoD: [`docs/release-spec.md`](release-spec.md).
+The remaining v0.5 gates are dogfood and scale-validation commitments tracked in [`docs/release-spec.md`](release-spec.md).
 
 ---
 
@@ -58,12 +58,12 @@ Embedding and reranking run in-process via fastembed (ONNX Runtime). The first d
 
 ```bash
 # pipx is the friendliest path — isolated venv, console script on PATH
-pipx install --pip-args="--pre" tessera-context==0.4.0rc2
+pipx install --pip-args="--pre" tessera-context==0.5.0rc1
 
 # or plain pip (note: --pre is required while we're on rc)
-pip install --pre tessera-context==0.4.0rc2
+pip install --pre tessera-context==0.5.0rc1
 
-tessera --version          # expect 0.4.0rc2
+tessera --version          # expect 0.5.0rc1
 ```
 
 For development against the latest branch (in case you want unreleased fixes between rcs), source-install instead:
