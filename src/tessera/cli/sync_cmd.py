@@ -93,7 +93,14 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     setup_parser.add_argument("--endpoint", default=None, help="S3 endpoint URL")
     setup_parser.add_argument("--bucket", default=None, help="bucket name")
     setup_parser.add_argument("--region", default=None, help="signing region")
-    setup_parser.add_argument("--prefix", default="", help="optional path prefix under the bucket")
+    # ``default=None`` (not ``""``) so the conditional in
+    # ``_cmd_setup`` actually distinguishes "operator passed
+    # --prefix" from "no flag, ask interactively". A default of
+    # ``""`` would make ``args.prefix is not None`` always true and
+    # the interactive prompt unreachable.
+    setup_parser.add_argument(
+        "--prefix", default=None, help="optional path prefix under the bucket"
+    )
     setup_parser.add_argument("--access-key", default=None, help="AWS access key id")
     setup_parser.add_argument("--secret-key", default=None, help="AWS secret access key")
     setup_parser.set_defaults(handler=_cmd_setup)
@@ -166,16 +173,20 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         warn(f"vault not found at {vault_path}; run `tessera init` first")
         return 2
 
-    endpoint = args.endpoint or _prompt("S3 endpoint URL")
-    bucket = args.bucket or _prompt("bucket name")
-    region = args.region or _prompt("signing region (e.g. us-east-1)")
-    prefix = (
-        args.prefix
-        if args.prefix is not None
-        else _prompt("optional prefix (blank for none)", allow_empty=True)
-    )
-    access_key = args.access_key or _prompt("AWS access key id")
-    secret_key = args.secret_key or _prompt_secret("AWS secret access key")
+    try:
+        endpoint = args.endpoint or _prompt("S3 endpoint URL")
+        bucket = args.bucket or _prompt("bucket name")
+        region = args.region or _prompt("signing region (e.g. us-east-1)")
+        prefix = (
+            args.prefix
+            if args.prefix is not None
+            else _prompt("optional prefix (blank for none)", allow_empty=True)
+        )
+        access_key = args.access_key or _prompt("AWS access key id")
+        secret_key = args.secret_key or _prompt_secret("AWS secret access key")
+    except CliError as exc:
+        warn(str(exc))
+        return 2
 
     if not endpoint or not bucket or not region or not access_key or not secret_key:
         warn("setup aborted: endpoint, bucket, region, access-key, secret-key required")
@@ -258,6 +269,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
         warn(str(exc))
         info("reachability skipped (no credentials)")
         return 0
+    except keyring_cache.KeyringUnavailableError as exc:
+        return fail(
+            f"keyring read failed: {exc}; unlock the OS keyring or rerun "
+            f"`tessera sync setup` to re-enter credentials"
+        )
     s3_config = sync_config.assemble_s3_config(
         stored=stored,
         access_key_id=access_key,
@@ -307,6 +323,11 @@ def _cmd_push(args: argparse.Namespace) -> int:
                 access_key, secret_key = sync_config.load_credentials(stored=stored)
             except sync_config.SyncCredentialsMissingError as exc:
                 return fail(str(exc))
+            except keyring_cache.KeyringUnavailableError as exc:
+                return fail(
+                    f"keyring read failed: {exc}; unlock the OS keyring or rerun "
+                    f"`tessera sync setup` to re-enter credentials"
+                )
             s3_config = sync_config.assemble_s3_config(
                 stored=stored,
                 access_key_id=access_key,
@@ -362,6 +383,11 @@ def _cmd_pull(args: argparse.Namespace) -> int:
                 access_key, secret_key = sync_config.load_credentials(stored=stored)
             except sync_config.SyncCredentialsMissingError as exc:
                 return fail(str(exc))
+            except keyring_cache.KeyringUnavailableError as exc:
+                return fail(
+                    f"keyring read failed: {exc}; unlock the OS keyring or rerun "
+                    f"`tessera sync setup` to re-enter credentials"
+                )
             s3_config = sync_config.assemble_s3_config(
                 stored=stored,
                 access_key_id=access_key,
@@ -387,15 +413,40 @@ def _cmd_pull(args: argparse.Namespace) -> int:
                     )
                 except (PullError, S3BlobStoreError) as exc:
                     return fail(f"pull failed: {exc}")
-            # Update watermark only when the target is the
-            # configured vault. A --target restore-to-different-
-            # location flow is a one-shot read; persisting that
-            # sequence as the local watermark would block the
-            # next pull against the configured vault.
-            if args.target is None:
-                write_watermark(vc.connection, store_id=sid, sequence=result.sequence_number)
+            # Decide whether the watermark applies to this pull.
+            # A --target restore-to-different-location flow is a
+            # one-shot read; persisting that sequence as the local
+            # watermark would block the next pull against the
+            # configured vault. Compare resolved paths so an
+            # explicit ``--target /the/configured/vault.db`` (same
+            # path as the open vault) still updates the watermark.
+            same_target = args.target is None or target_path.resolve() == vault_path.resolve()
     except CliError as exc:
         return fail(str(exc))
+
+    # Watermark write happens AFTER the with-block closes ``vc`` so
+    # the inode-orphan + WAL-coincidence dependency is gone. Pull's
+    # tmp + rename atomically replaced the file at ``vault_path``
+    # while ``vc`` was still open against the old inode; writes
+    # against that connection would have hit the orphaned inode
+    # (or the WAL associated with it) rather than the restored
+    # vault. Re-open the restored file with a fresh key derivation
+    # against the persisted salt sidecar, then write.
+    if same_target:
+        try:
+            restored_salt = load_salt(vault_path)
+        except FileNotFoundError as exc:
+            return fail(str(exc))
+        with (
+            derive_key(passphrase, restored_salt) as restored_key,
+            VaultConnection.open(vault_path, restored_key) as vc_restored,
+        ):
+            write_watermark(vc_restored.connection, store_id=sid, sequence=result.sequence_number)
+    else:
+        info(
+            f"watermark not updated: --target {target_path} differs "
+            f"from configured vault {vault_path}"
+        )
 
     success(
         f"pulled sequence {result.sequence_number} ({result.bytes_written} bytes) to {target_path}"
@@ -412,14 +463,25 @@ def _load_or_complain(conn: sqlcipher3.Connection) -> sync_config.StoredConfig |
 
 
 def _prompt(question: str, *, allow_empty: bool = False) -> str:
-    answer = input(f"{question}: ").strip()
+    try:
+        answer = input(f"{question}: ").strip()
+    except EOFError as exc:
+        # Stdin closed mid-prompt (piped input that ran short, or a
+        # non-interactive context that should have used flags). Fail
+        # loud with the field name rather than silently returning ""
+        # and letting the downstream "setup aborted" message hide
+        # which field failed.
+        raise CliError(f"prompt aborted (EOF on stdin) for: {question}") from exc
     if not answer and not allow_empty:
-        return ""
+        raise CliError(f"empty input not allowed for: {question}")
     return answer
 
 
 def _prompt_secret(question: str) -> str:
-    return getpass.getpass(f"{question}: ").strip()
+    try:
+        return getpass.getpass(f"{question}: ").strip()
+    except EOFError as exc:
+        raise CliError(f"secret prompt aborted (EOF on stdin) for: {question}") from exc
 
 
 __all__ = ["register"]

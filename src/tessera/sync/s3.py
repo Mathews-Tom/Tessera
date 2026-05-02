@@ -197,6 +197,17 @@ class S3BlobStore:
         _validate_blob_id(blob_id)
         url = self._object_url(self._blob_key(blob_id))
         response = self._signed_request("PUT", url, payload=ciphertext)
+        if response.status_code == 404:
+            # PUT 404 means the bucket itself is missing (object-
+            # PUT cannot 404 on the object since PUT creates it).
+            # Surface as the bucket-unreachable boundary error so
+            # the operator gets the same "check bucket + creds"
+            # message as initialize/list rather than a generic
+            # status-code excerpt.
+            raise S3BucketUnreachableError(
+                f"PUT blob {blob_id!r} returned HTTP 404; "
+                f"bucket {self._config.bucket!r} missing or unreachable"
+            )
         if not 200 <= response.status_code < 300:
             raise S3RequestError(
                 f"PUT blob {blob_id!r} returned HTTP {response.status_code}: "
@@ -221,6 +232,11 @@ class S3BlobStore:
             raise S3BlobStoreError(f"sequence_number must be >= 1, got {sequence_number}")
         url = self._object_url(self._manifest_key(sequence_number))
         response = self._signed_request("PUT", url, payload=raw)
+        if response.status_code == 404:
+            raise S3BucketUnreachableError(
+                f"PUT manifest {sequence_number} returned HTTP 404; "
+                f"bucket {self._config.bucket!r} missing or unreachable"
+            )
         if not 200 <= response.status_code < 300:
             raise S3RequestError(
                 f"PUT manifest {sequence_number} returned HTTP "
@@ -377,26 +393,46 @@ def _parse_list_response(body: bytes) -> tuple[list[str], str | None]:
     Returns ``(keys, next_continuation_token)``. The token is None
     when ``IsTruncated`` is false in the response. Pagination is
     transparent to callers of :meth:`S3BlobStore.list_manifest_sequences`.
+
+    Raises :class:`S3RequestError` on malformed XML (parse failure,
+    ``Contents`` element missing its ``Key`` child, or
+    ``IsTruncated=true`` without a ``NextContinuationToken``).
+    Silently returning a partial result on any of these would mask
+    a wrong "latest sequence" answer — surface the boundary error
+    so the operator (or a retry loop one layer up) sees it.
     """
 
-    root = ET.fromstring(body)
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as exc:
+        raise S3RequestError(
+            f"LIST response is not well-formed XML: {exc}; body excerpt: "
+            f"{_excerpt(body.decode('utf-8', errors='replace'))}"
+        ) from exc
     namespace = _detect_namespace(root)
     keys: list[str] = []
     for elem in root.findall(f"{namespace}Contents"):
         key_elem = elem.find(f"{namespace}Key")
-        if key_elem is not None and key_elem.text:
-            keys.append(key_elem.text)
+        if key_elem is None or not key_elem.text:
+            raise S3RequestError(
+                "LIST response has a Contents element with no Key child; "
+                "refusing to silently drop entries"
+            )
+        keys.append(key_elem.text)
     truncated_elem = root.find(f"{namespace}IsTruncated")
     is_truncated = truncated_elem is not None and (truncated_elem.text or "").lower() == "true"
     if not is_truncated:
         return keys, None
     token_elem = root.find(f"{namespace}NextContinuationToken")
     if token_elem is None or not token_elem.text:
-        # IsTruncated=true with no token is a malformed response.
-        # Stop pagination rather than loop forever; the caller
-        # gets the partial result it has and the next push/pull
-        # cycle will retry the LIST.
-        return keys, None
+        # IsTruncated=true with no token is a malformed response —
+        # silently truncating pagination would yield a partial
+        # answer that callers cannot distinguish from a complete
+        # one. Surface as S3RequestError so the operator sees it.
+        raise S3RequestError(
+            "LIST response has IsTruncated=true with no NextContinuationToken; "
+            "refusing to return partial results"
+        )
     return keys, token_elem.text
 
 

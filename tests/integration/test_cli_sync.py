@@ -120,6 +120,8 @@ def test_setup_status_round_trip(
             _ACCESS_KEY,
             "--secret-key",
             _SECRET_KEY,
+            "--prefix",
+            "",
         ]
     )
     assert rc == 0
@@ -208,6 +210,8 @@ def test_push_pull_round_trip(
             _ACCESS_KEY,
             "--secret-key",
             _SECRET_KEY,
+            "--prefix",
+            "",
         ]
     )
 
@@ -304,6 +308,8 @@ def test_push_fails_clearly_when_credentials_missing(
             _ACCESS_KEY,
             "--secret-key",
             _SECRET_KEY,
+            "--prefix",
+            "",
         ]
     )
     fake_keyring.clear()
@@ -325,3 +331,122 @@ def test_push_fails_clearly_when_credentials_missing(
 def test_sync_command_with_no_subcommand_prints_help(tmp_path: Path) -> None:
     rc = cli_main(["sync"])
     assert rc == 2
+
+
+@pytest.mark.integration
+def test_setup_with_eof_on_stdin_aborts(
+    tmp_path: Path,
+    fake_keyring: dict[tuple[str, str], str],
+    fake_s3: _FakeS3Backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setup with no flags and stdin closed (EOF) must exit 2
+    rather than silently persist a StoredConfig with empty
+    endpoint/bucket/region. Closes the pr-test-analyzer #1 gap:
+    a regression that drops the boundary check at sync_cmd.py:182
+    or the EOFError raise in _prompt would otherwise ship green."""
+
+    vault_path = tmp_path / "vault.db"
+    _bootstrap_vault(vault_path)
+
+    # Force input() to raise EOFError so the prompt path mimics
+    # piped input that ran short.
+    def _eof_input(_prompt_text: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof_input)
+
+    rc = cli_main(
+        [
+            "sync",
+            "setup",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+        ]
+    )
+    assert rc == 2
+
+    # Confirm no config row was persisted as a side-effect.
+    salt = (vault_path.parent / (vault_path.name + ".salt")).read_bytes()
+    key = derive_key(bytearray(_PASSPHRASE), salt)
+    with VaultConnection.open(vault_path, key) as vc:
+        rows = vc.connection.execute("SELECT key FROM _meta WHERE key LIKE 'sync_%'").fetchall()
+    assert rows == []
+
+
+@pytest.mark.integration
+def test_pull_with_target_does_not_advance_watermark(
+    tmp_path: Path,
+    fake_keyring: dict[tuple[str, str], str],
+    fake_s3: _FakeS3Backend,
+) -> None:
+    """A --target restore-to-different-location flow is a one-shot
+    read; the watermark for the configured vault must remain at
+    its pre-pull value. Closes the pr-test-analyzer #6 gap by
+    asserting the watermark stays at 0 after a --target pull."""
+
+    vault_path = tmp_path / "vault.db"
+    _bootstrap_vault(vault_path)
+    cli_main(
+        [
+            "sync",
+            "setup",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+            "--endpoint",
+            _ENDPOINT,
+            "--bucket",
+            _BUCKET,
+            "--region",
+            _REGION,
+            "--access-key",
+            _ACCESS_KEY,
+            "--secret-key",
+            _SECRET_KEY,
+            "--prefix",
+            "",
+        ]
+    )
+    cli_main(
+        [
+            "sync",
+            "push",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+        ]
+    )
+
+    target = tmp_path / "elsewhere.db"
+    target_salt = (vault_path.parent / (vault_path.name + ".salt")).read_bytes()
+    (target.parent / (target.name + ".salt")).write_bytes(target_salt)
+
+    rc = cli_main(
+        [
+            "sync",
+            "pull",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+            "--target",
+            str(target),
+        ]
+    )
+    assert rc == 0
+
+    # Watermark for the configured vault must still be absent
+    # (read returns 0 by default for missing rows).
+    salt = (vault_path.parent / (vault_path.name + ".salt")).read_bytes()
+    key = derive_key(bytearray(_PASSPHRASE), salt)
+    sid = store_identity(endpoint=_ENDPOINT, bucket=_BUCKET, prefix="")
+    with VaultConnection.open(vault_path, key) as vc:
+        row = vc.connection.execute(
+            "SELECT value FROM _meta WHERE key = ?", (meta_key_for(sid),)
+        ).fetchone()
+    assert row is None

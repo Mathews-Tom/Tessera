@@ -318,6 +318,41 @@ def test_missing_credentials_rejected_at_boundary() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "expected_match"),
+    [
+        ("method", "", "method"),
+        ("region", "", "region"),
+        ("service", "", "region"),
+        ("secret_access_key", "", "access_key_id"),
+    ],
+)
+def test_each_required_field_rejected_at_boundary_when_empty(
+    field: str, value: str, expected_match: str
+) -> None:
+    """Symmetric coverage of the boundary checks at the top of
+    sign_request. Previously only access_key_id had a test pinning
+    its rejection; a refactor that reordered or removed any other
+    branch could have shipped silently. Each empty input now has
+    its own parametric case so a future regression surfaces with
+    the exact field name in the failure message."""
+
+    kwargs: dict[str, object] = {
+        "method": "GET",
+        "url": "https://example.amazonaws.com/",
+        "headers": None,
+        "payload": b"",
+        "access_key_id": _AWS_ACCESS_KEY,
+        "secret_access_key": _AWS_SECRET_KEY,
+        "region": _AWS_REGION,
+        "service": _AWS_SERVICE,
+        "timestamp": _AWS_TIMESTAMP,
+    }
+    kwargs[field] = value
+    with pytest.raises(InvalidSigV4InputError, match=expected_match):
+        sign_request(**kwargs)  # type: ignore[arg-type]
+
+
 def test_header_order_independence() -> None:
     """Two requests differing only in caller-supplied header
     iteration order must produce identical signatures. The

@@ -284,11 +284,23 @@ def test_pagination_follows_continuation_token() -> None:
         assert store.list_manifest_sequences() == [1, 2, 3]
 
 
-@pytest.mark.unit
-def test_unexpected_status_surfaces_request_error() -> None:
-    """An unexpected HTTP status (server error, throttling, etc.)
-    must surface as :class:`S3RequestError` rather than silently
-    returning empty / None / other masking values."""
+@pytest.mark.parametrize(
+    ("verb_name", "verb_op"),
+    [
+        ("put_blob", lambda store: store.put_blob("a" * 64, b"x")),
+        ("get_blob", lambda store: store.get_blob("a" * 64)),
+        ("put_manifest", lambda store: store.put_manifest(1, b"{}")),
+        ("get_manifest", lambda store: store.get_manifest(1)),
+        ("list", lambda store: store.list_manifest_sequences()),
+    ],
+)
+def test_unexpected_5xx_status_surfaces_request_error(verb_name: str, verb_op: object) -> None:
+    """Every public verb must surface S3RequestError on an
+    unexpected 5xx (throttling, server error). Previously only
+    put_blob had a test; a regression that masked errors on any
+    other verb (silently returning empty bytes / [] / None) could
+    ship green. Parametric coverage so each verb has its own
+    failure line."""
 
     def _handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="Service Unavailable")
@@ -298,7 +310,87 @@ def test_unexpected_status_surfaces_request_error() -> None:
         S3BlobStore(_config(), transport=transport) as store,
         pytest.raises(S3RequestError, match="HTTP 503"),
     ):
-        store.put_blob("a" * 64, b"x")
+        verb_op(store)  # type: ignore[operator]
+
+
+@pytest.mark.unit
+def test_initialize_against_5xx_surfaces_request_error() -> None:
+    """A 500 from a misconfigured proxy is distinct from a 404
+    bucket-missing case. Surface as S3RequestError (not
+    S3BucketUnreachableError) so the operator sees the actual
+    status code in the message rather than the generic "check
+    bucket name + credentials" path."""
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="Bad Gateway")
+
+    transport = httpx.MockTransport(_handler)
+    with (
+        S3BlobStore(_config(), transport=transport) as store,
+        pytest.raises(S3RequestError, match="HTTP 502"),
+    ):
+        store.initialize()
+
+
+@pytest.mark.unit
+def test_list_with_malformed_xml_raises_request_error() -> None:
+    """A LIST response that is not well-formed XML must raise
+    rather than silently return [] (which would be indistinguishable
+    from "empty bucket"). Closes the silent-failure-hunter H4
+    path with a parametric assertion that the parser is wired
+    into the boundary."""
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not <xml>")
+
+    transport = httpx.MockTransport(_handler)
+    with (
+        S3BlobStore(_config(), transport=transport) as store,
+        pytest.raises(S3RequestError, match="not well-formed"),
+    ):
+        store.list_manifest_sequences()
+
+
+@pytest.mark.unit
+def test_list_with_truncated_response_missing_token_raises() -> None:
+    """IsTruncated=true with no NextContinuationToken is a
+    malformed response — silently treating the partial result
+    as complete would let ``latest_manifest_sequence`` return
+    a stale value, breaking replay defence on the next pull."""
+
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        body = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            b"<IsTruncated>true</IsTruncated>"
+            b"<Contents><Key>manifests/1.json</Key></Contents>"
+            b"</ListBucketResult>"
+        )
+        return httpx.Response(200, content=body)
+
+    transport = httpx.MockTransport(_handler)
+    with (
+        S3BlobStore(_config(), transport=transport) as store,
+        pytest.raises(S3RequestError, match="NextContinuationToken"),
+    ):
+        store.list_manifest_sequences()
+
+
+@pytest.mark.unit
+def test_put_blob_to_missing_bucket_raises_unreachable() -> None:
+    """A PUT against a missing bucket returns 404 (the bucket
+    itself is missing, not the object — PUT creates objects).
+    Surface as S3BucketUnreachableError so the operator gets the
+    same "check bucket + creds" message as initialize/list rather
+    than a generic status excerpt."""
+
+    backend = _FakeS3Backend()  # No buckets added.
+    transport = httpx.MockTransport(backend.handler())
+    with (
+        S3BlobStore(_config(), transport=transport) as store,
+        pytest.raises(S3BucketUnreachableError, match="missing or unreachable"),
+    ):
+        store.put_blob("a" * 64, b"payload")
 
 
 @pytest.mark.unit
