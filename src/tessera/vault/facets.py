@@ -56,10 +56,14 @@ V0_5_RESERVED_FACET_TYPES: Final[frozenset[str]] = frozenset(
 V0_5_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | V0_5_RESERVED_FACET_TYPES
 
 # The facet-type set the active write path accepts. V0.5-P2 activates
-# ``agent_profile`` — Tessera registers agent profiles as recallable
-# context per ADR 0017. The remaining v0.5 reserved types stay
-# CHECK-permitted but write-rejected until their sub-phases ship.
-WRITABLE_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | frozenset({"agent_profile"})
+# ``agent_profile`` (ADR 0017); V0.5-P3 activates
+# ``verification_checklist`` and ``retrospective`` (ADR 0018) — both
+# describe what an autonomous worker is gated on and how it ran. The
+# remaining v0.5 reserved types stay CHECK-permitted but write-rejected
+# until their sub-phases ship.
+WRITABLE_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | frozenset(
+    {"agent_profile", "verification_checklist", "retrospective"}
+)
 
 # Superset of every facet type the schema CHECK permits. Used by the scope
 # layer — a token may be scoped for read against a reserved type even when

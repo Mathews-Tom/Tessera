@@ -273,6 +273,76 @@ Response: `{profile: {external_id, content, purpose, inputs, outputs, cadence, s
 
 Required scope: `read` on `agent_profile`.
 
+### `POST /api/v1/checklists`
+
+Register a `verification_checklist` facet (V0.5-P3 / ADR 0018) — the pre-delivery gate an agent runs before declaring a task done. Tessera stores the checklist; the agent or its caller-side runner executes it.
+
+```bash
+curl -s -X POST 'http://127.0.0.1:5710/api/v1/checklists' \
+     -H "Authorization: Bearer ${TESSERA_TOKEN}" \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "content": "Pre-delivery gate for the digest agent.",
+       "metadata": {
+         "agent_ref": "01HZX1Y2Z3MNPQRSTVWXYZ0123",
+         "trigger": "pre_delivery",
+         "checks": [
+           {"id": "tests", "statement": "Tests cover new branches", "severity": "blocker"},
+           {"id": "changelog", "statement": "Changelog entry present", "severity": "warning"}
+         ],
+         "pass_criteria": "All blockers green; warnings annotated"
+       }
+     }'
+```
+
+Body: `content` (required), `metadata` (required object: `agent_ref` ULID, `trigger`, `checks[]` of `{id, statement, severity}` with severity ∈ `{blocker, warning, informational}`, `pass_criteria`), `source_tool` (optional).
+
+Response: `{external_id, is_new}`.
+
+Required scope: `write` on `verification_checklist`. Cross-agent `agent_ref` references are rejected with `invalid_input`.
+
+### `POST /api/v1/retrospectives`
+
+Record a `retrospective` facet — the post-run reflection on what worked, what gapped, and what changes the agent or user wants next time.
+
+```bash
+curl -s -X POST 'http://127.0.0.1:5710/api/v1/retrospectives' \
+     -H "Authorization: Bearer ${TESSERA_TOKEN}" \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "content": "The summary missed the migration risk in PR #102.",
+       "metadata": {
+         "agent_ref": "01HZX1Y2Z3MNPQRSTVWXYZ0123",
+         "task_id": "digest_2026_05_03",
+         "went_well": ["captured the digest", "no flake"],
+         "gaps": ["missed migration risk"],
+         "changes": [
+           {"target": "verification_checklist", "change": "Add ALTER TABLE scan"}
+         ],
+         "outcome": "partial"
+       }
+     }'
+```
+
+Body: `content` (required), `metadata` (required object: `agent_ref` ULID, `task_id`, `went_well[]`, `gaps[]`, `changes[]` of `{target, change}`, `outcome` ∈ `{success, partial, failure}`), `source_tool` (optional).
+
+Response: `{external_id, is_new}`.
+
+Required scope: `write` on `retrospective`. Cross-agent `agent_ref` references are rejected.
+
+### `GET /api/v1/agent_profiles/<external_id>/checklist`
+
+Resolve an `agent_profile`'s `verification_ref` to the live checklist row. Returns `{checklist: null}` when the profile has no `verification_ref` set or the linked checklist is missing / soft-deleted.
+
+```bash
+curl -s 'http://127.0.0.1:5710/api/v1/agent_profiles/01HXY.../checklist' \
+     -H "Authorization: Bearer ${TESSERA_TOKEN}"
+```
+
+Response: `{checklist: {external_id, content, agent_ref, trigger, checks[{id, statement, severity}], pass_criteria, captured_at, embed_status, truncated, token_count}}` or `{checklist: null}`.
+
+Required scope: `read` on `verification_checklist`. Cross-agent reads are blocked at the storage layer.
+
 ## Recipes
 
 ### Pre-prompt hook (Claude Code)

@@ -43,6 +43,13 @@ class RetrievalConfig:
     mmr_lambda: float
     max_candidates: int
     retrieval_mode: RetrievalMode = DEFAULT_RETRIEVAL_MODE
+    # ADR 0018 SWCR retrospective augmentation: when the candidate set
+    # contains an ``agent_profile`` facet, augment SWCR with the most
+    # recent N retrospectives whose ``agent_ref`` matches that profile.
+    # Default 3 mirrors the ADR; 0 disables the augmentation entirely
+    # (useful for ablations and for callers who want pure cross-facet
+    # SWCR without retrospective bias).
+    retrospective_window: int = 3
 
     def hash(self) -> str:
         payload = json.dumps(
@@ -51,6 +58,7 @@ class RetrievalConfig:
                 "mmr_lambda": self.mmr_lambda,
                 "max_candidates": self.max_candidates,
                 "retrieval_mode": self.retrieval_mode,
+                "retrospective_window": self.retrospective_window,
             },
             sort_keys=True,
         )

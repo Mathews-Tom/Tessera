@@ -305,6 +305,42 @@ async def _do_list_agent_profiles(tctx: mcp.ToolContext, args: dict[str, Any]) -
     }
 
 
+async def _do_register_checklist(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    metadata = args.get("metadata")
+    if not isinstance(metadata, dict):
+        raise mcp.ValidationError("metadata must be an object")
+    resp = await mcp.register_checklist(
+        tctx,
+        content=_require_str(args, "content"),
+        metadata=metadata,
+        source_tool=args.get("source_tool"),
+    )
+    return {"external_id": resp.external_id, "is_new": resp.is_new}
+
+
+async def _do_record_retrospective(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    metadata = args.get("metadata")
+    if not isinstance(metadata, dict):
+        raise mcp.ValidationError("metadata must be an object")
+    resp = await mcp.record_retrospective(
+        tctx,
+        content=_require_str(args, "content"),
+        metadata=metadata,
+        source_tool=args.get("source_tool"),
+    )
+    return {"external_id": resp.external_id, "is_new": resp.is_new}
+
+
+async def _do_list_checks_for_agent(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.list_checks_for_agent(
+        tctx,
+        profile_external_id=_require_str(args, "profile_external_id"),
+    )
+    if resp is None:
+        return {"checklist": None}
+    return {"checklist": _checklist_view_to_json(resp)}
+
+
 _HandlerT = Callable[[mcp.ToolContext, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _HANDLERS: dict[str, _HandlerT] = {
@@ -322,6 +358,9 @@ _HANDLERS: dict[str, _HandlerT] = {
     "register_agent_profile": _do_register_agent_profile,
     "get_agent_profile": _do_get_agent_profile,
     "list_agent_profiles": _do_list_agent_profiles,
+    "register_checklist": _do_register_checklist,
+    "record_retrospective": _do_record_retrospective,
+    "list_checks_for_agent": _do_list_checks_for_agent,
 }
 
 
@@ -403,6 +442,23 @@ def _agent_profile_summary_to_json(s: mcp.AgentProfileSummary) -> dict[str, Any]
         "skill_refs": list(s.skill_refs),
         "captured_at": s.captured_at,
         "is_active_link": s.is_active_link,
+    }
+
+
+def _checklist_view_to_json(view: mcp.ChecklistView) -> dict[str, Any]:
+    return {
+        "external_id": view.external_id,
+        "content": view.content,
+        "agent_ref": view.agent_ref,
+        "trigger": view.trigger,
+        "checks": [
+            {"id": c.id, "statement": c.statement, "severity": c.severity} for c in view.checks
+        ],
+        "pass_criteria": view.pass_criteria,
+        "captured_at": view.captured_at,
+        "embed_status": view.embed_status,
+        "truncated": view.truncated,
+        "token_count": view.token_count,
     }
 
 

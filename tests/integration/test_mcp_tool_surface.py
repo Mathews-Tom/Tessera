@@ -931,3 +931,240 @@ async def test_list_agent_profiles_requires_read_scope(
     with pytest.raises(mcp.ScopeDenied) as exc:
         await mcp.list_agent_profiles(tctx)
     assert exc.value.required_facet_type == "agent_profile"
+
+
+# ---- V0.5-P3 verification + retrospective tools -------------------------
+
+
+_V0_5_P3_SCOPES: tuple[str, ...] = (
+    "style",
+    "project",
+    "skill",
+    "person",
+    "agent_profile",
+    "verification_checklist",
+    "retrospective",
+)
+
+
+def _checklist_metadata(profile_external_id: str) -> dict[str, object]:
+    return {
+        "agent_ref": profile_external_id,
+        "trigger": "pre_delivery",
+        "checks": [
+            {"id": "tests", "statement": "Tests cover new branches", "severity": "blocker"},
+            {"id": "changelog", "statement": "Changelog entry", "severity": "warning"},
+        ],
+        "pass_criteria": "All blockers green",
+    }
+
+
+def _retrospective_metadata(profile_external_id: str, task_id: str = "task-1") -> dict[str, object]:
+    return {
+        "agent_ref": profile_external_id,
+        "task_id": task_id,
+        "went_well": ["captured the digest"],
+        "gaps": ["missed migration risk"],
+        "changes": [
+            {"target": "verification_checklist", "change": "Add ALTER TABLE scan"},
+        ],
+        "outcome": "partial",
+    }
+
+
+async def _seed_profile(tctx: mcp.ToolContext) -> str:
+    resp = await mcp.register_agent_profile(
+        tctx, content="profile body", metadata=_profile_metadata()
+    )
+    return resp.external_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_checklist_creates_facet(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P3_SCOPES, scope_write=_V0_5_P3_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    resp = await mcp.register_checklist(
+        tctx, content="checklist body", metadata=_checklist_metadata(profile_id)
+    )
+    assert resp.is_new is True
+    assert len(resp.external_id) == 26
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_checklist_requires_write_scope(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault,
+        vault_path,
+        scope_read=_V0_5_P3_SCOPES,
+        scope_write=("style", "project", "agent_profile"),
+    )
+    profile_id = await _seed_profile(tctx)
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.register_checklist(
+            tctx, content="denied", metadata=_checklist_metadata(profile_id)
+        )
+    assert exc.value.required_facet_type == "verification_checklist"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_checklist_rejects_invalid_metadata(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P3_SCOPES, scope_write=_V0_5_P3_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    bad = _checklist_metadata(profile_id)
+    bad["checks"] = []
+    with pytest.raises(mcp.ValidationError, match="at least one"):
+        await mcp.register_checklist(tctx, content="x", metadata=bad)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_checklist_blocks_cross_agent_ref(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """A token cannot plant a checklist whose ``agent_ref`` points at
+    another agent's profile."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P3_SCOPES, scope_write=_V0_5_P3_SCOPES
+    )
+    # Seed agent A's profile under tctx and a separate agent B with its
+    # own profile.
+    profile_a = await _seed_profile(tctx)
+    open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('01OTHER', 'b', 0)"
+    )
+    other_id = int(
+        open_vault.connection.execute(
+            "SELECT id FROM agents WHERE external_id='01OTHER'"
+        ).fetchone()[0]
+    )
+    issued_other = tokens.issue(
+        open_vault.connection,
+        agent_id=other_id,
+        client_name="cli",
+        token_class="session",
+        scope=build_scope(read=_V0_5_P3_SCOPES, write=_V0_5_P3_SCOPES),
+        now_epoch=1_000_000,
+    )
+    other_verified = tokens.verify_and_touch(
+        open_vault.connection,
+        raw_token=issued_other.raw_token,
+        now_epoch=1_000_001,
+    )
+    other_tctx = mcp.ToolContext(
+        conn=open_vault.connection,
+        verified=other_verified,
+        vault_path=vault_path,
+        pipeline=tctx.pipeline,
+        clock=lambda: 1_000_100,
+    )
+    # Even though the other agent has scope, agent_ref pointing at
+    # agent A's profile must be rejected.
+    with pytest.raises(mcp.ValidationError, match="different agent"):
+        await mcp.register_checklist(
+            other_tctx,
+            content="cross-agent attempt",
+            metadata=_checklist_metadata(profile_a),
+        )
+    assert profile_a  # used
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_record_retrospective_creates_facet(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P3_SCOPES, scope_write=_V0_5_P3_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    resp = await mcp.record_retrospective(
+        tctx,
+        content="retro body",
+        metadata=_retrospective_metadata(profile_id),
+    )
+    assert resp.is_new is True
+    assert len(resp.external_id) == 26
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_record_retrospective_rejects_unknown_outcome(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P3_SCOPES, scope_write=_V0_5_P3_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    bad = _retrospective_metadata(profile_id)
+    bad["outcome"] = "broken"
+    with pytest.raises(mcp.ValidationError, match="outcome"):
+        await mcp.record_retrospective(tctx, content="r", metadata=bad)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_checks_for_agent_resolves_canonical(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P3_SCOPES, scope_write=_V0_5_P3_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    checklist_resp = await mcp.register_checklist(
+        tctx, content="checklist body", metadata=_checklist_metadata(profile_id)
+    )
+    # Re-register the profile with verification_ref set to the checklist.
+    profile_meta_with_ref = dict(_profile_metadata())
+    profile_meta_with_ref["verification_ref"] = checklist_resp.external_id
+    revised = await mcp.register_agent_profile(
+        tctx, content="profile v2", metadata=profile_meta_with_ref
+    )
+    view = await mcp.list_checks_for_agent(tctx, profile_external_id=revised.external_id)
+    assert view is not None
+    assert view.external_id == checklist_resp.external_id
+    assert view.trigger == "pre_delivery"
+    assert any(check.severity == "blocker" for check in view.checks)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_checks_for_agent_returns_none_without_verification_ref(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P3_SCOPES, scope_write=_V0_5_P3_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    view = await mcp.list_checks_for_agent(tctx, profile_external_id=profile_id)
+    assert view is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_checks_for_agent_requires_read_scope(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault,
+        vault_path,
+        scope_read=("style", "project", "agent_profile"),
+        scope_write=("style", "project", "agent_profile"),
+    )
+    profile_id = await _seed_profile(tctx)
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.list_checks_for_agent(tctx, profile_external_id=profile_id)
+    assert exc.value.required_facet_type == "verification_checklist"
