@@ -34,6 +34,31 @@ def _seed_profile(conn: sqlcipher3.Connection, agent_id: int) -> str:
     return external_id
 
 
+def _seed_profile_for(conn: sqlcipher3.Connection, agent_id: int) -> str:
+    """Seed a profile for an explicit agent_id with content keyed off id.
+
+    Reused by the cross-agent guard test to mint a second profile
+    under a different agent without colliding on the
+    UNIQUE(agent_id, content_hash) constraint that ``_seed_profile``
+    uses for the primary seeded agent.
+    """
+
+    external_id, _ = agent_profiles.register(
+        conn,
+        agent_id=agent_id,
+        content=f"other-agent profile {agent_id}",
+        metadata={
+            "purpose": "different purpose",
+            "inputs": ["other"],
+            "outputs": ["other"],
+            "cadence": "daily",
+            "skill_refs": [],
+        },
+        source_tool="cli",
+    )
+    return external_id
+
+
 # ---- register_compiled_artifact contract -------------------------------
 
 
@@ -126,6 +151,69 @@ def test_register_rejects_non_string_source(open_vault: VaultConnection) -> None
             agent_id=agent_id,
             content="x",
             source_facets=[42],  # type: ignore[list-item]
+            compiler_version="v1",
+            source_tool="cli",
+        )
+
+
+@pytest.mark.unit
+def test_register_rejects_nonexistent_source_ulid(open_vault: VaultConnection) -> None:
+    """Source ULIDs must reference live facets owned by the calling
+    agent — provenance integrity is part of the audit posture."""
+
+    agent_id = _seed_agent(open_vault.connection)
+    with pytest.raises(compiled.InvalidCompiledArtifactError, match="missing"):
+        compiled.register_compiled_artifact(
+            open_vault.connection,
+            agent_id=agent_id,
+            content="x",
+            source_facets=["01ZZZZZZZZZZZZZZZZZZZZZZZZ"],
+            compiler_version="v1",
+            source_tool="cli",
+        )
+
+
+@pytest.mark.unit
+def test_register_rejects_cross_agent_source_ulid(open_vault: VaultConnection) -> None:
+    """A write-scoped caller must not be able to plant a Playbook
+    claiming sources owned by another agent — the per-agent guard
+    on ``source_facets`` is the symmetric write-side check that
+    matches the read-side cross-agent isolation in ``get`` /
+    ``list_compile_sources``."""
+
+    agent_id = _seed_agent(open_vault.connection)
+    open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('a2', 'other', 2)"
+    )
+    other_agent_id = int(
+        open_vault.connection.execute("SELECT id FROM agents WHERE external_id='a2'").fetchone()[0]
+    )
+    other_profile_id = _seed_profile_for(open_vault.connection, other_agent_id)
+    with pytest.raises(compiled.InvalidCompiledArtifactError, match="missing"):
+        compiled.register_compiled_artifact(
+            open_vault.connection,
+            agent_id=agent_id,
+            content="cross-agent attempt",
+            source_facets=[other_profile_id],
+            compiler_version="v1",
+            source_tool="cli",
+        )
+
+
+@pytest.mark.unit
+def test_register_rejects_soft_deleted_source(open_vault: VaultConnection) -> None:
+    agent_id = _seed_agent(open_vault.connection)
+    profile_id = _seed_profile(open_vault.connection, agent_id)
+    open_vault.connection.execute(
+        "UPDATE facets SET is_deleted = 1, deleted_at = 99 WHERE external_id = ?",
+        (profile_id,),
+    )
+    with pytest.raises(compiled.InvalidCompiledArtifactError, match="missing"):
+        compiled.register_compiled_artifact(
+            open_vault.connection,
+            agent_id=agent_id,
+            content="x",
+            source_facets=[profile_id],
             compiler_version="v1",
             source_tool="cli",
         )

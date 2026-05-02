@@ -75,10 +75,15 @@ def _tool_context(state: DaemonState, verified: VerifiedCapability) -> mcp.ToolC
 
 
 # Facet types a recall() without an explicit ``facet_types`` filter fans
-# out over — every facet type the v0.3 write path can produce, sorted
-# deterministically so scope-filtered subsets still produce a stable
-# order in the pipeline context. People are excluded (they are not
-# facets); compiled_notebook is excluded (deferred to v0.5).
+# out over — every writable facet type, sorted deterministically so
+# scope-filtered subsets still produce a stable order in the pipeline
+# context. ``person`` is excluded because people live in their own
+# table and surface via ``resolve_person`` rather than ``recall``.
+# ``compiled_notebook`` (V0.5-P4 / ADR 0019) is included so a bare
+# ``recall`` surfaces the AgenticOS Playbook alongside its sources via
+# the standard cross-facet path. Future v0.5 type activations
+# (``automation`` in V0.5-P5) join this set automatically through
+# ``WRITABLE_FACET_TYPES``.
 _DEFAULT_RECALL_TYPES: tuple[str, ...] = tuple(
     sorted(vault_facets.WRITABLE_FACET_TYPES - {"person"})
 )

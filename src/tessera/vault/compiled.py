@@ -144,6 +144,15 @@ def register_compiled_artifact(
 
     conn.execute("SAVEPOINT register_compiled_artifact")
     try:
+        # ADR 0019 §Boundary: Tessera stores; the caller compiles. The
+        # caller passes a ``source_facets`` list claiming provenance.
+        # Validate the claim against the facets table so the audit
+        # row's ``source_count`` cannot drift from reality and so a
+        # buggy caller cannot land an artifact that points at another
+        # agent's rows or non-existent ULIDs. The check runs inside
+        # the savepoint so a mismatch rolls the pair-write cleanly.
+        _verify_sources_belong_to_agent(conn, agent_id=agent_id, sources=sources)
+
         # Insert the facet row directly so we can assign the same
         # external_id to both halves of the pair. ``vault_facets.insert``
         # mints its own ULID; we need both halves to share an id so
@@ -367,6 +376,43 @@ def _decode_metadata(raw: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return decoded if isinstance(decoded, dict) else {}
+
+
+def _verify_sources_belong_to_agent(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    sources: tuple[str, ...],
+) -> None:
+    """Raise when any source ULID is not a live facet owned by ``agent_id``.
+
+    A single ``IN (...)`` query gives O(1) round-trips regardless of
+    source-list size. Soft-deleted rows are excluded so the
+    provenance list cannot point at tombstones; cross-agent rows are
+    excluded by the ``agent_id`` filter so a write-scoped caller
+    cannot plant a Playbook claiming sources owned by another agent.
+    The check runs inside the pair-write savepoint so a mismatch
+    rolls the entire transaction cleanly.
+    """
+
+    placeholders = ",".join("?" for _ in sources)
+    rows = conn.execute(
+        f"""
+        SELECT external_id FROM facets
+        WHERE external_id IN ({placeholders})
+              AND agent_id = ?
+              AND is_deleted = 0
+        """,
+        (*sources, agent_id),
+    ).fetchall()
+    found = {str(row[0]) for row in rows}
+    missing = [src for src in sources if src not in found]
+    if missing:
+        raise InvalidCompiledArtifactError(
+            f"source_facets reference rows that are missing, soft-deleted, "
+            f"or owned by another agent: {missing[:5]}"
+            + (f" (and {len(missing) - 5} more)" if len(missing) > 5 else "")
+        )
 
 
 def _validate_sources(sources: Sequence[str]) -> tuple[str, ...]:
