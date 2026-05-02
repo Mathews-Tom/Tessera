@@ -151,6 +151,17 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     "compiled_artifact_registered": frozenset(
         {"artifact_type", "compiler_version", "source_count"}
     ),
+    # Compiled-artifact staleness (V0.5-P6 / ADR 0019 §Rationale 6).
+    # Emitted once per compiled_artifacts row that flips from
+    # ``is_stale = 0`` to ``is_stale = 1`` because one of its source
+    # facets mutated (capture, soft_delete, or skill procedure
+    # update). ``source_external_id`` is the ULID of the mutating
+    # source facet (an internal vault row identifier, not user
+    # content); ``source_op`` records which mutation path emitted
+    # the flip so forensics can reconstruct the cascade. Source
+    # content, query text, and metadata never enter the payload —
+    # §S4 boundary preserved.
+    "compiled_artifact_marked_stale": frozenset({"source_external_id", "source_op"}),
 }
 
 

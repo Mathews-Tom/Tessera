@@ -237,6 +237,99 @@ def test_chain_full_walk_clean_with_compiled_artifacts(
 
 
 @pytest.mark.security
+def test_chain_full_walk_clean_with_compiled_staleness(
+    open_vault: VaultConnection,
+) -> None:
+    """V0.5-P6 ship-gate companion: a vault that has accumulated
+    ``compiled_artifact_marked_stale`` cascade rows alongside the
+    register / capture / soft-delete ops still walks the chain
+    end-to-end. This is the same load-bearing posture the V0.5-P4
+    ship-gate test asserts, extended for the staleness wiring's
+    ``audit_log_append`` calls so a stale-cascade row's payload
+    (``source_external_id`` + ``source_op``) lands in the chain
+    without disturbing the prev_hash → row_hash linkage."""
+
+    from tessera.vault import agent_profiles as vault_agent_profiles
+    from tessera.vault import compiled as vault_compiled
+    from tessera.vault import facets as vault_facets
+    from tessera.vault import skills as vault_skills
+
+    agent_id = _seed_agent(open_vault)
+    before = verify_chain(open_vault.connection).total_rows
+    profile_id, _ = vault_agent_profiles.register(
+        open_vault.connection,
+        agent_id=agent_id,
+        content="profile-stale",
+        metadata={
+            "purpose": "summarize",
+            "inputs": ["x"],
+            "outputs": ["y"],
+            "cadence": "weekly",
+            "skill_refs": [],
+        },
+        source_tool="cli",
+    )
+    skill_id, _ = vault_skills.create_skill(
+        open_vault.connection,
+        agent_id=agent_id,
+        name="git-rebase",
+        description="Squash before merge",
+        procedure_md="# Procedure\n\nUse interactive rebase.",
+        source_tool="cli",
+    )
+    vault_compiled.register_compiled_artifact(
+        open_vault.connection,
+        agent_id=agent_id,
+        content="The Playbook narrative.",
+        source_facets=[profile_id, skill_id],
+        compiler_version="claude-opus-4-7",
+        source_tool="cli",
+    )
+
+    # Two cascading mutations: a skill procedure update and a
+    # source soft-delete. Each emits a chain-aware audit row plus
+    # one compiled_artifact_marked_stale row (idempotent on the
+    # second mutation against the already-flipped artifact).
+    vault_skills.update_procedure(
+        open_vault.connection,
+        external_id=skill_id,
+        procedure_md="# Procedure\n\nA tighter rebase recipe.",
+    )
+    vault_facets.soft_delete(open_vault.connection, profile_id)
+
+    outcome = verify_chain(open_vault.connection)
+    assert outcome.head is not None
+    # Exact row growth: one register_agent_profile (facet_inserted +
+    # agent_profile_link_set), one create_skill (facet_inserted),
+    # one register_compiled_artifact (facet_inserted +
+    # compiled_artifact_registered), one skill_procedure_updated +
+    # one compiled_artifact_marked_stale, one facet_soft_deleted is
+    # NOT emitted by facets.soft_delete itself (forget callers emit
+    # their own audit row, not the helper). The stale-cascade on
+    # the second mutation is suppressed by the WHERE is_stale = 0
+    # filter, so exactly one cascade row survives.
+    rows = open_vault.connection.execute(
+        "SELECT op, id, row_hash FROM audit_log ORDER BY id ASC"
+    ).fetchall()
+    ops = [str(r[0]) for r in rows]
+    assert "compiled_artifact_registered" in ops
+    assert "compiled_artifact_marked_stale" in ops
+    # Exactly one stale-cascade row: the second mutation's flagger
+    # walked the artifact but found it already stale (idempotent).
+    assert ops.count("compiled_artifact_marked_stale") == 1
+    # Chain head equals the last row's row_hash — proves the walker
+    # actually traversed the chain rather than returning a cached
+    # outcome (regression guard against a future verify_chain that
+    # silently short-circuits).
+    last_row_id = int(rows[-1][1])
+    last_row_hash = str(rows[-1][2])
+    assert outcome.head.row_id == last_row_id
+    assert outcome.head.row_hash == last_row_hash
+    # Every appended row landed in the chain.
+    assert outcome.total_rows > before
+
+
+@pytest.mark.security
 def test_chain_full_walk_clean(open_vault: VaultConnection) -> None:
     agent_id = _seed_agent(open_vault)
     # Mix of ops to prove the walker handles different payloads.
