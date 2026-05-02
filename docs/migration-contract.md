@@ -172,19 +172,21 @@ After a successful migration, `_migration_steps` rows for the prior target are d
 - **Downgrade migrations.** Restore from backup is the downgrade path. No `v0.3 → v0.1` downgrade script ships.
 - **Migration during active daemon.** The daemon takes an exclusive lock for the duration of the migration; no MCP calls are served.
 
-## Schema v3 → v4 (V0.5-P1, ADR 0016)
+## Schema v3 → v4 (cumulative across V0.5-P1 + V0.5-P2, ADRs 0016 / 0017)
 
-Additive forward migration. Two columns added to `facets`, one partial index for the auto-compaction sweep. No row data is rewritten; existing rows default to `volatility='persistent'` with `ttl_seconds=NULL` so the v0.4 behaviour (every facet is long-lived) is preserved.
+Additive forward migration. Schema v4 absorbs the v0.5 reconciliation in cumulative form: every sub-phase that touches storage appends its own steps to the same `_V3_TO_V4_STEPS` list, and the schema bump stays at 4 because every delta is additive. The full v3 → v4 integration test runs end-to-end at v0.5 ship.
 
 Steps registered in `_V3_TO_V4_STEPS` (in apply order):
 
-1. `add_volatility_column` — `ALTER TABLE facets ADD COLUMN volatility TEXT NOT NULL DEFAULT 'persistent' CHECK (volatility IN ('persistent', 'session', 'ephemeral'))`. Guarded by a `PRAGMA table_info` check so resume replays cleanly.
-2. `add_ttl_seconds_column` — `ALTER TABLE facets ADD COLUMN ttl_seconds INTEGER`. Same guard.
-3. `create_volatility_sweep_index` — partial index on `(volatility, captured_at)` filtering `is_deleted = 0 AND volatility IN ('session', 'ephemeral')`. Used by the daemon's idle-time compaction sweep so the common case (a vault dominated by persistent rows) sees no contention.
+1. `add_volatility_column` — `ALTER TABLE facets ADD COLUMN volatility TEXT NOT NULL DEFAULT 'persistent' CHECK (volatility IN ('persistent', 'session', 'ephemeral'))`. Guarded by a `PRAGMA table_info` check so resume replays cleanly. (V0.5-P1, ADR 0016.)
+2. `add_ttl_seconds_column` — `ALTER TABLE facets ADD COLUMN ttl_seconds INTEGER`. Same guard. (V0.5-P1.)
+3. `create_volatility_sweep_index` — partial index on `(volatility, captured_at)` filtering `is_deleted = 0 AND volatility IN ('session', 'ephemeral')`. Used by the daemon's idle-time compaction sweep so the common case (a vault dominated by persistent rows) sees no contention. (V0.5-P1.)
+4. `extend_facets_facet_type_check` — extends the `facets.facet_type` CHECK constraint to reserve every v0.5 facet type (`agent_profile`, `verification_checklist`, `retrospective`, `automation`) alongside the existing `compiled_notebook` reservation. SQLite cannot modify a CHECK in place, so the step uses the standard 12-step table-recreate: drop FTS triggers, rename `facets` to `_facets_v3`, create the v4 facets table preserving every prior column (volatility, ttl_seconds, disk_path, mode, source_tool, embed metadata), copy rows verbatim, drop the staging table, recreate every facets-side index (including `facets_volatility_sweep`), refresh `facets_fts`, and reinstall the `facets_ai`/`facets_ad`/`facets_au` triggers. Idempotent by guard: re-runs return early when the live CHECK already lists `agent_profile`. (V0.5-P2, ADR 0017.)
+5. `add_profile_facet_external_id` — `ALTER TABLE agents ADD COLUMN profile_facet_external_id TEXT REFERENCES facets(external_id) DEFERRABLE INITIALLY DEFERRED`. Nullable so existing tokens / agents that never registered a profile keep working unchanged; deferrable so `register_agent_profile` can insert the facet and update the agents row inside one transaction without the FK firing on the intermediate state. (V0.5-P2, ADR 0017.)
 
-Each step is idempotent — a resume re-runs every step whose marker is absent, the savepoint pattern keeps the apply + marker-write atomic, and `IF NOT EXISTS` plus the column-presence check prevent double-add errors. No backup is required for a column-add but the runner takes one anyway per the contract.
+Each step is idempotent — a resume re-runs every step whose marker is absent, the savepoint pattern keeps the apply + marker-write atomic, and `IF NOT EXISTS` plus the column-presence / CHECK-presence checks prevent double-add errors. No backup is required for a column-add but the runner takes one anyway per the contract; the table-recreate step does the same work the v1 → v2 rebuild already did, with the same backup gate.
 
-Forward, idempotent, and rollback tests live in `tests/unit/test_volatility.py::test_v3_to_v4_*` and `tests/unit/test_migration_runner.py`.
+Forward, idempotent, and rollback tests live in `tests/unit/test_volatility.py::test_v3_to_v4_*` and `tests/unit/test_migration_runner.py::test_v3_to_v4_*` (P1 surfaces) plus `tests/unit/test_migration_runner.py::test_v3_to_v4_migration_extends_check_and_adds_agents_link` and `test_v3_to_v4_migration_is_idempotent_under_resume` (P2 surfaces).
 
 ## DoD for every migration
 
