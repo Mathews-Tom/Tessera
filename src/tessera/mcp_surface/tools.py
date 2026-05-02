@@ -1716,9 +1716,10 @@ async def register_compiled_artifact(
             source_tool=resolved_source,
             metadata=metadata,
         )
-    except vault_compiled.InvalidCompiledArtifactError as exc:
-        raise ValidationError(str(exc)) from exc
-    except vault_compiled.DuplicateCompiledArtifactError as exc:
+    except (
+        vault_compiled.InvalidCompiledArtifactError,
+        vault_compiled.DuplicateCompiledArtifactError,
+    ) as exc:
         raise ValidationError(str(exc)) from exc
     except vault_facets.UnknownAgentError as exc:
         raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
@@ -1839,16 +1840,15 @@ def _budget_compile_sources(
 ) -> tuple[tuple[CompileSourceView, ...], bool, int]:
     """Apply the list_compile_sources budget to source views."""
 
-    budgeted: list[BudgetedItem] = []
-    for view in items:
-        per_row_overhead = 48
-        budgeted.append(
-            BudgetedItem(
-                key=view.external_id,
-                snippet=view.snippet,
-                token_count=view.token_count + per_row_overhead,
-            )
+    per_row_overhead = 48
+    budgeted: list[BudgetedItem] = [
+        BudgetedItem(
+            key=view.external_id,
+            snippet=view.snippet,
+            token_count=view.token_count + per_row_overhead,
         )
+        for view in items
+    ]
     trimmed = apply_budget(budgeted, total_budget=LIST_COMPILE_SOURCES_RESPONSE_BUDGET)
     kept_keys = {b.key for b in trimmed.items}
     kept = tuple(view for view in items if view.external_id in kept_keys)

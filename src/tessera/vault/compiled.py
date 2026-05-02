@@ -330,13 +330,6 @@ def _row_to_artifact(row: tuple[Any, ...]) -> CompiledArtifact:
         sources_list = []
     if not isinstance(sources_list, list):
         sources_list = []
-    metadata_raw = str(row[8]) if row[8] is not None else "{}"
-    try:
-        metadata = json.loads(metadata_raw)
-    except json.JSONDecodeError:
-        metadata = {}
-    if not isinstance(metadata, dict):
-        metadata = {}
     return CompiledArtifact(
         external_id=str(row[0]),
         agent_id=int(row[1]),
@@ -346,25 +339,34 @@ def _row_to_artifact(row: tuple[Any, ...]) -> CompiledArtifact:
         compiled_at=int(row[5]),
         compiler_version=str(row[6]),
         is_stale=bool(row[7]),
-        metadata=metadata,
+        metadata=_decode_metadata(row[8]),
     )
 
 
 def _row_to_source(row: tuple[Any, ...]) -> CompileSource:
-    metadata_raw = str(row[4]) if row[4] is not None else "{}"
-    try:
-        metadata = json.loads(metadata_raw)
-    except json.JSONDecodeError:
-        metadata = {}
-    if not isinstance(metadata, dict):
-        metadata = {}
     return CompileSource(
         external_id=str(row[0]),
         facet_type=str(row[1]),
         content=str(row[2]),
         captured_at=int(row[3]),
-        metadata=metadata,
+        metadata=_decode_metadata(row[4]),
     )
+
+
+def _decode_metadata(raw: Any) -> dict[str, Any]:
+    """Best-effort decode of a JSON metadata column into a dict.
+
+    Returns an empty dict for NULL, malformed JSON, or non-object
+    payloads. The two row-mapping helpers share this contract so a
+    corrupt row never leaks past the storage layer.
+    """
+
+    metadata_raw = str(raw) if raw is not None else "{}"
+    try:
+        decoded = json.loads(metadata_raw)
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
 
 
 def _validate_sources(sources: Sequence[str]) -> tuple[str, ...]:
