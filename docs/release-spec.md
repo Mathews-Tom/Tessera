@@ -291,7 +291,8 @@ Per-item status is annotated below. Implementation lands in the v0.3 commit seri
 - [ ] Tom's dissertation research topic ships as a `compiled_notebook` and produces genuinely useful synthesized output
 - [ ] Compilation is idempotent and resumable; can interrupt mid-run without corruption
 - [ ] Stale detection correctly identifies when source facets have changed
-- [ ] BYO sync round-trip: vault → S3-compatible bucket → restore on second machine → identical state
+- [ ] **Audit-chain ship-gate (V0.5-P8, ADR 0021).** `tessera audit verify` returns exit 0 on a populated vault; the seven security tests (genesis, append, deletion-detect, modify-detect, reorder-detect, insert-detect, full-walk-clean) pass; the `audit-chain-determinism` and `audit-chain-single-writer` CI gates are green on the release commit; public language about the chain stays inside the ADR 0021 §Security claim — exact boundary. Hard ship-gate before V0.5-P4 reaches users — write-time compilation does not merge to `main` until this row is checked.
+- [ ] BYO sync round-trip: vault → S3-compatible bucket → restore on second machine → identical state, **and `tessera audit verify` succeeds on the restored vault**
 - [ ] Sync handles 50K+ facets without blocking the daemon
 - [ ] Encryption: data at rest in cloud is unreadable without local key (verified by attempting read with key absent)
 - [ ] `recall` transparently surfaces compiled artifacts when relevant, marks stale ones in response metadata
