@@ -16,10 +16,14 @@ in the daemon. The two-call API (read sources via ``recall`` /
 compiler. The ``register_compiled_artifact`` call is the only write
 path — there is no ``compile_now()`` API and no auto-compile.
 
-V0.5-P4 commits the ``is_stale`` field on ``compiled_artifacts`` as
-documented (default 0). V0.5-P6 owns the source-mutation detection
-that flips the flag; this module exposes it on read but does not
-mutate it.
+V0.5-P4 commits the ``is_stale`` field on ``compiled_artifacts``
+(default 0). V0.5-P6 wires :func:`mark_stale_for_source` into the
+three source-mutation paths (capture, soft-delete, skill procedure
+update) so an artifact flips to ``is_stale = 1`` the moment one of
+its declared source ULIDs is touched. ADR 0019 §Rationale (6) keeps
+this to a flag, not an auto-recompile trigger: Tessera flags, the
+compiler decides. Direct membership only — no transitive walk
+across the source's own metadata graph (V0.5 scope decision).
 
 The schema name (``compiled_notebook``) is the original ADR 0010
 reservation. User-facing prose calls the artifact "the Playbook"
@@ -232,17 +236,27 @@ def get(
 ) -> CompiledArtifact | None:
     """Fetch one artifact by external_id.
 
-    Returns ``None`` when the row does not exist. Cross-agent reads
-    are blocked at the MCP boundary by an explicit agent-id guard;
-    this storage-layer helper returns whatever row matches.
+    Returns ``None`` when the row does not exist or its paired
+    ``compiled_notebook`` facet has been soft-deleted. The pair is
+    joined on ``compiled_artifacts.external_id =
+    facets.external_id`` so a ``forget`` against the facet
+    automatically tombstones the artifact (V0.5-P6 / PR #61
+    review M1 — single source of truth for tombstone state lives
+    on the facet row, no parallel ``compiled_artifacts.is_deleted``
+    column). Cross-agent reads are blocked at the MCP boundary by
+    an explicit agent-id guard; this storage-layer helper returns
+    whatever live pair matches.
     """
 
     row = conn.execute(
         """
-        SELECT external_id, agent_id, source_facets, artifact_type, content,
-               compiled_at, compiler_version, is_stale, metadata
-        FROM compiled_artifacts
-        WHERE external_id = ?
+        SELECT a.external_id, a.agent_id, a.source_facets, a.artifact_type,
+               a.content, a.compiled_at, a.compiler_version, a.is_stale,
+               a.metadata
+        FROM compiled_artifacts AS a
+        JOIN facets AS f ON f.external_id = a.external_id
+        WHERE a.external_id = ?
+              AND f.is_deleted = 0
         """,
         (external_id,),
     ).fetchone()
@@ -269,11 +283,14 @@ def list_for_agent(
     if artifact_type is None:
         rows = conn.execute(
             """
-            SELECT external_id, agent_id, source_facets, artifact_type, content,
-                   compiled_at, compiler_version, is_stale, metadata
-            FROM compiled_artifacts
-            WHERE agent_id = ?
-            ORDER BY compiled_at DESC, id DESC
+            SELECT a.external_id, a.agent_id, a.source_facets, a.artifact_type,
+                   a.content, a.compiled_at, a.compiler_version, a.is_stale,
+                   a.metadata
+            FROM compiled_artifacts AS a
+            JOIN facets AS f ON f.external_id = a.external_id
+            WHERE a.agent_id = ?
+                  AND f.is_deleted = 0
+            ORDER BY a.compiled_at DESC, a.id DESC
             LIMIT ?
             """,
             (agent_id, limit),
@@ -281,11 +298,15 @@ def list_for_agent(
     else:
         rows = conn.execute(
             """
-            SELECT external_id, agent_id, source_facets, artifact_type, content,
-                   compiled_at, compiler_version, is_stale, metadata
-            FROM compiled_artifacts
-            WHERE agent_id = ? AND artifact_type = ?
-            ORDER BY compiled_at DESC, id DESC
+            SELECT a.external_id, a.agent_id, a.source_facets, a.artifact_type,
+                   a.content, a.compiled_at, a.compiler_version, a.is_stale,
+                   a.metadata
+            FROM compiled_artifacts AS a
+            JOIN facets AS f ON f.external_id = a.external_id
+            WHERE a.agent_id = ?
+                  AND a.artifact_type = ?
+                  AND f.is_deleted = 0
+            ORDER BY a.compiled_at DESC, a.id DESC
             LIMIT ?
             """,
             (agent_id, artifact_type, limit),
@@ -329,6 +350,96 @@ def list_for_compilation(
         (agent_id, target, limit),
     ).fetchall()
     return [_row_to_source(row) for row in rows]
+
+
+def mark_stale_for_source(
+    conn: sqlcipher3.Connection,
+    *,
+    source_external_id: str,
+    source_op: str,
+    agent_id: int,
+) -> int:
+    """Flip ``is_stale`` on every artifact citing ``source_external_id``.
+
+    Walks ``compiled_artifacts.source_facets`` (a JSON array column)
+    and finds every live row whose array contains the mutating
+    source's ULID. Each match flips from ``is_stale = 0`` to
+    ``is_stale = 1`` and emits one ``compiled_artifact_marked_stale``
+    audit row through the chain-aware insert path so the cascade is
+    forensically reconstructible. Already-stale rows are skipped at
+    the WHERE clause so the helper is idempotent — a second mutation
+    against the same source never re-emits an audit row for an
+    already-flagged artifact.
+
+    Scoped by ``agent_id`` so cross-agent membership cannot cascade.
+    A leaked ULID surfaced in another agent's source list never
+    flips that agent's artifacts (V0.5-P6 security invariant; tested
+    in ``test_compiled_staleness_cross_agent_isolation``).
+
+    ``source_op`` is the canonical mutation label
+    (``facet_inserted`` / ``facet_soft_deleted`` /
+    ``skill_procedure_updated``) so reading the audit log answers
+    "which mutation invalidated which artifact" in one query.
+
+    Direct membership only — ADR 0019 §Rationale (6) and the V0.5
+    handoff Open Question (4) reject transitive propagation. A skill
+    mutation flips a Playbook only when the skill's ULID is in the
+    Playbook's ``source_facets`` directly; an agent_profile that
+    references the skill via metadata does not propagate.
+
+    Returns the count of artifacts flipped (zero is the common case
+    when the mutation hits a facet no Playbook has cited yet).
+    """
+
+    if source_op not in {"facet_inserted", "facet_soft_deleted", "skill_procedure_updated"}:
+        raise InvalidCompiledArtifactError(
+            f"source_op {source_op!r} is not a recognised staleness trigger"
+        )
+    rows = conn.execute(
+        """
+        SELECT external_id
+        FROM compiled_artifacts
+        WHERE agent_id = ?
+              AND is_stale = 0
+              AND EXISTS (
+                  SELECT 1 FROM json_each(source_facets)
+                  WHERE json_each.value = ?
+              )
+        ORDER BY id ASC
+        """,
+        (agent_id, source_external_id),
+    ).fetchall()
+    if not rows:
+        return 0
+    flipped = 0
+    for row in rows:
+        artifact_external_id = str(row[0])
+        cur = conn.execute(
+            """
+            UPDATE compiled_artifacts
+            SET is_stale = 1
+            WHERE external_id = ? AND is_stale = 0
+            """,
+            (artifact_external_id,),
+        )
+        if int(cur.rowcount) != 1:
+            # Another writer flipped the row between SELECT and
+            # UPDATE. Skip — no spurious audit row, idempotency
+            # preserved.
+            continue
+        audit_chain.audit_log_append(
+            conn,
+            op="compiled_artifact_marked_stale",
+            actor="system",
+            agent_id=agent_id,
+            target_external_id=artifact_external_id,
+            payload={
+                "source_external_id": source_external_id,
+                "source_op": source_op,
+            },
+        )
+        flipped += 1
+    return flipped
 
 
 def _row_to_artifact(row: tuple[Any, ...]) -> CompiledArtifact:
@@ -457,5 +568,6 @@ __all__ = [
     "get",
     "list_for_agent",
     "list_for_compilation",
+    "mark_stale_for_source",
     "register_compiled_artifact",
 ]

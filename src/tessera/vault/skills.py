@@ -255,6 +255,21 @@ def update_procedure(
         target_external_id=external_id,
         payload={"content_hash_prefix": new_hash[:12], "embed_status_reset": True},
     )
+    # V0.5-P6 staleness wiring (ADR 0019 §Rationale 6). Skills are
+    # a primary Playbook source; updating a skill's procedure
+    # markdown changes what the compiler would synthesize, so any
+    # Playbook citing this skill flips to is_stale=1.
+    # ``update_metadata`` does NOT trigger this hook — name /
+    # description / active toggles do not invalidate the compiled
+    # narrative the way procedure body changes do.
+    from tessera.vault import compiled
+
+    compiled.mark_stale_for_source(
+        conn,
+        source_external_id=external_id,
+        source_op="skill_procedure_updated",
+        agent_id=skill.agent_id,
+    )
     return True
 
 

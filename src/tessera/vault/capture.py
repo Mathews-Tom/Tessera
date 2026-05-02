@@ -22,7 +22,7 @@ from typing import Any
 
 import sqlcipher3
 
-from tessera.vault import audit, facets
+from tessera.vault import audit, compiled, facets
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +81,21 @@ def capture(
             "volatility": volatility,
             "ttl_seconds": effective_ttl,
         },
+    )
+    # V0.5-P6 staleness wiring (ADR 0019 §Rationale 6). Capture is
+    # the un-delete path under content-hash dedup: a re-capture
+    # against a previously soft-deleted facet returns the prior
+    # external_id with is_new=False, restoring the row. If any
+    # Playbook still cites that ULID in its source_facets list, the
+    # mutation flips the artifact to is_stale=1 so the compiler
+    # learns the source moved. Brand-new captures mint a fresh ULID
+    # that cannot be cited yet, so the helper walks an empty result
+    # set in O(json_each) time — cheap by design.
+    compiled.mark_stale_for_source(
+        conn,
+        source_external_id=external_id,
+        source_op="facet_inserted",
+        agent_id=agent_id,
     )
     return CaptureResult(
         external_id=external_id,

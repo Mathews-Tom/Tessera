@@ -298,11 +298,47 @@ def list_by_type(
 
 
 def soft_delete(conn: sqlcipher3.Connection, external_id: str) -> bool:
+    """Tombstone a live facet by external_id.
+
+    Returns True when the row flipped from live to deleted; False
+    when no live row matched (already-deleted or unknown
+    external_id). Callers (``forget`` MCP op,
+    ``compaction.run_sweep``) emit their own audit row — this helper
+    stays focused on the SQL flip plus the V0.5-P6 staleness side
+    effect.
+
+    V0.5-P6 (ADR 0019 §Rationale 6): a soft-delete on a source
+    facet flips every Playbook citing it to ``is_stale=1`` and
+    emits a ``compiled_artifact_marked_stale`` audit row per
+    flipped artifact. The lookup is scoped to the deleted row's
+    ``agent_id`` so cross-agent cascades are impossible. The
+    ``compiled`` import is lazy because ``vault.compiled`` imports
+    ``vault.facets`` for content-hash and exception types — a
+    top-level import would form a cycle.
+    """
+
+    row = conn.execute(
+        "SELECT agent_id FROM facets WHERE external_id = ? AND is_deleted = 0",
+        (external_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    agent_id = int(row[0])
     cur = conn.execute(
         "UPDATE facets SET is_deleted = 1, deleted_at = ? WHERE external_id = ? AND is_deleted = 0",
         (_now_epoch(), external_id),
     )
-    return int(cur.rowcount) == 1
+    if int(cur.rowcount) != 1:
+        return False
+    from tessera.vault import compiled
+
+    compiled.mark_stale_for_source(
+        conn,
+        source_external_id=external_id,
+        source_op="facet_soft_deleted",
+        agent_id=agent_id,
+    )
+    return True
 
 
 def hard_delete(conn: sqlcipher3.Connection, external_id: str) -> bool:
