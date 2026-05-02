@@ -373,8 +373,9 @@ def mark_stale_for_source(
 
     Scoped by ``agent_id`` so cross-agent membership cannot cascade.
     A leaked ULID surfaced in another agent's source list never
-    flips that agent's artifacts (V0.5-P6 security invariant; tested
-    in ``test_compiled_staleness_cross_agent_isolation``).
+    flips that agent's artifacts (V0.5-P6 security invariant; the
+    cross-agent isolation case lives under
+    ``tests/unit/test_compiled_staleness.py``).
 
     ``source_op`` is the canonical mutation label
     (``facet_inserted`` / ``facet_soft_deleted`` /

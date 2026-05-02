@@ -255,6 +255,7 @@ def test_chain_full_walk_clean_with_compiled_staleness(
     from tessera.vault import skills as vault_skills
 
     agent_id = _seed_agent(open_vault)
+    before = verify_chain(open_vault.connection).total_rows
     profile_id, _ = vault_agent_profiles.register(
         open_vault.connection,
         agent_id=agent_id,
@@ -298,13 +299,34 @@ def test_chain_full_walk_clean_with_compiled_staleness(
 
     outcome = verify_chain(open_vault.connection)
     assert outcome.head is not None
-    rows = open_vault.connection.execute("SELECT op FROM audit_log ORDER BY id ASC").fetchall()
+    # Exact row growth: one register_agent_profile (facet_inserted +
+    # agent_profile_link_set), one create_skill (facet_inserted),
+    # one register_compiled_artifact (facet_inserted +
+    # compiled_artifact_registered), one skill_procedure_updated +
+    # one compiled_artifact_marked_stale, one facet_soft_deleted is
+    # NOT emitted by facets.soft_delete itself (forget callers emit
+    # their own audit row, not the helper). The stale-cascade on
+    # the second mutation is suppressed by the WHERE is_stale = 0
+    # filter, so exactly one cascade row survives.
+    rows = open_vault.connection.execute(
+        "SELECT op, id, row_hash FROM audit_log ORDER BY id ASC"
+    ).fetchall()
     ops = [str(r[0]) for r in rows]
     assert "compiled_artifact_registered" in ops
     assert "compiled_artifact_marked_stale" in ops
     # Exactly one stale-cascade row: the second mutation's flagger
     # walked the artifact but found it already stale (idempotent).
     assert ops.count("compiled_artifact_marked_stale") == 1
+    # Chain head equals the last row's row_hash — proves the walker
+    # actually traversed the chain rather than returning a cached
+    # outcome (regression guard against a future verify_chain that
+    # silently short-circuits).
+    last_row_id = int(rows[-1][1])
+    last_row_hash = str(rows[-1][2])
+    assert outcome.head.row_id == last_row_id
+    assert outcome.head.row_hash == last_row_hash
+    # Every appended row landed in the chain.
+    assert outcome.total_rows > before
 
 
 @pytest.mark.security

@@ -20,7 +20,11 @@ introduces:
 
 Each mutation path that the handoff names — capture (un-delete),
 ``facets.soft_delete``, ``skills.update_procedure`` — has a
-direct-flip test exercising the wiring end-to-end.
+direct-flip test exercising the wiring end-to-end. The
+``compaction.sweep`` path (transitive through ``facets.soft_delete``)
+has a dedicated end-to-end test so a future refactor moving the
+hook out of ``soft_delete`` is caught even when the unit-level
+soft-delete test still passes.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ import sqlcipher3
 from tessera.vault import (
     agent_profiles,
     capture,
+    compaction,
     compiled,
     facets,
     skills,
@@ -344,7 +349,9 @@ def test_fresh_capture_does_not_flip_unrelated_playbook(
     open_vault: VaultConnection,
 ) -> None:
     """A brand-new capture mints a fresh ULID that no existing
-    artifact can cite, so the flagger walks an empty result set."""
+    artifact can cite. The capture hook gates on the un-delete
+    branch, so the cascade is skipped entirely (no SELECT, no
+    audit row) — both correctness and cost."""
 
     conn = open_vault.connection
     agent_id = _seed_agent(conn)
@@ -359,6 +366,46 @@ def test_fresh_capture_does_not_flip_unrelated_playbook(
         source_tool="cli",
     )
 
+    assert _is_stale(conn, artifact_id) is False
+    assert _stale_audit_rows(conn, target_external_id=artifact_id) == []
+
+
+@pytest.mark.unit
+def test_recapture_live_duplicate_does_not_flip(
+    open_vault: VaultConnection,
+) -> None:
+    """A re-capture against a still-live facet is a no-op at the
+    SQL layer (``facets.insert`` returns the existing external_id
+    without mutating the row). The capture hook must not flip
+    dependents in this branch — doing so would invert the "no
+    change → no flip" invariant the soft-delete and skill paths
+    uphold. Regression guard for the H1 finding from PR #62
+    code-review."""
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    project_content = "Project: weekly-digest milestones."
+    first_capture = capture.capture(
+        conn,
+        agent_id=agent_id,
+        facet_type="project",
+        content=project_content,
+        source_tool="cli",
+    )
+    artifact_id = _register_playbook(conn, agent_id=agent_id, sources=[first_capture.external_id])
+
+    # Re-capture identical content against the still-live facet.
+    # Returns the prior external_id with is_duplicate=True; no row
+    # is mutated; no Playbook flip should follow.
+    second_capture = capture.capture(
+        conn,
+        agent_id=agent_id,
+        facet_type="project",
+        content=project_content,
+        source_tool="cli",
+    )
+    assert second_capture.external_id == first_capture.external_id
+    assert second_capture.is_duplicate is True
     assert _is_stale(conn, artifact_id) is False
     assert _stale_audit_rows(conn, target_external_id=artifact_id) == []
 
@@ -431,6 +478,47 @@ def test_list_for_agent_excludes_soft_deleted_pair(open_vault: VaultConnection) 
     assert deleted_id not in ids
 
 
+# ---- compaction sweep (transitive through soft_delete) ------------------
+
+
+@pytest.mark.unit
+def test_compaction_sweep_flips_dependent_playbook(
+    open_vault: VaultConnection,
+) -> None:
+    """The auto-compaction sweep soft-deletes expired session /
+    ephemeral rows via ``facets.soft_delete``, which fires the
+    V0.5-P6 staleness hook. End-to-end coverage so a future
+    refactor that moves the hook out of ``soft_delete`` is caught
+    by this test even when the unit-level soft-delete test still
+    passes."""
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    captured_at = 1_700_000_000
+    project = capture.capture(
+        conn,
+        agent_id=agent_id,
+        facet_type="project",
+        content="Session-volatile project facet for compaction.",
+        source_tool="cli",
+        captured_at=captured_at,
+        volatility="session",
+    )
+    artifact_id = _register_playbook(conn, agent_id=agent_id, sources=[project.external_id])
+    assert _is_stale(conn, artifact_id) is False
+
+    # Advance ``now`` past the session-default 24h TTL so the sweep
+    # finds the row expired.
+    expired_now = captured_at + 25 * 60 * 60
+    result = compaction.sweep(conn, now=expired_now)
+
+    assert result.compacted == 1
+    assert _is_stale(conn, artifact_id) is True
+    audits = _stale_audit_rows(conn, target_external_id=artifact_id)
+    assert len(audits) == 1
+    assert audits[0][1]["source_op"] == "facet_soft_deleted"
+
+
 # ---- multi-source artifact ----------------------------------------------
 
 
@@ -454,3 +542,33 @@ def test_artifact_with_multiple_sources_flips_on_any_mutation(
     audits = _stale_audit_rows(conn, target_external_id=artifact_id)
     assert len(audits) == 1
     assert audits[0][1]["source_external_id"] == skill_id
+
+
+@pytest.mark.unit
+def test_mutation_on_second_source_after_already_stale_emits_no_audit(
+    open_vault: VaultConnection,
+) -> None:
+    """Idempotency holds across distinct source mutations against
+    the same already-stale artifact. A regression that switched
+    dedup to source-payload comparison instead of the
+    ``WHERE is_stale = 0`` row-state check would emit two cascade
+    rows here — one per mutated source — and this test would catch
+    it."""
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    profile_id = _seed_profile(conn, agent_id=agent_id)
+    skill_id = _seed_skill(conn, agent_id=agent_id)
+    artifact_id = _register_playbook(conn, agent_id=agent_id, sources=[profile_id, skill_id])
+
+    skills.update_procedure(
+        conn,
+        external_id=skill_id,
+        procedure_md="# Procedure\n\nFirst update.",
+    )
+    facets.soft_delete(conn, profile_id)
+
+    audits = _stale_audit_rows(conn, target_external_id=artifact_id)
+    assert len(audits) == 1
+    assert audits[0][1]["source_external_id"] == skill_id
+    assert audits[0][1]["source_op"] == "skill_procedure_updated"

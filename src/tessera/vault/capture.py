@@ -56,6 +56,21 @@ def capture(
     """
 
     effective_ttl = facets.resolve_ttl_seconds(volatility, ttl_seconds)
+    # Detect the un-delete branch of facets.insert before the call so
+    # the V0.5-P6 staleness hook can gate on it. ``facets.insert`` has
+    # three branches under content-hash dedup — brand-new (fresh
+    # ULID), un-delete (soft-deleted match restored), and
+    # live-duplicate (already-live match, no SQL mutation). Only the
+    # un-delete branch is a genuine source-state change for any
+    # Playbook citing the facet's external_id; flipping dependents on
+    # a live-duplicate would invert the "no change → no stale flip"
+    # invariant the soft-delete and skill paths uphold.
+    digest = facets.content_hash(content)
+    prior = conn.execute(
+        "SELECT is_deleted FROM facets WHERE agent_id = ? AND content_hash = ?",
+        (agent_id, digest),
+    ).fetchone()
+    was_undeleted = prior is not None and bool(prior[0])
     external_id, is_new = facets.insert(
         conn,
         agent_id=agent_id,
@@ -82,21 +97,23 @@ def capture(
             "ttl_seconds": effective_ttl,
         },
     )
-    # V0.5-P6 staleness wiring (ADR 0019 §Rationale 6). Capture is
-    # the un-delete path under content-hash dedup: a re-capture
-    # against a previously soft-deleted facet returns the prior
-    # external_id with is_new=False, restoring the row. If any
-    # Playbook still cites that ULID in its source_facets list, the
-    # mutation flips the artifact to is_stale=1 so the compiler
-    # learns the source moved. Brand-new captures mint a fresh ULID
-    # that cannot be cited yet, so the helper walks an empty result
-    # set in O(json_each) time — cheap by design.
-    compiled.mark_stale_for_source(
-        conn,
-        source_external_id=external_id,
-        source_op="facet_inserted",
-        agent_id=agent_id,
-    )
+    # V0.5-P6 staleness wiring (ADR 0019 §Rationale 6). Only the
+    # un-delete branch fires the cascade: a brand-new capture mints
+    # a fresh ULID that cannot be cited yet (cascade would walk an
+    # empty result set, harmless but noise), and a live-duplicate
+    # re-capture is a no-op against an unchanged source row (firing
+    # would wrongly flip dependents under "no change → no flip").
+    # Only the un-delete branch represents a genuine source-state
+    # change a citing Playbook should learn about — the prior
+    # ``is_deleted = 1`` snapshot taken before ``facets.insert``
+    # restores the row is what gates the call.
+    if was_undeleted:
+        compiled.mark_stale_for_source(
+            conn,
+            source_external_id=external_id,
+            source_op="facet_inserted",
+            agent_id=agent_id,
+        )
     return CaptureResult(
         external_id=external_id,
         is_duplicate=not is_new,
