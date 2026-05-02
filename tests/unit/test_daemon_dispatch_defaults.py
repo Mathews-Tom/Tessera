@@ -36,17 +36,17 @@ def test_default_recall_types_excludes_person() -> None:
 
 
 @pytest.mark.unit
-def test_default_recall_types_excludes_compiled_notebook() -> None:
-    """``compiled_notebook`` is reserved for v0.5 write-time compilation.
+def test_default_recall_types_includes_compiled_notebook() -> None:
+    """V0.5-P4 (ADR 0019) activates ``compiled_notebook`` for writes.
 
-    Until v0.5 activates the type, the default recall set must not
-    include it — the write path rejects captures, and the read path
-    has no rows to return. Adding it now would create asymmetry
-    between the schema CHECK (which admits the type) and what the
-    pipeline can usefully produce.
+    The cross-facet default fan-out should include the type so a
+    bare ``recall`` surfaces the AgenticOS Playbook alongside its
+    source facets without an explicit ``facet_types`` filter — that
+    is the whole point of unifying the Playbook with the existing
+    cross-facet recall path per ADR 0019 §Retrieval surface.
     """
 
-    assert "compiled_notebook" not in dispatch._DEFAULT_RECALL_TYPES
+    assert "compiled_notebook" in dispatch._DEFAULT_RECALL_TYPES
 
 
 @pytest.mark.unit

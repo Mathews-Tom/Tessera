@@ -34,6 +34,9 @@ def test_contract_lists_dispatchable_tools_in_order() -> None:
         "register_checklist",
         "record_retrospective",
         "list_checks_for_agent",
+        "register_compiled_artifact",
+        "get_compiled_artifact",
+        "list_compile_sources",
     ]
     assert set(names) == set(dispatch._HANDLERS)
 

@@ -235,6 +235,25 @@ def build_args_for_route(
     if path == "/api/v1/retrospectives" and http_method == "POST":
         return "record_retrospective", _parse_json_body(body)
 
+    if path == "/api/v1/compiled_artifacts" and http_method == "POST":
+        return "register_compiled_artifact", _parse_json_body(body)
+
+    if path.startswith("/api/v1/compiled_artifacts/"):
+        external_id = path[len("/api/v1/compiled_artifacts/") :]
+        if not external_id or "/" in external_id:
+            raise RestError(404, "unknown_method", "unknown route")
+        if http_method == "GET":
+            return "get_compiled_artifact", {"external_id": external_id}
+
+    if path == "/api/v1/compile_sources" and http_method == "GET":
+        target = _single(qs, "target")
+        if target is None:
+            raise RestError(400, "invalid_input", "target must be a string")
+        compile_args: dict[str, Any] = {"target": target}
+        if (limit_raw := _single(qs, "limit")) is not None:
+            compile_args["limit"] = _coerce_int("limit", limit_raw)
+        return "list_compile_sources", compile_args
+
     raise RestError(404, "unknown_method", "unknown route")
 
 

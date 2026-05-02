@@ -341,6 +341,51 @@ async def _do_list_checks_for_agent(tctx: mcp.ToolContext, args: dict[str, Any])
     return {"checklist": _checklist_view_to_json(resp)}
 
 
+async def _do_register_compiled_artifact(
+    tctx: mcp.ToolContext, args: dict[str, Any]
+) -> dict[str, Any]:
+    sources = args.get("source_facets")
+    if not isinstance(sources, list):
+        raise mcp.ValidationError("source_facets must be a list")
+    resp = await mcp.register_compiled_artifact(
+        tctx,
+        content=_require_str(args, "content"),
+        source_facets=tuple(sources),
+        compiler_version=_require_str(args, "compiler_version"),
+        artifact_type=str(args.get("artifact_type", "playbook")),
+        metadata=args.get("metadata"),
+        source_tool=args.get("source_tool"),
+    )
+    return {
+        "external_id": resp.external_id,
+        "artifact_type": resp.artifact_type,
+        "source_count": resp.source_count,
+    }
+
+
+async def _do_get_compiled_artifact(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.get_compiled_artifact(
+        tctx,
+        external_id=_require_str(args, "external_id"),
+    )
+    if resp is None:
+        return {"artifact": None}
+    return {"artifact": _compiled_artifact_view_to_json(resp)}
+
+
+async def _do_list_compile_sources(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.list_compile_sources(
+        tctx,
+        target=_require_str(args, "target"),
+        limit=_optional_int(args, "limit", default=50),
+    )
+    return {
+        "items": [_compile_source_view_to_json(item) for item in resp.items],
+        "truncated": resp.truncated,
+        "total_tokens": resp.total_tokens,
+    }
+
+
 _HandlerT = Callable[[mcp.ToolContext, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _HANDLERS: dict[str, _HandlerT] = {
@@ -361,6 +406,9 @@ _HANDLERS: dict[str, _HandlerT] = {
     "register_checklist": _do_register_checklist,
     "record_retrospective": _do_record_retrospective,
     "list_checks_for_agent": _do_list_checks_for_agent,
+    "register_compiled_artifact": _do_register_compiled_artifact,
+    "get_compiled_artifact": _do_get_compiled_artifact,
+    "list_compile_sources": _do_list_compile_sources,
 }
 
 
@@ -458,6 +506,30 @@ def _checklist_view_to_json(view: mcp.ChecklistView) -> dict[str, Any]:
         "captured_at": view.captured_at,
         "embed_status": view.embed_status,
         "truncated": view.truncated,
+        "token_count": view.token_count,
+    }
+
+
+def _compiled_artifact_view_to_json(view: mcp.CompiledArtifactView) -> dict[str, Any]:
+    return {
+        "external_id": view.external_id,
+        "content": view.content,
+        "artifact_type": view.artifact_type,
+        "source_facets": list(view.source_facets),
+        "compiler_version": view.compiler_version,
+        "compiled_at": view.compiled_at,
+        "is_stale": view.is_stale,
+        "truncated": view.truncated,
+        "token_count": view.token_count,
+    }
+
+
+def _compile_source_view_to_json(view: mcp.CompileSourceView) -> dict[str, Any]:
+    return {
+        "external_id": view.external_id,
+        "facet_type": view.facet_type,
+        "snippet": view.snippet,
+        "captured_at": view.captured_at,
         "token_count": view.token_count,
     }
 

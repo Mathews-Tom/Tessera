@@ -1168,3 +1168,182 @@ async def test_list_checks_for_agent_requires_read_scope(
     with pytest.raises(mcp.ScopeDenied) as exc:
         await mcp.list_checks_for_agent(tctx, profile_external_id=profile_id)
     assert exc.value.required_facet_type == "verification_checklist"
+
+
+# ---- V0.5-P4 compiled artifact tools ------------------------------------
+
+
+_V0_5_P4_SCOPES: tuple[str, ...] = (
+    "style",
+    "project",
+    "skill",
+    "person",
+    "agent_profile",
+    "verification_checklist",
+    "retrospective",
+    "compiled_notebook",
+)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_compiled_artifact_creates_pair(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P4_SCOPES, scope_write=_V0_5_P4_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    resp = await mcp.register_compiled_artifact(
+        tctx,
+        content="The Playbook narrative.",
+        source_facets=(profile_id,),
+        compiler_version="claude-opus-4-7",
+    )
+    assert resp.artifact_type == "playbook"
+    assert resp.source_count == 1
+    assert len(resp.external_id) == 26
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_compiled_artifact_requires_write_scope(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault,
+        vault_path,
+        scope_read=_V0_5_P4_SCOPES,
+        scope_write=("style", "project", "agent_profile"),
+    )
+    profile_id = await _seed_profile(tctx)
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.register_compiled_artifact(
+            tctx,
+            content="denied",
+            source_facets=(profile_id,),
+            compiler_version="v1",
+        )
+    assert exc.value.required_facet_type == "compiled_notebook"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_compiled_artifact_rejects_empty_sources(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P4_SCOPES, scope_write=_V0_5_P4_SCOPES
+    )
+    with pytest.raises(mcp.ValidationError, match="at least one"):
+        await mcp.register_compiled_artifact(
+            tctx, content="x", source_facets=(), compiler_version="v1"
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_compiled_artifact_returns_view(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P4_SCOPES, scope_write=_V0_5_P4_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_compiled_artifact(
+        tctx,
+        content="Body",
+        source_facets=(profile_id,),
+        compiler_version="v1",
+    )
+    view = await mcp.get_compiled_artifact(tctx, external_id=reg.external_id)
+    assert view is not None
+    assert view.artifact_type == "playbook"
+    assert view.source_facets == (profile_id,)
+    assert view.is_stale is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_compiled_artifact_blocks_cross_agent_read(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P4_SCOPES, scope_write=_V0_5_P4_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_compiled_artifact(
+        tctx,
+        content="Owned by agent A",
+        source_facets=(profile_id,),
+        compiler_version="v1",
+    )
+    open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('01OTHER', 'b', 0)"
+    )
+    other_id = int(
+        open_vault.connection.execute(
+            "SELECT id FROM agents WHERE external_id='01OTHER'"
+        ).fetchone()[0]
+    )
+    issued_other = tokens.issue(
+        open_vault.connection,
+        agent_id=other_id,
+        client_name="cli",
+        token_class="session",
+        scope=build_scope(read=_V0_5_P4_SCOPES, write=_V0_5_P4_SCOPES),
+        now_epoch=1_000_000,
+    )
+    other_verified = tokens.verify_and_touch(
+        open_vault.connection,
+        raw_token=issued_other.raw_token,
+        now_epoch=1_000_001,
+    )
+    other_tctx = mcp.ToolContext(
+        conn=open_vault.connection,
+        verified=other_verified,
+        vault_path=vault_path,
+        pipeline=tctx.pipeline,
+        clock=lambda: 1_000_100,
+    )
+    assert await mcp.get_compiled_artifact(other_tctx, external_id=reg.external_id) is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_compile_sources_returns_tagged_facets(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P4_SCOPES, scope_write=_V0_5_P4_SCOPES
+    )
+    await _seed_profile(tctx)
+    # Tag a project facet for the playbook.
+    from tessera.vault import facets as vault_facets
+
+    vault_facets.insert(
+        open_vault.connection,
+        agent_id=tctx.verified.agent_id,
+        facet_type="project",
+        content="active project for playbook",
+        source_tool="cli",
+        metadata={"compile_into": ["playbook_main"]},
+    )
+    resp = await mcp.list_compile_sources(tctx, target="playbook_main")
+    assert any(item.facet_type == "project" for item in resp.items)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_compile_sources_requires_read_scope(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault,
+        vault_path,
+        scope_read=("style", "project", "agent_profile"),
+        scope_write=(),
+    )
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.list_compile_sources(tctx, target="playbook_main")
+    assert exc.value.required_facet_type == "compiled_notebook"
