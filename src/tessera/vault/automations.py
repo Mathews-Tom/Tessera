@@ -87,6 +87,18 @@ class UnknownAutomationError(AutomationError):
     """Referenced automation external_id does not exist (or belongs to another agent)."""
 
 
+class CorruptAutomationRowError(AutomationError):
+    """Stored automation row's metadata column is malformed.
+
+    Distinct from :class:`InvalidAutomationMetadataError` (caller
+    input is bad) so the MCP boundary can map this to ``StorageError``
+    (the vault state is bad, not the caller). Raised by
+    :func:`record_run` and the row-mapping helpers when the
+    persisted JSON cannot be decoded or fails post-load
+    re-validation.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class AutomationMetadata:
     """Validated metadata payload for one ``automation`` facet row."""
@@ -229,11 +241,11 @@ def record_run(
     run.
 
     Emits one ``automation_run_recorded`` audit row carrying
-    ``{result_bucket, last_run_at}`` per V0.5-P5 §S4 boundary —
-    free-form ``last_result`` notes never enter the audit payload;
-    only the bucketed canonical (or ``"other"`` for non-bucket
-    values) is recorded so forensics can summarise run history
-    without leaking caller-supplied prose.
+    ``{result_bucket, last_run_at}`` per ``docs/threat-model.md``
+    §S4 boundary — free-form ``last_result`` notes never enter the
+    audit payload; only the bucketed canonical (or ``"other"`` for
+    non-bucket values) is recorded so forensics can summarise run
+    history without leaking caller-supplied prose.
     """
 
     last_run = _entry_short_string(last_run, "last_run", _MAX_LAST_RUN_CHARS)
@@ -258,21 +270,42 @@ def record_run(
     try:
         existing_meta = json.loads(row[0]) if row[0] else {}
     except json.JSONDecodeError as exc:
-        raise InvalidAutomationMetadataError(
-            f"existing metadata for {external_id!r} is not valid JSON"
+        raise CorruptAutomationRowError(
+            f"stored metadata for automation {external_id!r} is not valid JSON"
         ) from exc
     if not isinstance(existing_meta, dict):
-        raise InvalidAutomationMetadataError(
-            f"existing metadata for {external_id!r} is not a JSON object"
+        raise CorruptAutomationRowError(
+            f"stored metadata for automation {external_id!r} is not a JSON object"
         )
     new_meta = {**existing_meta, "last_run": last_run, "last_result": last_result}
     # Re-validate so a previously-stored row that drifted from the
     # contract surfaces here rather than silently writing a more
-    # invalid shape on top of it.
-    validate_metadata(new_meta)
+    # invalid shape on top of it. Drift surfaces as
+    # ``CorruptAutomationRowError`` so the MCP boundary maps it to
+    # ``StorageError`` (vault state is bad, not caller input).
+    try:
+        validate_metadata(new_meta)
+    except InvalidAutomationMetadataError as exc:
+        raise CorruptAutomationRowError(
+            f"stored metadata for automation {external_id!r} fails post-merge validation"
+        ) from exc
+    # UPDATE predicates mirror the SELECT above for defense-in-depth:
+    # ``external_id`` is UNIQUE so this is currently safe under the
+    # SELECT alone, but a future schema change relaxing uniqueness
+    # could otherwise let this UPDATE silently mutate the wrong row.
+    # Keeping the predicates symmetric makes the invariant local to
+    # this function rather than load-bearing on schema-level UNIQUE.
     conn.execute(
-        "UPDATE facets SET metadata = ? WHERE external_id = ?",
-        (json.dumps(new_meta, sort_keys=True, ensure_ascii=False), external_id),
+        """
+        UPDATE facets SET metadata = ?
+        WHERE external_id = ? AND facet_type = 'automation'
+              AND agent_id = ? AND is_deleted = 0
+        """,
+        (
+            json.dumps(new_meta, sort_keys=True, ensure_ascii=False),
+            external_id,
+            agent_id,
+        ),
     )
     audit.write(
         conn,
@@ -354,11 +387,26 @@ def list_for_agent(
 
 
 def _row_to_automation(row: tuple[Any, ...]) -> Automation:
-    raw_metadata = json.loads(row[5]) if row[5] else {}
-    metadata = validate_metadata(raw_metadata)
+    external_id = str(row[1])
+    try:
+        raw_metadata = json.loads(row[5]) if row[5] else {}
+    except json.JSONDecodeError as exc:
+        raise CorruptAutomationRowError(
+            f"stored metadata for automation {external_id!r} is not valid JSON"
+        ) from exc
+    if not isinstance(raw_metadata, dict):
+        raise CorruptAutomationRowError(
+            f"stored metadata for automation {external_id!r} is not a JSON object"
+        )
+    try:
+        metadata = validate_metadata(raw_metadata)
+    except InvalidAutomationMetadataError as exc:
+        raise CorruptAutomationRowError(
+            f"stored metadata for automation {external_id!r} drifted from the ADR-0020 contract"
+        ) from exc
     return Automation(
         facet_id=int(row[0]),
-        external_id=str(row[1]),
+        external_id=external_id,
         agent_id=int(row[2]),
         content=str(row[3]),
         captured_at=int(row[4]),
@@ -400,6 +448,7 @@ __all__ = [
     "Automation",
     "AutomationError",
     "AutomationMetadata",
+    "CorruptAutomationRowError",
     "InvalidAutomationMetadataError",
     "UnknownAutomationError",
     "get",

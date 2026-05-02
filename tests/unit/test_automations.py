@@ -107,10 +107,38 @@ def test_validate_metadata_rejects_malformed_iso_timestamp() -> None:
 
 
 @pytest.mark.unit
-def test_validate_metadata_rejects_overlong_trigger_spec() -> None:
+@pytest.mark.parametrize(
+    ("field", "max_chars"),
+    [
+        ("trigger_spec", 1_024),
+        ("cadence", 256),
+        ("runner", 128),
+    ],
+)
+def test_validate_metadata_rejects_overlong_required_field(field: str, max_chars: int) -> None:
+    """Each required-string field has its length ceiling pinned by a
+    parametrised test. A regression that loosens any one cap surfaces
+    as a missing parametric case, not a silent acceptance."""
+
+    bad = _valid_metadata()
+    bad[field] = "x" * (max_chars + 1)
+    with pytest.raises(automations.InvalidAutomationMetadataError, match="length"):
+        automations.validate_metadata(bad)
+
+
+@pytest.mark.unit
+def test_validate_metadata_rejects_overlong_last_result() -> None:
     with pytest.raises(automations.InvalidAutomationMetadataError, match="length"):
         automations.validate_metadata(
-            {**_valid_metadata(), "trigger_spec": "x" * 2_000},
+            {**_valid_metadata(), "last_result": "x" * 1_025},
+        )
+
+
+@pytest.mark.unit
+def test_validate_metadata_rejects_overlong_last_run() -> None:
+    with pytest.raises(automations.InvalidAutomationMetadataError, match="length"):
+        automations.validate_metadata(
+            {**_valid_metadata(), "last_run": "x" * 65},
         )
 
 
@@ -295,6 +323,145 @@ def test_record_run_blocks_cross_agent_update(open_vault: VaultConnection) -> No
             last_run="2026-05-02T09:00:00Z",
             last_result="success",
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("bucket_input", "expected_payload"),
+    [
+        ("success", "success"),
+        ("partial", "partial"),
+        ("failure", "failure"),
+        ("partial: 3/5 sources scraped", "other"),
+        ("custom prose", "other"),
+    ],
+)
+def test_record_run_buckets_each_canonical_value(
+    open_vault: VaultConnection,
+    bucket_input: str,
+    expected_payload: str,
+) -> None:
+    """Every canonical bucket reaches the audit chain unchanged;
+    every free-form value lands as ``"other"``. A regression that
+    mistypes one bucket (e.g. ``"failed"`` vs ``"failure"``) would
+    surface here."""
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    external_id, _ = automations.register(
+        conn,
+        agent_id=agent_id,
+        content=f"automation for bucket {bucket_input}",
+        metadata=_valid_metadata(),
+        source_tool="cli",
+    )
+    automations.record_run(
+        conn,
+        agent_id=agent_id,
+        external_id=external_id,
+        last_run="2026-05-02T09:00:00Z",
+        last_result=bucket_input,
+    )
+    payload = json.loads(
+        conn.execute(
+            "SELECT payload FROM audit_log WHERE op = 'automation_run_recorded' "
+            "AND target_external_id = ? ORDER BY id DESC LIMIT 1",
+            (external_id,),
+        ).fetchone()[0]
+    )
+    assert payload["result_bucket"] == expected_payload
+
+
+@pytest.mark.unit
+def test_record_run_blocks_soft_deleted_automation(open_vault: VaultConnection) -> None:
+    """Soft-deleted automations cannot accept new run records. The
+    SQL filter on ``is_deleted = 0`` is the regression guard — a
+    refactor that drops the predicate would let runners mutate
+    tombstoned rows and emit cascade audit rows for facets the user
+    believes are gone."""
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    external_id, _ = automations.register(
+        conn,
+        agent_id=agent_id,
+        content="x",
+        metadata=_valid_metadata(),
+        source_tool="cli",
+    )
+    conn.execute(
+        "UPDATE facets SET is_deleted = 1, deleted_at = 99 WHERE external_id = ?",
+        (external_id,),
+    )
+    with pytest.raises(automations.UnknownAutomationError, match="for this agent"):
+        automations.record_run(
+            conn,
+            agent_id=agent_id,
+            external_id=external_id,
+            last_run="2026-05-02T09:00:00Z",
+            last_result="success",
+        )
+
+
+@pytest.mark.unit
+def test_record_run_surfaces_corrupt_metadata_distinctly(
+    open_vault: VaultConnection,
+) -> None:
+    """A vault row whose metadata JSON is malformed must surface as
+    ``CorruptAutomationRowError`` (mapped to ``StorageError`` at the
+    MCP boundary) rather than as ``InvalidAutomationMetadataError``
+    (which is for caller-input drift). Pin the distinction so the
+    MCP boundary's exception-mapping cannot regress."""
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    external_id, _ = automations.register(
+        conn,
+        agent_id=agent_id,
+        content="x",
+        metadata=_valid_metadata(),
+        source_tool="cli",
+    )
+    # Plant a malformed metadata blob directly to simulate a corrupt
+    # row reaching ``record_run`` (e.g., a partial restore, a buggy
+    # migration, a manual edit).
+    conn.execute(
+        "UPDATE facets SET metadata = ? WHERE external_id = ?",
+        ("not a json blob", external_id),
+    )
+    with pytest.raises(automations.CorruptAutomationRowError, match="not valid JSON"):
+        automations.record_run(
+            conn,
+            agent_id=agent_id,
+            external_id=external_id,
+            last_run="2026-05-02T09:00:00Z",
+            last_result="success",
+        )
+
+
+@pytest.mark.unit
+def test_get_surfaces_corrupt_metadata_distinctly(
+    open_vault: VaultConnection,
+) -> None:
+    """The same corruption surfaces from the read path
+    (``_row_to_automation``) so ``get`` and ``list_for_agent`` do
+    not throw an opaque ``json.JSONDecodeError`` to the MCP layer."""
+
+    conn = open_vault.connection
+    agent_id = _seed_agent(conn)
+    external_id, _ = automations.register(
+        conn,
+        agent_id=agent_id,
+        content="x",
+        metadata=_valid_metadata(),
+        source_tool="cli",
+    )
+    conn.execute(
+        "UPDATE facets SET metadata = ? WHERE external_id = ?",
+        ("not a json blob", external_id),
+    )
+    with pytest.raises(automations.CorruptAutomationRowError, match="not valid JSON"):
+        automations.get(conn, external_id=external_id)
 
 
 @pytest.mark.unit

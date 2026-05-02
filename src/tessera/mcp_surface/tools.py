@@ -1800,6 +1800,13 @@ async def record_automation_run(
         # specific external_id and we owe them an explicit denial
         # rather than a silent no-op.
         raise ValidationError(str(exc)) from exc
+    except vault_automations.CorruptAutomationRowError as exc:
+        # Distinct from caller-input validation: the stored row is
+        # malformed (drift from the ADR-0020 contract or a corrupt
+        # JSON blob). Surface as StorageError so operators can
+        # distinguish "the runner sent bad input" from "the vault
+        # row is broken" in logs and forensics.
+        raise StorageError(f"corrupt automation row: {type(exc).__name__}") from exc
     except vault_automations.InvalidAutomationMetadataError as exc:
         raise ValidationError(str(exc)) from exc
     return RecordAutomationRunResponse(

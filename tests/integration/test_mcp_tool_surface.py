@@ -1571,3 +1571,71 @@ async def test_record_automation_run_blocks_cross_agent_update(
             last_run="2026-05-02T09:00:00Z",
             last_result="success",
         )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_facets_returns_automation_rows(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """ADR 0020 §Rationale 3 reuses the generic read surface — no
+    separate ``list_automations`` tool. ``list_facets`` must return
+    automation rows so this surface obligation holds end-to-end."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_automation(
+        tctx,
+        content="A registered automation",
+        metadata=_automation_metadata(profile_id),
+    )
+    listed = await mcp.list_facets(tctx, facet_type="automation")
+    assert any(item.external_id == reg.external_id for item in listed.items)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_show_returns_automation_row(open_vault: VaultConnection, vault_path: Path) -> None:
+    """``show`` is the third leg of the generic read tripod (with
+    ``recall`` and ``list_facets``). An automation row must be
+    fetchable by external_id without a dedicated ``get_automation``
+    tool."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_automation(
+        tctx,
+        content="Show-me automation",
+        metadata=_automation_metadata(profile_id),
+    )
+    shown = await mcp.show(tctx, external_id=reg.external_id)
+    assert shown.facet_type == "automation"
+    assert shown.external_id == reg.external_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_forget_soft_deletes_automation(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """``forget`` must work for automation rows so users can retire
+    a registered automation through the same surface they use for
+    every other facet type. After forget, the row no longer
+    surfaces via ``list_facets``."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_automation(
+        tctx,
+        content="Soon-to-be-forgotten automation",
+        metadata=_automation_metadata(profile_id),
+    )
+    await mcp.forget(tctx, external_id=reg.external_id, reason="retired")
+    listed = await mcp.list_facets(tctx, facet_type="automation")
+    assert all(item.external_id != reg.external_id for item in listed.items)

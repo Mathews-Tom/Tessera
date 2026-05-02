@@ -389,17 +389,26 @@ def test_chain_full_walk_clean_with_automation_runs(
         "SELECT op, id, row_hash FROM audit_log ORDER BY id ASC"
     ).fetchall()
     ops = [str(r[0]) for r in rows]
-    # Two register operations (profile + automation) plus two run
-    # records. Each run record produces one cascade row — non-
-    # idempotent because each call is a genuine state transition
-    # with a fresh timestamp, unlike the staleness flagger.
+    # Exact-growth assertion: agent_profile register emits
+    # facet_inserted + agent_profile_link_set; automation register
+    # emits one facet_inserted; each record_run emits one
+    # automation_run_recorded. That is +5 rows over the baseline.
+    # An extra unintended audit op (e.g., a stale-flag cascade
+    # firing on metadata UPDATE, which automations are NOT a
+    # source for per ADR 0019 §Rationale 6) would slip through a
+    # looser ``> before`` assertion silently.
+    assert outcome.total_rows == before + 5
+    # Two run records — non-idempotent because each call is a
+    # genuine state transition with a fresh timestamp, unlike the
+    # V0.5-P6 staleness flagger which suppresses the second
+    # cascade on an already-stale artifact.
     assert ops.count("automation_run_recorded") == 2
-    assert "facet_inserted" in ops
+    assert ops.count("facet_inserted") == 2  # profile + automation
+    assert ops.count("agent_profile_link_set") == 1
     last_row_id = int(rows[-1][1])
     last_row_hash = str(rows[-1][2])
     assert outcome.head.row_id == last_row_id
     assert outcome.head.row_hash == last_row_hash
-    assert outcome.total_rows > before
 
 
 @pytest.mark.security
