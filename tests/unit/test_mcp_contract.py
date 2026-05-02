@@ -37,6 +37,8 @@ def test_contract_lists_dispatchable_tools_in_order() -> None:
         "register_compiled_artifact",
         "get_compiled_artifact",
         "list_compile_sources",
+        "register_automation",
+        "record_automation_run",
     ]
     assert set(names) == set(dispatch._HANDLERS)
 

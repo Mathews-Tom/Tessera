@@ -49,8 +49,9 @@ def test_validate_length_rejects_non_string() -> None:
 def test_validate_facet_type_accepts_active_v0_5_vocab() -> None:
     # V0.5-P2 unlocked ``agent_profile``; V0.5-P3 unlocked
     # ``verification_checklist`` and ``retrospective``; V0.5-P4
-    # unlocks ``compiled_notebook`` (the AgenticOS Playbook). The
-    # MCP boundary must accept every writable type.
+    # unlocked ``compiled_notebook`` (the AgenticOS Playbook); V0.5-P5
+    # unlocks ``automation`` (ADR 0020). The MCP boundary must accept
+    # every writable type.
     for t in (
         "identity",
         "preference",
@@ -63,17 +64,9 @@ def test_validate_facet_type_accepts_active_v0_5_vocab() -> None:
         "verification_checklist",
         "retrospective",
         "compiled_notebook",
+        "automation",
     ):
         _validate_facet_type(t)
-
-
-@pytest.mark.unit
-def test_validate_facet_type_rejects_automation_until_v0_5_p5() -> None:
-    # ``automation`` is the remaining v0.5 reserved type that stays
-    # CHECK-permitted but write-rejected until V0.5-P5 ships the
-    # storage-only registry.
-    with pytest.raises(ValidationError, match="not in"):
-        _validate_facet_type("automation")
 
 
 @pytest.mark.unit

@@ -10,6 +10,7 @@ module's test file; here we pin the boundary contract.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -1347,3 +1348,293 @@ async def test_list_compile_sources_requires_read_scope(
     with pytest.raises(mcp.ScopeDenied) as exc:
         await mcp.list_compile_sources(tctx, target="playbook_main")
     assert exc.value.required_facet_type == "compiled_notebook"
+
+
+# ---- V0.5-P5 automation registry tools ----------------------------------
+
+
+_V0_5_P5_SCOPES: tuple[str, ...] = (
+    "style",
+    "project",
+    "skill",
+    "person",
+    "agent_profile",
+    "verification_checklist",
+    "retrospective",
+    "compiled_notebook",
+    "automation",
+)
+
+
+def _automation_metadata(profile_external_id: str) -> dict[str, object]:
+    return {
+        "agent_ref": profile_external_id,
+        "trigger_spec": "cron 0 9 * * *",
+        "cadence": "daily 09:00",
+        "runner": "claude_code_schedule",
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_automation_creates_facet(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    resp = await mcp.register_automation(
+        tctx,
+        content="Daily standup digest",
+        metadata=_automation_metadata(profile_id),
+    )
+    assert resp.is_new is True
+    assert len(resp.external_id) == 26
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_automation_requires_write_scope(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault,
+        vault_path,
+        scope_read=_V0_5_P5_SCOPES,
+        scope_write=("style", "project", "agent_profile"),
+    )
+    profile_id = await _seed_profile(tctx)
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.register_automation(
+            tctx,
+            content="denied",
+            metadata=_automation_metadata(profile_id),
+        )
+    assert exc.value.required_facet_type == "automation"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_automation_blocks_cross_agent_ref(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """A token cannot register an automation whose ``agent_ref``
+    points at another agent's profile (mirrors the verification /
+    retrospective cross-agent guards)."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_a = await _seed_profile(tctx)
+    open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('01OTHERAUTO', 'b', 0)"
+    )
+    other_id = int(
+        open_vault.connection.execute(
+            "SELECT id FROM agents WHERE external_id='01OTHERAUTO'"
+        ).fetchone()[0]
+    )
+    issued_other = tokens.issue(
+        open_vault.connection,
+        agent_id=other_id,
+        client_name="cli",
+        token_class="session",
+        scope=build_scope(read=_V0_5_P5_SCOPES, write=_V0_5_P5_SCOPES),
+        now_epoch=1_000_000,
+    )
+    other_verified = tokens.verify_and_touch(
+        open_vault.connection,
+        raw_token=issued_other.raw_token,
+        now_epoch=1_000_001,
+    )
+    other_tctx = mcp.ToolContext(
+        conn=open_vault.connection,
+        verified=other_verified,
+        vault_path=vault_path,
+        pipeline=tctx.pipeline,
+        clock=lambda: 1_000_100,
+    )
+    with pytest.raises(mcp.ValidationError, match="different agent"):
+        await mcp.register_automation(
+            other_tctx,
+            content="cross-agent attempt",
+            metadata=_automation_metadata(profile_a),
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_capture_blocks_raw_automation_writes(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """The generic capture tool rejects ``facet_type='automation'``
+    so structured-metadata writes route through register_automation
+    only (mirror of the agent_profile gate, ADR 0020 §S2-bypass)."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    with pytest.raises(mcp.ValidationError, match="register_automation"):
+        await mcp.capture(
+            tctx,
+            content="bypass attempt",
+            facet_type="automation",
+            metadata=None,
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_record_automation_run_updates_metadata_and_audits(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_automation(
+        tctx,
+        content="Daily digest",
+        metadata=_automation_metadata(profile_id),
+    )
+    resp = await mcp.record_automation_run(
+        tctx,
+        external_id=reg.external_id,
+        last_run="2026-05-02T09:00:05Z",
+        last_result="success",
+    )
+    assert resp.last_run == "2026-05-02T09:00:05Z"
+    assert resp.last_result == "success"
+    audit_payload = open_vault.connection.execute(
+        "SELECT payload FROM audit_log WHERE op = 'automation_run_recorded' "
+        "AND target_external_id = ?",
+        (reg.external_id,),
+    ).fetchone()
+    payload = json.loads(audit_payload[0])
+    assert payload["result_bucket"] == "success"
+    assert payload["last_run_at"] == "2026-05-02T09:00:05Z"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_record_automation_run_blocks_cross_agent_update(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """Agent B cannot update Agent A's automation even with a known
+    ULID. The MCP boundary's ``agent_id`` filter (via the storage
+    layer's ``UnknownAutomationError``) surfaces as ValidationError
+    so the caller sees an explicit denial rather than a silent no-op."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_a = await _seed_profile(tctx)
+    reg = await mcp.register_automation(
+        tctx,
+        content="Agent A's automation",
+        metadata=_automation_metadata(profile_a),
+    )
+    open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('01OTHERAUTORUN', 'b', 0)"
+    )
+    other_id = int(
+        open_vault.connection.execute(
+            "SELECT id FROM agents WHERE external_id='01OTHERAUTORUN'"
+        ).fetchone()[0]
+    )
+    issued_other = tokens.issue(
+        open_vault.connection,
+        agent_id=other_id,
+        client_name="cli",
+        token_class="session",
+        scope=build_scope(read=_V0_5_P5_SCOPES, write=_V0_5_P5_SCOPES),
+        now_epoch=1_000_000,
+    )
+    other_verified = tokens.verify_and_touch(
+        open_vault.connection,
+        raw_token=issued_other.raw_token,
+        now_epoch=1_000_001,
+    )
+    other_tctx = mcp.ToolContext(
+        conn=open_vault.connection,
+        verified=other_verified,
+        vault_path=vault_path,
+        pipeline=tctx.pipeline,
+        clock=lambda: 1_000_100,
+    )
+    with pytest.raises(mcp.ValidationError, match="for this agent"):
+        await mcp.record_automation_run(
+            other_tctx,
+            external_id=reg.external_id,
+            last_run="2026-05-02T09:00:00Z",
+            last_result="success",
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_facets_returns_automation_rows(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """ADR 0020 §Rationale 3 reuses the generic read surface — no
+    separate ``list_automations`` tool. ``list_facets`` must return
+    automation rows so this surface obligation holds end-to-end."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_automation(
+        tctx,
+        content="A registered automation",
+        metadata=_automation_metadata(profile_id),
+    )
+    listed = await mcp.list_facets(tctx, facet_type="automation")
+    assert any(item.external_id == reg.external_id for item in listed.items)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_show_returns_automation_row(open_vault: VaultConnection, vault_path: Path) -> None:
+    """``show`` is the third leg of the generic read tripod (with
+    ``recall`` and ``list_facets``). An automation row must be
+    fetchable by external_id without a dedicated ``get_automation``
+    tool."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_automation(
+        tctx,
+        content="Show-me automation",
+        metadata=_automation_metadata(profile_id),
+    )
+    shown = await mcp.show(tctx, external_id=reg.external_id)
+    assert shown.facet_type == "automation"
+    assert shown.external_id == reg.external_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_forget_soft_deletes_automation(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """``forget`` must work for automation rows so users can retire
+    a registered automation through the same surface they use for
+    every other facet type. After forget, the row no longer
+    surfaces via ``list_facets``."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P5_SCOPES, scope_write=_V0_5_P5_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_automation(
+        tctx,
+        content="Soon-to-be-forgotten automation",
+        metadata=_automation_metadata(profile_id),
+    )
+    await mcp.forget(tctx, external_id=reg.external_id, reason="retired")
+    listed = await mcp.list_facets(tctx, facet_type="automation")
+    assert all(item.external_id != reg.external_id for item in listed.items)

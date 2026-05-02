@@ -391,6 +391,33 @@ async def _do_list_compile_sources(tctx: mcp.ToolContext, args: dict[str, Any]) 
     }
 
 
+async def _do_register_automation(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    metadata = args.get("metadata")
+    if not isinstance(metadata, dict):
+        raise mcp.ValidationError("metadata must be an object")
+    resp = await mcp.register_automation(
+        tctx,
+        content=_require_str(args, "content"),
+        metadata=metadata,
+        source_tool=args.get("source_tool"),
+    )
+    return {"external_id": resp.external_id, "is_new": resp.is_new}
+
+
+async def _do_record_automation_run(tctx: mcp.ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    resp = await mcp.record_automation_run(
+        tctx,
+        external_id=_require_str(args, "external_id"),
+        last_run=_require_str(args, "last_run"),
+        last_result=_require_str(args, "last_result"),
+    )
+    return {
+        "external_id": resp.external_id,
+        "last_run": resp.last_run,
+        "last_result": resp.last_result,
+    }
+
+
 _HandlerT = Callable[[mcp.ToolContext, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _HANDLERS: dict[str, _HandlerT] = {
@@ -414,6 +441,8 @@ _HANDLERS: dict[str, _HandlerT] = {
     "register_compiled_artifact": _do_register_compiled_artifact,
     "get_compiled_artifact": _do_get_compiled_artifact,
     "list_compile_sources": _do_list_compile_sources,
+    "register_automation": _do_register_automation,
+    "record_automation_run": _do_record_automation_run,
 }
 
 

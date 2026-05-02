@@ -60,14 +60,17 @@ V0_5_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | V0_5_RESERVED_FACET
 # ``verification_checklist`` and ``retrospective`` (ADR 0018); V0.5-P4
 # activates ``compiled_notebook`` (ADR 0019) — the AgenticOS Playbook,
 # write-time-compiled by an out-of-process compiler and stored via
-# ``vault/compiled.py``'s pair-write transaction. ``automation``
-# stays CHECK-permitted but write-rejected until V0.5-P5.
+# ``vault/compiled.py``'s pair-write transaction. V0.5-P5 activates
+# ``automation`` (ADR 0020) — the storage-only registry of
+# scheduled-or-triggered work that caller-side runners execute;
+# Tessera registers, runners run.
 WRITABLE_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | frozenset(
     {
         "agent_profile",
         "verification_checklist",
         "retrospective",
         "compiled_notebook",
+        "automation",
     }
 )
 

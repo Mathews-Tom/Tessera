@@ -50,6 +50,23 @@ def test_default_recall_types_includes_compiled_notebook() -> None:
 
 
 @pytest.mark.unit
+def test_default_recall_types_includes_automation() -> None:
+    """V0.5-P5 (ADR 0020) activates ``automation`` for writes.
+
+    The default-recall set is computed dynamically from
+    ``WRITABLE_FACET_TYPES`` so the activation auto-enrolls the
+    type in the cross-facet fan-out. Pin the property explicitly
+    so a future refactor that switches to a static list cannot
+    silently drop the type — automations would land in the vault
+    but never surface via a no-arg ``recall``, exactly the
+    "stored but unrecallable" silent failure ADR 0020 §Rationale 3
+    leans against by reusing the generic read surface.
+    """
+
+    assert "automation" in dispatch._DEFAULT_RECALL_TYPES
+
+
+@pytest.mark.unit
 def test_default_recall_types_covers_every_v0_1_type() -> None:
     """Every v0.1 facet type stays in the default for backward-compat."""
 
