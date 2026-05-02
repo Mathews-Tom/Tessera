@@ -9,11 +9,12 @@ direction", which is different from "wildcard".
 
 The allowlist contains every facet type reserved by the schema CHECK —
 the five writable v0.1 types plus the v0.3 (``person``, ``skill``) and
-v0.5 (``compiled_notebook``) reservations. A token may be scoped to
-read a reserved type today; the write surface separately rejects
-captures for types not yet activated. This lets tokens issued at v0.1
-keep working after v0.3 and v0.5 activate their facets without a
-rotation.
+v0.5 (``compiled_notebook``, ``agent_profile``,
+``verification_checklist``, ``retrospective``, ``automation``)
+reservations. A token may be scoped to read a reserved type today; the
+write surface separately rejects captures for types not yet activated.
+This lets tokens issued at v0.1 keep working after later versions
+activate their facets without a rotation.
 
 The separation between ``read`` and ``write`` maps directly onto the
 MCP tool surface: ``capture`` consults ``write``; ``recall``, ``show``,
@@ -46,6 +47,10 @@ _ALLOWED_FACET_TYPES: Final[frozenset[str]] = frozenset(
         "person",
         "skill",
         "compiled_notebook",
+        "agent_profile",
+        "verification_checklist",
+        "retrospective",
+        "automation",
     }
 )
 

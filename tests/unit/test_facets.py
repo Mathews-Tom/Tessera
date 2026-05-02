@@ -238,8 +238,19 @@ def test_writable_facet_types_are_subset_of_schema_check() -> None:
 
 
 @pytest.mark.unit
-def test_writable_facet_types_equal_v0_3_vocabulary() -> None:
-    """v0.3 unlocks ``person`` and ``skill`` alongside the original five."""
+def test_writable_facet_types_match_active_v0_5_vocabulary() -> None:
+    """V0.5-P2 unlocks ``agent_profile`` alongside the v0.3 set; the
+    other v0.5-reserved types stay CHECK-permitted but write-rejected."""
 
-    assert facets.V0_1_FACET_TYPES | {"person", "skill"} == facets.WRITABLE_FACET_TYPES
-    assert "compiled_notebook" not in facets.WRITABLE_FACET_TYPES
+    assert (
+        facets.V0_1_FACET_TYPES | {"person", "skill", "agent_profile"}
+        == facets.WRITABLE_FACET_TYPES
+    )
+    for reserved in (
+        "compiled_notebook",
+        "verification_checklist",
+        "retrospective",
+        "automation",
+    ):
+        assert reserved not in facets.WRITABLE_FACET_TYPES
+        assert reserved in facets.ALL_FACET_TYPES

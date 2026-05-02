@@ -36,19 +36,30 @@ V0_1_FACET_TYPES: Final[frozenset[str]] = frozenset(
     {"identity", "preference", "workflow", "project", "style"}
 )
 
-# v0.3 unlocks ``person`` and ``skill`` for writes; v0.5 will further
-# unlock ``compiled_notebook`` once the write-time compilation surface
-# ships. The forward-compatibility allowlists mirror the schema CHECK
-# so each release activates a new write path by swapping the allowlist
-# the capture surface consults rather than editing scattered literals.
+# v0.3 unlocks ``person`` and ``skill`` for writes; v0.5 unlocks
+# ``agent_profile`` (V0.5-P2 / ADR 0017) alongside the Phase-3
+# ``verification_checklist`` + ``retrospective`` and Phase-5
+# ``automation`` reservations. The forward-compatibility allowlists
+# mirror the schema CHECK so each sub-phase activates a new write path
+# by swapping the allowlist the capture surface consults rather than
+# editing scattered literals.
 V0_3_FACET_TYPES: Final[frozenset[str]] = V0_1_FACET_TYPES | frozenset({"person", "skill"})
-V0_5_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | frozenset({"compiled_notebook"})
+V0_5_RESERVED_FACET_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "compiled_notebook",
+        "agent_profile",
+        "verification_checklist",
+        "retrospective",
+        "automation",
+    }
+)
+V0_5_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | V0_5_RESERVED_FACET_TYPES
 
-# The facet-type set the v0.3 write path accepts. CRUD, MCP validation,
-# CLI choices, and dispatcher routing all read this single name so a
-# future bump (v0.5 unlocking ``compiled_notebook``) is a one-line
-# change here.
-WRITABLE_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES
+# The facet-type set the active write path accepts. V0.5-P2 activates
+# ``agent_profile`` — Tessera registers agent profiles as recallable
+# context per ADR 0017. The remaining v0.5 reserved types stay
+# CHECK-permitted but write-rejected until their sub-phases ship.
+WRITABLE_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | frozenset({"agent_profile"})
 
 # Superset of every facet type the schema CHECK permits. Used by the scope
 # layer — a token may be scoped for read against a reserved type even when

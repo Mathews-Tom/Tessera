@@ -126,6 +126,14 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     "skill_metadata_updated": frozenset({"fields_changed"}),
     "skill_disk_path_set": frozenset(set()),
     "skill_disk_path_cleared": frozenset(set()),
+    # Agent profile link mutation (V0.5-P2 / ADR 0017). The facet itself
+    # is captured through ``facet_inserted``; these ops correlate the
+    # agents.profile_facet_external_id pointer's history. Payloads carry
+    # only IDs and a structural prior-pointer reference — profile content
+    # and structured metadata never land in audit rows (§S4 — no user
+    # content, mirroring the people / skills surfaces).
+    "agent_profile_link_set": frozenset({"prior_external_id"}),
+    "agent_profile_link_cleared": frozenset(set()),
 }
 
 
