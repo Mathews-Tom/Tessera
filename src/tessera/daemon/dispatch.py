@@ -475,6 +475,13 @@ def _match_to_json(m: mcp.RecallMatchView) -> dict[str, Any]:
         "rank": m.rank,
         "captured_at": m.captured_at,
         "token_count": m.token_count,
+        # V0.5-P7 (ADR 0019 §Retrieval surface): every recall match
+        # carries the row's production method and staleness so
+        # callers can render compiled_notebook rows differently from
+        # raw context. For non-compiled facets, mode is always
+        # 'query_time' and is_stale is always False.
+        "mode": m.mode,
+        "is_stale": m.is_stale,
     }
 
 

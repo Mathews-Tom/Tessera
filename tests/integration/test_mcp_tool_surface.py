@@ -1638,3 +1638,86 @@ async def test_forget_soft_deletes_automation(
     await mcp.forget(tctx, external_id=reg.external_id, reason="retired")
     listed = await mcp.list_facets(tctx, facet_type="automation")
     assert all(item.external_id != reg.external_id for item in listed.items)
+
+
+# ---- V0.5-P7 recall surface — mode + is_stale fields --------------------
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_recall_match_view_carries_mode_and_is_stale(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """V0.5-P7 (ADR 0019 §Retrieval surface): recall returns
+    ``mode`` and ``is_stale`` on every match. The MCP boundary must
+    expose them on ``RecallMatchView`` and the dispatch JSON shape
+    so callers learn the row's production method without a separate
+    ``get_compiled_artifact`` round-trip."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P4_SCOPES, scope_write=_V0_5_P4_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_compiled_artifact(
+        tctx,
+        content="The Playbook for the V0.5-P7 recall surface integration test.",
+        source_facets=(profile_id,),
+        compiler_version="claude-opus-4-7",
+    )
+
+    resp = await mcp.recall(
+        tctx,
+        query_text="Playbook recall surface",
+        k=20,
+        facet_types=("compiled_notebook", "style", "project"),
+    )
+
+    by_external_id = {m.external_id: m for m in resp.matches}
+    # Existing v0.1 facets seeded by _bootstrap appear with the
+    # default ``mode='query_time'`` / ``is_stale=False``.
+    for view in resp.matches:
+        if view.facet_type != "compiled_notebook":
+            assert view.mode == "query_time"
+            assert view.is_stale is False
+    assert reg.external_id in by_external_id
+    artifact_view = by_external_id[reg.external_id]
+    assert artifact_view.mode == "write_time"
+    assert artifact_view.is_stale is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_recall_match_view_surfaces_is_stale_after_mutation(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """The V0.5-P6 staleness wiring flips ``is_stale=1`` on the
+    storage layer; the V0.5-P7 recall surface must surface that
+    flip on the next ``recall`` so a caller learns the row is out
+    of date without an explicit re-fetch."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P4_SCOPES, scope_write=_V0_5_P4_SCOPES
+    )
+    profile_id = await _seed_profile(tctx)
+    reg = await mcp.register_compiled_artifact(
+        tctx,
+        content="The Playbook before the source mutation.",
+        source_facets=(profile_id,),
+        compiler_version="claude-opus-4-7",
+    )
+
+    # Soft-delete the source — V0.5-P6 flips the artifact stale.
+    await mcp.forget(tctx, external_id=profile_id, reason="testing staleness surface")
+
+    resp = await mcp.recall(
+        tctx,
+        query_text="Playbook before the source mutation",
+        k=20,
+        facet_types=("compiled_notebook", "style", "project"),
+    )
+
+    by_external_id = {m.external_id: m for m in resp.matches}
+    assert reg.external_id in by_external_id
+    artifact_view = by_external_id[reg.external_id]
+    assert artifact_view.mode == "write_time"
+    assert artifact_view.is_stale is True

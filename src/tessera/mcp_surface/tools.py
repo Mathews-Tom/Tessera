@@ -804,6 +804,15 @@ class RecallMatchView:
     rank: int
     captured_at: int
     token_count: int
+    # V0.5-P7 (ADR 0019 §Retrieval surface). ``mode`` lets callers
+    # render ``compiled_notebook`` rows as synthesized briefs rather
+    # than raw context; ``is_stale`` tells them whether to recompile
+    # before treating the artifact as authoritative. For
+    # non-``compiled_notebook`` facets, ``mode == 'query_time'`` and
+    # ``is_stale is False`` — uniform fields rather than nullable so
+    # callers do not need facet-type-specific branches.
+    mode: str = "query_time"
+    is_stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -2225,6 +2234,8 @@ def _shape_recall_matches(result: RecallResult) -> tuple[RecallMatchView, ...]:
             rank=m.rank,
             captured_at=m.captured_at,
             token_count=m.token_count,
+            mode=m.mode,
+            is_stale=m.is_stale,
         )
         for m in result.matches
     )

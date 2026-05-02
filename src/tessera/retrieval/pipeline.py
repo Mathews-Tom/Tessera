@@ -71,6 +71,14 @@ class RecallMatch:
     captured_at: int
     rank: int
     token_count: int
+    # V0.5-P7 (ADR 0019 §Retrieval surface): every match carries the
+    # row's production method and staleness so callers can render
+    # ``compiled_notebook`` rows differently from raw context. For
+    # non-``compiled_notebook`` facets, ``mode`` always reads as
+    # ``query_time`` (the schema CHECK default) and ``is_stale`` is
+    # always ``False`` (no paired ``compiled_artifacts`` row to flag).
+    mode: str = "query_time"
+    is_stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,7 +266,7 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
         items, truncated = _apply_budget(ctx, diversified, content_lookup)
         stage_ms["budget"] = _elapsed_ms(t0)
 
-        matches = tuple(_to_matches(items, bm25_lists, dense_lists))[: ctx.k]
+        matches = tuple(_to_matches(ctx.conn, items, bm25_lists, dense_lists))[: ctx.k]
         if len(matches) < len(items):
             truncated = True
     except Exception as exc:
@@ -674,22 +682,23 @@ def _apply_budget(
 
 
 def _to_matches(
+    conn: sqlcipher3.Connection,
     items: tuple[budget.BudgetedItem, ...],
     bm25_by_type: dict[str, list[bm25.BM25Candidate]],
     dense_by_type: dict[str, list[dense.DenseCandidate]],
 ) -> list[RecallMatch]:
-    meta: dict[int, tuple[str, str, int]] = {}
+    candidate_meta: dict[int, tuple[str, str]] = {}
     for row in _iter_all_candidates(bm25_by_type, dense_by_type):
-        # captured_at is not on the Candidate dataclasses yet; P8 will
-        # enrich as needed for the MCP surface. 0 is a stable placeholder
-        # that flags "unknown" without propagating null.
-        meta.setdefault(row.facet_id, (row.external_id, row.facet_type, 0))
+        candidate_meta.setdefault(row.facet_id, (row.external_id, row.facet_type))
+    survivor_ids = [int(item.key) for item in items if int(item.key) in candidate_meta]
+    enrichment = _hydrate_match_metadata(conn, survivor_ids) if survivor_ids else {}
     matches: list[RecallMatch] = []
     for rank_idx, item in enumerate(items):
         facet_id = int(item.key)
-        if facet_id not in meta:
+        if facet_id not in candidate_meta:
             continue
-        external_id, facet_type, captured_at = meta[facet_id]
+        external_id, facet_type = candidate_meta[facet_id]
+        captured_at, mode, is_stale = enrichment.get(facet_id, (0, "query_time", False))
         matches.append(
             RecallMatch(
                 external_id=external_id,
@@ -699,9 +708,43 @@ def _to_matches(
                 captured_at=captured_at,
                 rank=rank_idx,
                 token_count=item.token_count,
+                mode=mode,
+                is_stale=is_stale,
             )
         )
     return matches
+
+
+def _hydrate_match_metadata(
+    conn: sqlcipher3.Connection,
+    facet_ids: list[int],
+) -> dict[int, tuple[int, str, bool]]:
+    """Fetch ``captured_at``, ``mode``, and ``is_stale`` for the survivors.
+
+    V0.5-P7 (ADR 0019 §Retrieval surface): every recall match carries
+    the row's production method (``mode``) and the compiled-artifact
+    staleness flag so callers can render ``compiled_notebook`` rows
+    differently from raw context. The LEFT JOIN against
+    ``compiled_artifacts`` defaults non-compiled facet types to
+    ``is_stale=0`` via ``COALESCE`` — there is no nullable surface for
+    a non-compiled row, the field reads as ``False``.
+
+    One SQL pass against the K survivors keeps cost proportional to
+    response size rather than to the ~50 BM25/dense candidates the
+    earlier stages consider.
+    """
+
+    placeholders = ",".join("?" for _ in facet_ids)
+    rows = conn.execute(
+        f"""
+        SELECT f.id, f.captured_at, f.mode, COALESCE(a.is_stale, 0)
+        FROM facets AS f
+        LEFT JOIN compiled_artifacts AS a ON a.external_id = f.external_id
+        WHERE f.id IN ({placeholders})
+        """,
+        tuple(facet_ids),
+    ).fetchall()
+    return {int(row[0]): (int(row[1]), str(row[2]), bool(row[3])) for row in rows}
 
 
 def _warnings(rerank_degraded: bool, truncated: bool) -> tuple[str, ...]:
