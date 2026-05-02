@@ -216,11 +216,24 @@ def build_args_for_route(
         return "list_agent_profiles", profile_args
 
     if path.startswith("/api/v1/agent_profiles/"):
-        external_id = path[len("/api/v1/agent_profiles/") :]
-        if not external_id or "/" in external_id:
-            raise RestError(404, "unknown_method", "unknown route")
-        if http_method == "GET":
-            return "get_agent_profile", {"external_id": external_id}
+        suffix = path[len("/api/v1/agent_profiles/") :]
+        # Two trailing-slash forms:
+        #   /api/v1/agent_profiles/<ulid>          → get_agent_profile
+        #   /api/v1/agent_profiles/<ulid>/checklist → list_checks_for_agent
+        if suffix.endswith("/checklist"):
+            external_id = suffix[: -len("/checklist")]
+            if not external_id or "/" in external_id:
+                raise RestError(404, "unknown_method", "unknown route")
+            if http_method == "GET":
+                return "list_checks_for_agent", {"profile_external_id": external_id}
+        elif suffix and "/" not in suffix and http_method == "GET":
+            return "get_agent_profile", {"external_id": suffix}
+
+    if path == "/api/v1/checklists" and http_method == "POST":
+        return "register_checklist", _parse_json_body(body)
+
+    if path == "/api/v1/retrospectives" and http_method == "POST":
+        return "record_retrospective", _parse_json_body(body)
 
     raise RestError(404, "unknown_method", "unknown route")
 

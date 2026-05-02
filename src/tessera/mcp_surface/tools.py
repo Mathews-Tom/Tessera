@@ -59,7 +59,9 @@ from tessera.vault import audit as vault_audit
 from tessera.vault import capture as vault_capture
 from tessera.vault import facets as vault_facets
 from tessera.vault import people as vault_people
+from tessera.vault import retrospectives as vault_retrospectives
 from tessera.vault import skills as vault_skills
+from tessera.vault import verification as vault_verification
 
 # Input validation limits. These are hard caps; any payload exceeding
 # them is rejected at the boundary with :class:`ValidationError` rather
@@ -100,6 +102,9 @@ LIST_PEOPLE_RESPONSE_BUDGET: Final[int] = 2_048
 REGISTER_AGENT_PROFILE_RESPONSE_BUDGET: Final[int] = 512
 GET_AGENT_PROFILE_RESPONSE_BUDGET: Final[int] = 4_096
 LIST_AGENT_PROFILES_RESPONSE_BUDGET: Final[int] = 4_096
+REGISTER_CHECKLIST_RESPONSE_BUDGET: Final[int] = 512
+RECORD_RETROSPECTIVE_RESPONSE_BUDGET: Final[int] = 512
+LIST_CHECKS_FOR_AGENT_RESPONSE_BUDGET: Final[int] = 4_096
 
 # v0.3 tool input bounds. Skill names are user-visible identifiers, so
 # we cap them well below content; descriptions sit between names and
@@ -514,6 +519,125 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
         },
         response_budget_tokens=LIST_AGENT_PROFILES_RESPONSE_BUDGET,
     ),
+    ToolContract(
+        name="register_checklist",
+        description=(
+            "Register a verification_checklist facet — the pre-delivery gate an "
+            "agent runs before declaring a task done. Required args: content, "
+            "metadata (agent_ref, trigger, checks[{id, statement, severity}], "
+            "pass_criteria). Tessera stores the checklist; the agent or its "
+            "caller-side runner executes it (ADR 0018 boundary)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "maxLength": _MAX_CONTENT_CHARS},
+                "metadata": {
+                    "type": "object",
+                    "properties": {
+                        "agent_ref": {"type": "string", "pattern": _ULID_PATTERN.pattern},
+                        "trigger": {"type": "string"},
+                        "checks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "statement": {"type": "string"},
+                                    "severity": {
+                                        "type": "string",
+                                        "enum": ["blocker", "warning", "informational"],
+                                    },
+                                },
+                                "required": ["id", "statement", "severity"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "pass_criteria": {"type": "string"},
+                    },
+                    "required": ["agent_ref", "trigger", "checks", "pass_criteria"],
+                    "additionalProperties": False,
+                },
+                "source_tool": {"type": "string", "pattern": _SOURCE_TOOL_PATTERN.pattern},
+            },
+            "required": ["content", "metadata"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=REGISTER_CHECKLIST_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="record_retrospective",
+        description=(
+            "Record a retrospective facet — the post-run reflection on what worked, "
+            "what gapped, and what the agent or user wants to change next time. "
+            "Required args: content, metadata (agent_ref, task_id, went_well[], "
+            "gaps[], changes[{target, change}], outcome)."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "maxLength": _MAX_CONTENT_CHARS},
+                "metadata": {
+                    "type": "object",
+                    "properties": {
+                        "agent_ref": {"type": "string", "pattern": _ULID_PATTERN.pattern},
+                        "task_id": {"type": "string"},
+                        "went_well": {"type": "array", "items": {"type": "string"}},
+                        "gaps": {"type": "array", "items": {"type": "string"}},
+                        "changes": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "target": {"type": "string"},
+                                    "change": {"type": "string"},
+                                },
+                                "required": ["target", "change"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "outcome": {
+                            "type": "string",
+                            "enum": ["success", "partial", "failure"],
+                        },
+                    },
+                    "required": [
+                        "agent_ref",
+                        "task_id",
+                        "went_well",
+                        "gaps",
+                        "changes",
+                        "outcome",
+                    ],
+                    "additionalProperties": False,
+                },
+                "source_tool": {"type": "string", "pattern": _SOURCE_TOOL_PATTERN.pattern},
+            },
+            "required": ["content", "metadata"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=RECORD_RETROSPECTIVE_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="list_checks_for_agent",
+        description=(
+            "Resolve an agent_profile's verification_ref to the live checklist row. "
+            "Returns null when the profile has no verification_ref or the linked "
+            "checklist is missing / soft-deleted."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "profile_external_id": {
+                    "type": "string",
+                    "pattern": _ULID_PATTERN.pattern,
+                },
+            },
+            "required": ["profile_external_id"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=LIST_CHECKS_FOR_AGENT_RESPONSE_BUDGET,
+    ),
 )
 
 
@@ -716,6 +840,41 @@ class ListAgentProfilesResponse:
     items: tuple[AgentProfileSummary, ...]
     truncated: bool
     total_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterChecklistResponse:
+    external_id: str
+    is_new: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChecklistCheckView:
+    id: str
+    statement: str
+    severity: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChecklistView:
+    """Full verification_checklist payload returned by ``list_checks_for_agent``."""
+
+    external_id: str
+    content: str
+    agent_ref: str
+    trigger: str
+    checks: tuple[ChecklistCheckView, ...]
+    pass_criteria: str
+    captured_at: int
+    embed_status: str
+    truncated: bool
+    token_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecordRetrospectiveResponse:
+    external_id: str
+    is_new: bool
 
 
 # ---- Tools ---------------------------------------------------------------
@@ -1268,7 +1427,158 @@ async def list_agent_profiles(
     )
 
 
+async def register_checklist(
+    tctx: ToolContext,
+    *,
+    content: str,
+    metadata: dict[str, Any],
+    source_tool: str | None = None,
+) -> RegisterChecklistResponse:
+    """MCP ``register_checklist`` — create a verification_checklist facet.
+
+    Write scope on ``verification_checklist`` is required. The
+    ``agent_ref`` in metadata must be the ULID of an agent_profile
+    facet owned by the same agent — the storage layer enforces the
+    shape; the MCP boundary additionally guards cross-agent
+    references so a write-scoped caller cannot plant a checklist
+    that references another agent's profile.
+    """
+
+    _validate_length("content", content, _MAX_CONTENT_CHARS, allow_empty=False)
+    if not isinstance(metadata, dict):
+        raise ValidationError("metadata must be an object")
+    resolved_source = source_tool or tctx.verified.client_name
+    _validate_source_tool(resolved_source)
+    _require_scope(tctx, op="write", facet_type="verification_checklist")
+    agent_ref = metadata.get("agent_ref")
+    if isinstance(agent_ref, str):
+        _enforce_same_agent_profile_ref(tctx, agent_ref)
+    try:
+        external_id, is_new = vault_verification.register(
+            tctx.conn,
+            agent_id=tctx.verified.agent_id,
+            content=content,
+            metadata=metadata,
+            source_tool=resolved_source,
+        )
+    except vault_verification.InvalidChecklistMetadataError as exc:
+        raise ValidationError(str(exc)) from exc
+    except vault_facets.UnknownAgentError as exc:
+        raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
+    return RegisterChecklistResponse(external_id=external_id, is_new=is_new)
+
+
+async def record_retrospective(
+    tctx: ToolContext,
+    *,
+    content: str,
+    metadata: dict[str, Any],
+    source_tool: str | None = None,
+) -> RecordRetrospectiveResponse:
+    """MCP ``record_retrospective`` — create a retrospective facet.
+
+    Write scope on ``retrospective`` is required. Retrospectives are
+    immutable per task by design — re-recording with byte-identical
+    content collapses through the dedup path and returns the
+    existing facet with ``is_new=False``. The ``agent_ref`` is
+    guarded against cross-agent leakage just like
+    ``register_checklist``.
+    """
+
+    _validate_length("content", content, _MAX_CONTENT_CHARS, allow_empty=False)
+    if not isinstance(metadata, dict):
+        raise ValidationError("metadata must be an object")
+    resolved_source = source_tool or tctx.verified.client_name
+    _validate_source_tool(resolved_source)
+    _require_scope(tctx, op="write", facet_type="retrospective")
+    agent_ref = metadata.get("agent_ref")
+    if isinstance(agent_ref, str):
+        _enforce_same_agent_profile_ref(tctx, agent_ref)
+    try:
+        external_id, is_new = vault_retrospectives.record(
+            tctx.conn,
+            agent_id=tctx.verified.agent_id,
+            content=content,
+            metadata=metadata,
+            source_tool=resolved_source,
+        )
+    except vault_retrospectives.InvalidRetrospectiveMetadataError as exc:
+        raise ValidationError(str(exc)) from exc
+    except vault_facets.UnknownAgentError as exc:
+        raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
+    return RecordRetrospectiveResponse(external_id=external_id, is_new=is_new)
+
+
+async def list_checks_for_agent(
+    tctx: ToolContext,
+    *,
+    profile_external_id: str,
+) -> ChecklistView | None:
+    """MCP ``list_checks_for_agent`` — resolve an agent_profile's
+    canonical verification_ref to the live checklist row.
+
+    Read scope on ``verification_checklist`` is required. Returns
+    ``None`` when the profile is missing, has no verification_ref,
+    or the linked checklist is soft-deleted. Cross-agent reads are
+    blocked by the storage-layer agent-id guard.
+    """
+
+    _validate_ulid(profile_external_id)
+    _require_scope(tctx, op="read", facet_type="verification_checklist")
+    checklist = vault_verification.get_canonical_for_profile(
+        tctx.conn,
+        agent_id=tctx.verified.agent_id,
+        profile_external_id=profile_external_id,
+    )
+    if checklist is None:
+        return None
+    body = checklist.content
+    body_tokens = count_tokens(body)
+    truncated = False
+    overhead = 256
+    if body_tokens > LIST_CHECKS_FOR_AGENT_RESPONSE_BUDGET - overhead:
+        body = truncate_snippet(body, max_tokens=LIST_CHECKS_FOR_AGENT_RESPONSE_BUDGET - overhead)
+        truncated = True
+        body_tokens = count_tokens(body)
+    meta = checklist.metadata
+    return ChecklistView(
+        external_id=checklist.external_id,
+        content=body,
+        agent_ref=meta.agent_ref,
+        trigger=meta.trigger,
+        checks=tuple(
+            ChecklistCheckView(id=c.id, statement=c.statement, severity=c.severity)
+            for c in meta.checks
+        ),
+        pass_criteria=meta.pass_criteria,
+        captured_at=checklist.captured_at,
+        embed_status=checklist.embed_status,
+        truncated=truncated,
+        token_count=body_tokens,
+    )
+
+
 # ---- Helpers -------------------------------------------------------------
+
+
+def _enforce_same_agent_profile_ref(tctx: ToolContext, agent_ref: str) -> None:
+    """Block cross-agent ``agent_ref`` writes at the MCP boundary.
+
+    A token scoped to write checklists or retrospectives could
+    otherwise plant a row pointing at another agent's
+    ``agent_profile`` ULID. The storage layer would accept it
+    because the row's own ``agent_id`` is set from the verified
+    capability, not parsed from metadata. The scope check protects
+    the *write target*; this guard protects the *referenced
+    profile*. Together they keep an agent from polluting another
+    agent's SWCR retrospective bundle.
+    """
+
+    profile = vault_agent_profiles.get(tctx.conn, external_id=agent_ref)
+    if profile is None:
+        raise ValidationError(f"agent_ref {agent_ref!r} does not resolve to a live agent_profile")
+    if profile.agent_id != tctx.verified.agent_id:
+        raise ValidationError(f"agent_ref {agent_ref!r} belongs to a different agent")
 
 
 def _require_scope(tctx: ToolContext, *, op: ScopeOp, facet_type: str) -> None:
@@ -1615,12 +1925,15 @@ __all__ = [
     "GET_SKILL_RESPONSE_BUDGET",
     "LEARN_SKILL_RESPONSE_BUDGET",
     "LIST_AGENT_PROFILES_RESPONSE_BUDGET",
+    "LIST_CHECKS_FOR_AGENT_RESPONSE_BUDGET",
     "LIST_FACETS_RESPONSE_BUDGET",
     "LIST_PEOPLE_RESPONSE_BUDGET",
     "LIST_SKILLS_RESPONSE_BUDGET",
     "MCP_TOOL_CONTRACTS",
     "RECALL_RESPONSE_BUDGET",
+    "RECORD_RETROSPECTIVE_RESPONSE_BUDGET",
     "REGISTER_AGENT_PROFILE_RESPONSE_BUDGET",
+    "REGISTER_CHECKLIST_RESPONSE_BUDGET",
     "RESOLVE_PERSON_RESPONSE_BUDGET",
     "SHOW_RESPONSE_BUDGET",
     "STATS_RESPONSE_BUDGET",
@@ -1629,6 +1942,8 @@ __all__ = [
     "AgentProfileView",
     "BudgetExceeded",
     "CaptureResponse",
+    "ChecklistCheckView",
+    "ChecklistView",
     "EmbedHealth",
     "FacetSummary",
     "ForgetResponse",
@@ -1640,7 +1955,9 @@ __all__ = [
     "PersonMatch",
     "RecallMatchView",
     "RecallResponse",
+    "RecordRetrospectiveResponse",
     "RegisterAgentProfileResponse",
+    "RegisterChecklistResponse",
     "ResolvePersonResponse",
     "ScopeDenied",
     "ShowResponse",
@@ -1658,11 +1975,14 @@ __all__ = [
     "get_skill",
     "learn_skill",
     "list_agent_profiles",
+    "list_checks_for_agent",
     "list_facets",
     "list_people",
     "list_skills",
     "recall",
+    "record_retrospective",
     "register_agent_profile",
+    "register_checklist",
     "resolve_person",
     "show",
     "stats",

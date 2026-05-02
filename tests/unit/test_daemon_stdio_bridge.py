@@ -22,7 +22,7 @@ from tessera.daemon import stdio_bridge
 
 
 @pytest.mark.unit
-def test_tool_catalogue_lists_v0_5_p2_verbs() -> None:
+def test_tool_catalogue_lists_v0_5_p3_verbs() -> None:
     names = [tool.name for tool in stdio_bridge._TOOLS]
     assert names == [
         "capture",
@@ -39,6 +39,9 @@ def test_tool_catalogue_lists_v0_5_p2_verbs() -> None:
         "register_agent_profile",
         "get_agent_profile",
         "list_agent_profiles",
+        "register_checklist",
+        "record_retrospective",
+        "list_checks_for_agent",
     ]
     # Every tool carries a description and an input schema so Claude
     # Desktop's tool picker renders something useful.
