@@ -573,6 +573,250 @@ def test_v2_to_v3_migration_is_idempotent_under_resume(tmp_path: Path) -> None:
     assert state.schema_version == SCHEMA_VERSION
 
 
+_V3_SCHEMA_DDL: tuple[str, ...] = (
+    """
+    CREATE TABLE _meta (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE _migration_steps (
+        schema_target  INTEGER NOT NULL,
+        step_name      TEXT NOT NULL,
+        applied_at     INTEGER NOT NULL,
+        PRIMARY KEY (schema_target, step_name)
+    )
+    """,
+    """
+    CREATE TABLE agents (
+        id           INTEGER PRIMARY KEY,
+        external_id  TEXT NOT NULL UNIQUE,
+        name         TEXT NOT NULL,
+        created_at   INTEGER NOT NULL,
+        metadata     TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    """
+    CREATE TABLE embedding_models (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE,
+        dim        INTEGER NOT NULL,
+        added_at   INTEGER NOT NULL,
+        is_active  INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1))
+    )
+    """,
+    """
+    CREATE TABLE facets (
+        id                     INTEGER PRIMARY KEY,
+        external_id            TEXT NOT NULL UNIQUE,
+        agent_id               INTEGER NOT NULL REFERENCES agents(id),
+        facet_type             TEXT NOT NULL CHECK (facet_type IN
+            ('identity', 'preference', 'workflow', 'project', 'style',
+             'person', 'skill', 'compiled_notebook')),
+        content                TEXT NOT NULL,
+        content_hash           TEXT NOT NULL,
+        mode                   TEXT NOT NULL DEFAULT 'query_time'
+            CHECK (mode IN ('query_time', 'write_time', 'hybrid')),
+        source_tool            TEXT NOT NULL,
+        captured_at            INTEGER NOT NULL,
+        metadata               TEXT NOT NULL DEFAULT '{}',
+        is_deleted             INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+        deleted_at             INTEGER,
+        embed_model_id         INTEGER REFERENCES embedding_models(id),
+        embed_status           TEXT NOT NULL DEFAULT 'pending'
+            CHECK (embed_status IN ('pending', 'embedded', 'failed', 'stale')),
+        embed_attempts         INTEGER NOT NULL DEFAULT 0,
+        embed_last_error       TEXT,
+        embed_last_attempt_at  INTEGER,
+        disk_path              TEXT,
+        UNIQUE(agent_id, content_hash)
+    )
+    """,
+    """
+    CREATE VIRTUAL TABLE facets_fts USING fts5(
+        content,
+        content=facets,
+        content_rowid=id,
+        tokenize='porter unicode61'
+    )
+    """,
+    """
+    CREATE TRIGGER facets_ai AFTER INSERT ON facets BEGIN
+        INSERT INTO facets_fts(rowid, content) VALUES (new.id, new.content);
+    END
+    """,
+    """
+    CREATE TABLE compiled_artifacts (
+        id                INTEGER PRIMARY KEY,
+        external_id       TEXT NOT NULL UNIQUE,
+        agent_id          INTEGER NOT NULL REFERENCES agents(id),
+        source_facets     TEXT NOT NULL,
+        artifact_type     TEXT NOT NULL,
+        content           TEXT NOT NULL,
+        compiled_at       INTEGER NOT NULL,
+        compiler_version  TEXT NOT NULL,
+        is_stale          INTEGER NOT NULL DEFAULT 0 CHECK (is_stale IN (0, 1)),
+        metadata          TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+    """
+    CREATE TABLE people (
+        id              INTEGER PRIMARY KEY,
+        external_id     TEXT NOT NULL UNIQUE,
+        agent_id        INTEGER NOT NULL REFERENCES agents(id),
+        canonical_name  TEXT NOT NULL,
+        aliases         TEXT NOT NULL DEFAULT '[]',
+        metadata        TEXT NOT NULL DEFAULT '{}',
+        created_at      INTEGER NOT NULL,
+        UNIQUE(agent_id, canonical_name)
+    )
+    """,
+    """
+    CREATE TABLE person_mentions (
+        id          INTEGER PRIMARY KEY,
+        facet_id    INTEGER NOT NULL REFERENCES facets(id) ON DELETE CASCADE,
+        person_id   INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+        confidence  REAL NOT NULL DEFAULT 1.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
+        UNIQUE(facet_id, person_id)
+    )
+    """,
+    """
+    CREATE TABLE capabilities (
+        id                   INTEGER PRIMARY KEY,
+        agent_id             INTEGER NOT NULL REFERENCES agents(id),
+        client_name          TEXT NOT NULL,
+        token_hash           TEXT NOT NULL UNIQUE,
+        salt                 TEXT NOT NULL,
+        scopes               TEXT NOT NULL,
+        token_class          TEXT NOT NULL CHECK (token_class IN ('session', 'service', 'subagent')),
+        created_at           INTEGER NOT NULL,
+        expires_at           INTEGER NOT NULL,
+        last_used_at         INTEGER,
+        revoked_at           INTEGER,
+        refresh_token_hash   TEXT UNIQUE,
+        refresh_salt         TEXT,
+        refresh_expires_at   INTEGER
+    )
+    """,
+    """
+    CREATE TABLE audit_log (
+        id                  INTEGER PRIMARY KEY,
+        at                  INTEGER NOT NULL,
+        actor               TEXT NOT NULL,
+        agent_id            INTEGER REFERENCES agents(id),
+        op                  TEXT NOT NULL,
+        target_external_id  TEXT,
+        payload             TEXT NOT NULL DEFAULT '{}'
+    )
+    """,
+)
+
+
+def _bootstrap_v3_vault(path: Path) -> None:
+    """Install the v3 (post-v0.3, pre-V0.5-P1) schema directly.
+
+    Used by the v3 -> v4 cumulative migration tests so the runner is
+    exercised against a real prior-version vault rather than the live
+    ``schema.all_statements()`` (which now emits v4).
+    """
+
+    from tessera.vault.connection import VaultConnection
+
+    k = derive_key(bytearray(_PASS), _SALT)
+    with VaultConnection.open_raw(path, k) as vc:
+        conn = vc.connection
+        conn.execute("BEGIN")
+        for stmt in _V3_SCHEMA_DDL:
+            conn.execute(stmt)
+        conn.execute(
+            "INSERT INTO _meta(key, value) VALUES (?, ?), (?, ?), (?, ?)",
+            ("schema_version", "3", "vault_id", "01TESTVAULT3", "kdf_version", "1"),
+        )
+        conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('01A', 'a', 0)")
+        conn.execute("COMMIT")
+    k.wipe()
+
+
+@pytest.mark.unit
+def test_v3_to_v4_migration_extends_check_and_adds_agents_link(tmp_path: Path) -> None:
+    """v3 → v4 must add volatility, the v0.5 facet-type reservations,
+    and the ``agents.profile_facet_external_id`` linkage column."""
+
+    vault_path = tmp_path / "v3.db"
+    _bootstrap_v3_vault(vault_path)
+
+    k = derive_key(bytearray(_PASS), _SALT)
+    from tessera.vault.connection import VaultConnection
+
+    with VaultConnection.open_raw(vault_path, k) as vc:
+        vc.connection.execute(
+            """
+            INSERT INTO facets(external_id, agent_id, facet_type, content,
+                               content_hash, source_tool, captured_at)
+            VALUES ('seed-pre', 1, 'project', 'preserved across migration',
+                    'h-seed-pre', 'cli', 1000)
+            """
+        )
+    k.wipe()
+
+    k2 = derive_key(bytearray(_PASS), _SALT)
+    state = upgrade(vault_path, k2)
+    k2.wipe()
+    assert state.schema_version == SCHEMA_VERSION
+
+    k3 = derive_key(bytearray(_PASS), _SALT)
+    with VaultConnection.open(vault_path, k3) as vc:
+        conn = vc.connection
+        # Pre-existing row survived the table-recreate.
+        row = conn.execute(
+            "SELECT facet_type, volatility, ttl_seconds FROM facets WHERE external_id='seed-pre'"
+        ).fetchone()
+        assert row[0] == "project"
+        assert row[1] == "persistent"
+        assert row[2] is None
+
+        # New facet types reserved by V0.5-P2 are CHECK-permitted.
+        for ftype in (
+            "agent_profile",
+            "verification_checklist",
+            "retrospective",
+            "automation",
+        ):
+            conn.execute(
+                """
+                INSERT INTO facets(external_id, agent_id, facet_type, content,
+                                   content_hash, source_tool, captured_at)
+                VALUES (?, 1, ?, 'x', ?, 'cli', 2000)
+                """,
+                (f"f-{ftype}", ftype, f"h-{ftype}"),
+            )
+
+        # FK linkage column is present and nullable on agents.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(agents)").fetchall()}
+        assert "profile_facet_external_id" in cols
+        link = conn.execute("SELECT profile_facet_external_id FROM agents WHERE id = 1").fetchone()
+        assert link[0] is None
+    k3.wipe()
+
+
+@pytest.mark.unit
+def test_v3_to_v4_migration_is_idempotent_under_resume(tmp_path: Path) -> None:
+    """Re-running upgrade on a fully migrated v4 vault is a no-op."""
+
+    vault_path = tmp_path / "v3-resume.db"
+    _bootstrap_v3_vault(vault_path)
+
+    k = derive_key(bytearray(_PASS), _SALT)
+    upgrade(vault_path, k)
+    k.wipe()
+
+    k2 = derive_key(bytearray(_PASS), _SALT)
+    state = upgrade(vault_path, k2)
+    k2.wipe()
+    assert state.schema_version == SCHEMA_VERSION
+
+
 @pytest.mark.unit
 def test_step_savepoint_rolls_back_on_failure(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A step that raises must leave neither its DDL nor its marker behind."""

@@ -16,11 +16,13 @@ The runner handles three flows:
 Three upgrade targets are registered: v1 → v2 (post-reframe five-facet
 schema per ADR 0010), v2 → v3 (v0.3 People + Skills surface — adds
 ``disk_path`` column on ``facets`` plus the ``people`` and
-``person_mentions`` tables), and v3 → v4 (V0.5-P1 memory volatility
-column per ADR 0016 — adds ``volatility`` and ``ttl_seconds`` to
-``facets`` plus a partial index for the auto-compaction sweep).
-Future versions plug in by registering a new step list against their
-target in ``_STEPS_BY_TARGET``.
+``person_mentions`` tables), and v3 → v4 (the v0.5 reconciliation —
+cumulative across V0.5-P1 memory volatility (ADR 0016), V0.5-P2
+agent_profile facet + agents linkage (ADR 0017), and the v0.5-reserved
+facet types in the ``facet_type`` CHECK so V0.5-P3 / V0.5-P5 can
+activate writes via Python allowlists alone). Future versions plug in
+by registering a new step list against their target in
+``_STEPS_BY_TARGET``.
 """
 
 from __future__ import annotations
@@ -433,10 +435,203 @@ def _step_create_volatility_sweep_index(conn: sqlcipher3.Connection) -> None:
     )
 
 
+def _agents_has_column(conn: sqlcipher3.Connection, name: str) -> bool:
+    cols = conn.execute("PRAGMA table_info(agents)").fetchall()
+    return any(str(row[1]) == name for row in cols)
+
+
+def _step_add_profile_facet_external_id(conn: sqlcipher3.Connection) -> None:
+    """Add the nullable FK from ``agents`` to a profile facet (ADR 0017).
+
+    Cannot use ``ALTER TABLE ... ADD COLUMN ... REFERENCES ...``
+    constraint clauses on SQLite without a default value of NULL — a
+    nullable FK with no default satisfies that rule. The column is
+    deferrable so an in-flight ``register_agent_profile`` can insert the
+    facet and update the agents row inside one transaction without the
+    FK firing on the intermediate state.
+    """
+
+    if _agents_has_column(conn, "profile_facet_external_id"):
+        return
+    conn.execute(
+        "ALTER TABLE agents ADD COLUMN profile_facet_external_id TEXT "
+        "REFERENCES facets(external_id) DEFERRABLE INITIALLY DEFERRED"
+    )
+
+
+def _facets_check_lists_agent_profile(conn: sqlcipher3.Connection) -> bool:
+    """Return True when the live ``facets`` CHECK already reserves v0.5 types.
+
+    SQLite stores CHECK constraints as part of the table-creation SQL.
+    We probe ``sqlite_master`` and look for the v0.5 reserved type
+    name; an idempotent re-run of the rebuild step then becomes a
+    no-op rather than a destructive table-recreate.
+    """
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='facets'"
+    ).fetchone()
+    if row is None or row[0] is None:
+        return False
+    return "agent_profile" in str(row[0])
+
+
+def _step_extend_facets_facet_type_check(conn: sqlcipher3.Connection) -> None:
+    """Extend the ``facets`` CHECK constraint with the v0.5 reserved types.
+
+    SQLite ALTER TABLE cannot modify a CHECK clause in place, so the
+    standard 12-step table-recreate runs: drop FTS triggers, rename
+    the existing table, create the v4 shape with the extended CHECK
+    plus every prior column (volatility / ttl_seconds from V0.5-P1,
+    disk_path from v3, the v2 baseline columns, and the embed
+    metadata), copy rows preserving every field, drop the old table,
+    rebuild indexes the runner has already created on the prior
+    table, refresh FTS rows, and recreate the FTS triggers. Idempotent
+    by guard.
+    """
+
+    if _facets_check_lists_agent_profile(conn):
+        return
+    conn.execute("DROP TRIGGER IF EXISTS facets_ai")
+    conn.execute("DROP TRIGGER IF EXISTS facets_ad")
+    conn.execute("DROP TRIGGER IF EXISTS facets_au")
+    conn.execute("ALTER TABLE facets RENAME TO _facets_v3")
+    conn.execute(
+        """
+        CREATE TABLE facets (
+            id                     INTEGER PRIMARY KEY,
+            external_id            TEXT NOT NULL UNIQUE,
+            agent_id               INTEGER NOT NULL REFERENCES agents(id),
+            facet_type             TEXT NOT NULL CHECK (facet_type IN
+                ('identity', 'preference', 'workflow', 'project', 'style',
+                 'person', 'skill', 'compiled_notebook',
+                 'agent_profile', 'verification_checklist',
+                 'retrospective', 'automation')),
+            content                TEXT NOT NULL,
+            content_hash           TEXT NOT NULL,
+            mode                   TEXT NOT NULL DEFAULT 'query_time'
+                CHECK (mode IN ('query_time', 'write_time', 'hybrid')),
+            source_tool            TEXT NOT NULL,
+            captured_at            INTEGER NOT NULL,
+            metadata               TEXT NOT NULL DEFAULT '{}',
+            is_deleted             INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+            deleted_at             INTEGER,
+            embed_model_id         INTEGER REFERENCES embedding_models(id),
+            embed_status           TEXT NOT NULL DEFAULT 'pending'
+                CHECK (embed_status IN ('pending', 'embedded', 'failed', 'stale')),
+            embed_attempts         INTEGER NOT NULL DEFAULT 0,
+            embed_last_error       TEXT,
+            embed_last_attempt_at  INTEGER,
+            disk_path              TEXT,
+            volatility             TEXT NOT NULL DEFAULT 'persistent'
+                CHECK (volatility IN ('persistent', 'session', 'ephemeral')),
+            ttl_seconds            INTEGER,
+            UNIQUE(agent_id, content_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO facets(
+            id, external_id, agent_id, facet_type, content, content_hash,
+            mode, source_tool, captured_at, metadata, is_deleted, deleted_at,
+            embed_model_id, embed_status, embed_attempts, embed_last_error,
+            embed_last_attempt_at, disk_path, volatility, ttl_seconds
+        )
+        SELECT
+            id, external_id, agent_id, facet_type, content, content_hash,
+            mode, source_tool, captured_at, metadata, is_deleted, deleted_at,
+            embed_model_id, embed_status, embed_attempts, embed_last_error,
+            embed_last_attempt_at, disk_path, volatility, ttl_seconds
+        FROM _facets_v3
+        """
+    )
+    conn.execute("DROP TABLE _facets_v3")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_agent_type
+            ON facets(agent_id, facet_type, captured_at DESC)
+            WHERE is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_captured
+            ON facets(captured_at DESC) WHERE is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_mode
+            ON facets(mode, facet_type) WHERE is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_embed_model
+            ON facets(embed_model_id) WHERE is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_embed_status
+            ON facets(embed_status, embed_last_attempt_at)
+            WHERE is_deleted = 0 AND embed_status IN ('pending', 'failed')
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS facets_disk_path
+            ON facets(agent_id, disk_path)
+            WHERE disk_path IS NOT NULL AND is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS facets_volatility_sweep
+            ON facets(volatility, captured_at)
+            WHERE is_deleted = 0 AND volatility IN ('session', 'ephemeral')
+        """
+    )
+    conn.execute("DELETE FROM facets_fts")
+    conn.execute(
+        """
+        INSERT INTO facets_fts(rowid, content)
+        SELECT id, content FROM facets WHERE is_deleted = 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS facets_ai AFTER INSERT ON facets BEGIN
+            INSERT INTO facets_fts(rowid, content) VALUES (new.id, new.content);
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS facets_ad AFTER DELETE ON facets BEGIN
+            INSERT INTO facets_fts(facets_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS facets_au AFTER UPDATE OF content ON facets BEGIN
+            INSERT INTO facets_fts(facets_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+            INSERT INTO facets_fts(rowid, content) VALUES (new.id, new.content);
+        END
+        """
+    )
+
+
 _V3_TO_V4_STEPS: Final[tuple[MigrationStep, ...]] = (
     MigrationStep("add_volatility_column", 4, _step_add_volatility_column),
     MigrationStep("add_ttl_seconds_column", 4, _step_add_ttl_seconds_column),
     MigrationStep("create_volatility_sweep_index", 4, _step_create_volatility_sweep_index),
+    MigrationStep("extend_facets_facet_type_check", 4, _step_extend_facets_facet_type_check),
+    MigrationStep("add_profile_facet_external_id", 4, _step_add_profile_facet_external_id),
 )
 
 
