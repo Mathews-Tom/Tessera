@@ -27,8 +27,28 @@ def test_parser_registers_every_subcommand() -> None:
         "models",
         "vault",
         "stdio",
+        "audit",
     }
     assert expected <= set(choices)
+
+
+@pytest.mark.unit
+def test_audit_verify_subcommand_parses() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["audit", "verify", "--vault", "/tmp/v.db"])
+    assert args.command == "audit"
+    assert args.audit_command == "verify"
+    assert getattr(args, "handler", None) is not None
+
+
+@pytest.mark.unit
+def test_audit_with_no_subcommand_returns_usage() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["audit"])
+    handler = getattr(args, "handler", None)
+    assert handler is not None
+    rc = handler(args)
+    assert rc == 2
 
 
 @pytest.mark.unit
