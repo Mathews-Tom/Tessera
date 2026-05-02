@@ -626,12 +626,87 @@ def _step_extend_facets_facet_type_check(conn: sqlcipher3.Connection) -> None:
     )
 
 
+def _audit_log_has_column(conn: sqlcipher3.Connection, name: str) -> bool:
+    cols = conn.execute("PRAGMA table_info(audit_log)").fetchall()
+    return any(str(row[1]) == name for row in cols)
+
+
+def _step_add_audit_chain_columns(conn: sqlcipher3.Connection) -> None:
+    """Add ADR 0021 ``prev_hash`` + ``row_hash`` columns to ``audit_log``.
+
+    Two ALTERs guarded by ``PRAGMA table_info`` checks. Both default
+    to ``''`` so existing rows acquire chain placeholders without
+    blocking the column add (NOT NULL with a default is the SQLite-
+    accepted form for ALTER TABLE ... ADD COLUMN). The chain
+    backfill step below replaces those placeholders with real values
+    in id-ASC order.
+    """
+
+    if not _audit_log_has_column(conn, "prev_hash"):
+        conn.execute("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''")
+    if not _audit_log_has_column(conn, "row_hash"):
+        conn.execute("ALTER TABLE audit_log ADD COLUMN row_hash TEXT NOT NULL DEFAULT ''")
+
+
+def _step_backfill_audit_chain(conn: sqlcipher3.Connection) -> None:
+    """Populate ``prev_hash`` / ``row_hash`` for pre-upgrade rows.
+
+    Walks every existing row in id-ASC order and computes the
+    forward-only hash chain in place. The chain genesis point is the
+    earliest row that exists at upgrade — pre-upgrade tampering is
+    not retroactively detectable (ADR 0021 §Security claim — exact
+    boundary). Idempotent: rows that already carry a populated
+    ``row_hash`` are skipped.
+
+    The local import avoids the runner module taking a hard
+    dependency on the audit-chain implementation; the canonicalizer
+    is small and pure.
+    """
+
+    from tessera.vault.audit_chain import compute_row_hash, encode_event_for_chain
+
+    rows = conn.execute(
+        """
+        SELECT id, at, actor, agent_id, op, target_external_id, payload, row_hash
+        FROM audit_log
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    if not rows:
+        return
+    prev_hash = ""
+    for row in rows:
+        existing = str(row[7]) if row[7] is not None else ""
+        if existing:
+            # Resume-friendly: trust the prior backfill so an
+            # interrupted upgrade does not double-hash on replay.
+            prev_hash = existing
+            continue
+        event = encode_event_for_chain(
+            row_id=int(row[0]),
+            at=int(row[1]),
+            actor=str(row[2]),
+            agent_id=int(row[3]) if row[3] is not None else None,
+            op=str(row[4]),
+            target_external_id=str(row[5]) if row[5] is not None else None,
+            payload_json=str(row[6]) if row[6] is not None else "{}",
+        )
+        new_hash = compute_row_hash(prev_hash=prev_hash, event=event)
+        conn.execute(
+            "UPDATE audit_log SET prev_hash = ?, row_hash = ? WHERE id = ?",
+            (prev_hash, new_hash, int(row[0])),
+        )
+        prev_hash = new_hash
+
+
 _V3_TO_V4_STEPS: Final[tuple[MigrationStep, ...]] = (
     MigrationStep("add_volatility_column", 4, _step_add_volatility_column),
     MigrationStep("add_ttl_seconds_column", 4, _step_add_ttl_seconds_column),
     MigrationStep("create_volatility_sweep_index", 4, _step_create_volatility_sweep_index),
     MigrationStep("extend_facets_facet_type_check", 4, _step_extend_facets_facet_type_check),
     MigrationStep("add_profile_facet_external_id", 4, _step_add_profile_facet_external_id),
+    MigrationStep("add_audit_chain_columns", 4, _step_add_audit_chain_columns),
+    MigrationStep("backfill_audit_chain", 4, _step_backfill_audit_chain),
 )
 
 

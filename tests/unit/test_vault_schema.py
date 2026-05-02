@@ -43,6 +43,38 @@ def test_agents_profile_link_accepts_null_default() -> None:
 
 
 @pytest.mark.unit
+def test_audit_log_carries_chain_columns() -> None:
+    conn = sqlite3.connect(":memory:")
+    for stmt in schema.all_statements():
+        conn.execute(stmt)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(audit_log)").fetchall()}
+    assert "prev_hash" in cols
+    assert "row_hash" in cols
+
+
+@pytest.mark.unit
+def test_audit_log_chain_columns_default_to_empty_string() -> None:
+    conn = sqlite3.connect(":memory:")
+    for stmt in schema.all_statements():
+        conn.execute(stmt)
+    conn.execute("INSERT INTO agents(external_id, name, created_at) VALUES ('a1', 'tool', 1)")
+    conn.execute(
+        """
+        INSERT INTO audit_log(at, actor, agent_id, op, payload)
+        VALUES (1, 'cli', 1, 'vault_opened', '{}')
+        """
+    )
+    row = conn.execute(
+        "SELECT prev_hash, row_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    # Defaults populate as the empty string so the column add is
+    # purely additive at bootstrap; the live insert path overrides
+    # via ``audit_log_append``.
+    assert row[0] == ""
+    assert row[1] == ""
+
+
+@pytest.mark.unit
 def test_all_statements_apply_on_plain_sqlite() -> None:
     conn = sqlite3.connect(":memory:")
     for stmt in schema.all_statements():

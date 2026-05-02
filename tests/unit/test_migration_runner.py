@@ -801,6 +801,54 @@ def test_v3_to_v4_migration_extends_check_and_adds_agents_link(tmp_path: Path) -
 
 
 @pytest.mark.unit
+def test_v3_to_v4_migration_backfills_audit_chain(tmp_path: Path) -> None:
+    """v3 → v4 must populate ``prev_hash`` / ``row_hash`` for pre-upgrade rows."""
+
+    vault_path = tmp_path / "v3-audit.db"
+    _bootstrap_v3_vault(vault_path)
+
+    k = derive_key(bytearray(_PASS), _SALT)
+    from tessera.vault.connection import VaultConnection
+
+    with VaultConnection.open_raw(vault_path, k) as vc:
+        # Seed three pre-upgrade audit rows in id-ASC order.
+        for index in range(3):
+            vc.connection.execute(
+                """
+                INSERT INTO audit_log(at, actor, agent_id, op, target_external_id, payload)
+                VALUES (?, 'cli', 1, 'vault_opened', NULL, ?)
+                """,
+                (1000 + index, '{"schema_version": 3}'),
+            )
+    k.wipe()
+
+    k2 = derive_key(bytearray(_PASS), _SALT)
+    state = upgrade(vault_path, k2)
+    k2.wipe()
+    assert state.schema_version == SCHEMA_VERSION
+
+    k3 = derive_key(bytearray(_PASS), _SALT)
+    with VaultConnection.open(vault_path, k3) as vc:
+        from tessera.vault.audit_chain import verify_chain
+
+        rows = vc.connection.execute(
+            "SELECT id, prev_hash, row_hash FROM audit_log ORDER BY id ASC"
+        ).fetchall()
+        # Pre-upgrade rows now carry chained hashes.
+        for index, row in enumerate(rows):
+            assert row[2] != ""
+            if index == 0:
+                assert row[1] == ""
+            else:
+                assert row[1] == rows[index - 1][2]
+        # Walking the populated chain end-to-end succeeds.
+        outcome = verify_chain(vc.connection)
+        assert outcome.total_rows == len(rows)
+        assert outcome.head is not None
+    k3.wipe()
+
+
+@pytest.mark.unit
 def test_v3_to_v4_migration_is_idempotent_under_resume(tmp_path: Path) -> None:
     """Re-running upgrade on a fully migrated v4 vault is a no-op."""
 
