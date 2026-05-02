@@ -195,6 +195,48 @@ def test_chain_insertion_detected(open_vault: VaultConnection) -> None:
 
 
 @pytest.mark.security
+def test_chain_full_walk_clean_with_compiled_artifacts(
+    open_vault: VaultConnection,
+) -> None:
+    """V0.5-P4 ship-gate: a vault that has ingested AgenticOS Playbook
+    compiled artifacts must still verify cleanly. This is the
+    audit-chain-paired-with-write-time-mode invariant ADR 0021 names
+    as the load-bearing trust posture."""
+
+    from tessera.vault import agent_profiles as vault_agent_profiles
+    from tessera.vault import compiled as vault_compiled
+
+    agent_id = _seed_agent(open_vault)
+    profile_id, _ = vault_agent_profiles.register(
+        open_vault.connection,
+        agent_id=agent_id,
+        content="profile",
+        metadata={
+            "purpose": "summarize",
+            "inputs": ["x"],
+            "outputs": ["y"],
+            "cadence": "weekly",
+            "skill_refs": [],
+        },
+        source_tool="cli",
+    )
+    vault_compiled.register_compiled_artifact(
+        open_vault.connection,
+        agent_id=agent_id,
+        content="The Playbook narrative.",
+        source_facets=[profile_id],
+        compiler_version="claude-opus-4-7",
+        source_tool="cli",
+    )
+    outcome = verify_chain(open_vault.connection)
+    assert outcome.head is not None
+    rows = open_vault.connection.execute("SELECT op FROM audit_log ORDER BY id ASC").fetchall()
+    ops = [str(r[0]) for r in rows]
+    assert "compiled_artifact_registered" in ops
+    assert "facet_inserted" in ops
+
+
+@pytest.mark.security
 def test_chain_full_walk_clean(open_vault: VaultConnection) -> None:
     agent_id = _seed_agent(open_vault)
     # Mix of ops to prove the walker handles different payloads.

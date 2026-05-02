@@ -343,6 +343,56 @@ Response: `{checklist: {external_id, content, agent_ref, trigger, checks[{id, st
 
 Required scope: `read` on `verification_checklist`. Cross-agent reads are blocked at the storage layer.
 
+### `POST /api/v1/compiled_artifacts`
+
+Register a compiled artifact (V0.5-P4 / ADR 0019). The AgenticOS Playbook framing: the caller-side compiler reads sources via `GET /api/v1/compile_sources?target=...` (or `recall`), synthesises the narrative, and posts the rendered content here. Tessera stores; the caller compiles.
+
+```bash
+curl -s -X POST 'http://127.0.0.1:5710/api/v1/compiled_artifacts' \
+     -H "Authorization: Bearer ${TESSERA_TOKEN}" \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "content": "# AgenticOS Playbook\n\nThe digest agent runs weekly and ...",
+       "source_facets": ["01HZX1Y2Z3MNPQRSTVWXYZ0123", "01PROJECT00000000000000001"],
+       "compiler_version": "claude-opus-4-7",
+       "artifact_type": "playbook"
+     }'
+```
+
+Body: `content` (required, ≤ 65 536 chars), `source_facets` (required array of ULID strings; 1–256 entries), `compiler_version` (required, ≤ 128 chars), `artifact_type` (optional, default `playbook`), `metadata` (optional caller-side dict), `source_tool` (optional).
+
+Response: `{external_id, artifact_type, source_count}`. The pair-write inserts a `compiled_notebook` facet (mode=`write_time`) and a `compiled_artifacts` row sharing the returned `external_id` inside one transaction.
+
+Required scope: `write` on `compiled_notebook`.
+
+### `GET /api/v1/compiled_artifacts/<external_id>`
+
+Fetch one compiled artifact. Returns `{artifact: null}` for missing rows or cross-agent reads (blocked at the storage layer).
+
+```bash
+curl -s 'http://127.0.0.1:5710/api/v1/compiled_artifacts/01PLAYBOOK000000000000000A' \
+     -H "Authorization: Bearer ${TESSERA_TOKEN}"
+```
+
+Response: `{artifact: {external_id, content, artifact_type, source_facets, compiler_version, compiled_at, is_stale, truncated, token_count}}` or `{artifact: null}`.
+
+Required scope: `read` on `compiled_notebook`.
+
+### `GET /api/v1/compile_sources`
+
+Enumerate source facets tagged `metadata.compile_into = [target]`. Eligible facet types are the ADR 0019 primary inputs (`agent_profile`, `project`, `skill`, `verification_checklist`); other types are filtered out even if tagged.
+
+```bash
+curl -s 'http://127.0.0.1:5710/api/v1/compile_sources?target=playbook_main&limit=64' \
+     -H "Authorization: Bearer ${TESSERA_TOKEN}"
+```
+
+Query params: `target` (required, ≤ 128 chars), `limit` (optional, default 50, max 100).
+
+Response: `{items: [{external_id, facet_type, snippet, captured_at, token_count}], truncated, total_tokens}`.
+
+Required scope: `read` on `compiled_notebook` (so write-scoped callers can pre-read inputs without holding per-source-type read scopes).
+
 ## Recipes
 
 ### Pre-prompt hook (Claude Code)

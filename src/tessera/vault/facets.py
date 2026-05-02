@@ -57,12 +57,18 @@ V0_5_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | V0_5_RESERVED_FACET
 
 # The facet-type set the active write path accepts. V0.5-P2 activates
 # ``agent_profile`` (ADR 0017); V0.5-P3 activates
-# ``verification_checklist`` and ``retrospective`` (ADR 0018) — both
-# describe what an autonomous worker is gated on and how it ran. The
-# remaining v0.5 reserved types stay CHECK-permitted but write-rejected
-# until their sub-phases ship.
+# ``verification_checklist`` and ``retrospective`` (ADR 0018); V0.5-P4
+# activates ``compiled_notebook`` (ADR 0019) — the AgenticOS Playbook,
+# write-time-compiled by an out-of-process compiler and stored via
+# ``vault/compiled.py``'s pair-write transaction. ``automation``
+# stays CHECK-permitted but write-rejected until V0.5-P5.
 WRITABLE_FACET_TYPES: Final[frozenset[str]] = V0_3_FACET_TYPES | frozenset(
-    {"agent_profile", "verification_checklist", "retrospective"}
+    {
+        "agent_profile",
+        "verification_checklist",
+        "retrospective",
+        "compiled_notebook",
+    }
 )
 
 # Superset of every facet type the schema CHECK permits. Used by the scope

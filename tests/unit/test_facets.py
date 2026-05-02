@@ -65,14 +65,14 @@ def test_insert_dedups_on_same_agent_and_normalized_content(conn: sqlite3.Connec
 
 @pytest.mark.unit
 def test_insert_rejects_unsupported_facet_type(conn: sqlite3.Connection) -> None:
-    # ``compiled_notebook`` is reserved in the schema CHECK but stays
-    # outside the v0.3 writable set until v0.5 activates write-time
-    # compilation.
+    # V0.5-P4 activated ``compiled_notebook`` for writes; ``automation``
+    # is the remaining v0.5 reserved type that stays CHECK-permitted but
+    # write-rejected until V0.5-P5 ships the storage-only registry.
     with pytest.raises(facets.UnsupportedFacetTypeError):
         facets.insert(
             conn,
             agent_id=_agent_id(conn),
-            facet_type="compiled_notebook",
+            facet_type="automation",
             content="x",
             source_tool="cli",
         )
@@ -239,10 +239,12 @@ def test_writable_facet_types_are_subset_of_schema_check() -> None:
 
 @pytest.mark.unit
 def test_writable_facet_types_match_active_v0_5_vocabulary() -> None:
-    """V0.5-P2 unlocked ``agent_profile``; V0.5-P3 unlocks
-    ``verification_checklist`` and ``retrospective`` alongside it.
-    ``compiled_notebook`` and ``automation`` stay CHECK-permitted
-    but write-rejected until their sub-phases ship."""
+    """V0.5-P2 unlocked ``agent_profile``; V0.5-P3 unlocked
+    ``verification_checklist`` and ``retrospective``; V0.5-P4 unlocks
+    ``compiled_notebook`` (the AgenticOS Playbook). ``automation``
+    is the remaining v0.5 reserved type that stays CHECK-permitted
+    but write-rejected until V0.5-P5 ships the storage-only
+    registry."""
 
     assert (
         facets.V0_1_FACET_TYPES
@@ -252,9 +254,9 @@ def test_writable_facet_types_match_active_v0_5_vocabulary() -> None:
             "agent_profile",
             "verification_checklist",
             "retrospective",
+            "compiled_notebook",
         }
         == facets.WRITABLE_FACET_TYPES
     )
-    for reserved in ("compiled_notebook", "automation"):
-        assert reserved not in facets.WRITABLE_FACET_TYPES
-        assert reserved in facets.ALL_FACET_TYPES
+    assert "automation" not in facets.WRITABLE_FACET_TYPES
+    assert "automation" in facets.ALL_FACET_TYPES

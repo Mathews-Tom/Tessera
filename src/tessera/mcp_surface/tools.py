@@ -57,6 +57,7 @@ from tessera.retrieval.pipeline import recall as _pipeline_recall
 from tessera.vault import agent_profiles as vault_agent_profiles
 from tessera.vault import audit as vault_audit
 from tessera.vault import capture as vault_capture
+from tessera.vault import compiled as vault_compiled
 from tessera.vault import facets as vault_facets
 from tessera.vault import people as vault_people
 from tessera.vault import retrospectives as vault_retrospectives
@@ -105,6 +106,14 @@ LIST_AGENT_PROFILES_RESPONSE_BUDGET: Final[int] = 4_096
 REGISTER_CHECKLIST_RESPONSE_BUDGET: Final[int] = 512
 RECORD_RETROSPECTIVE_RESPONSE_BUDGET: Final[int] = 512
 LIST_CHECKS_FOR_AGENT_RESPONSE_BUDGET: Final[int] = 4_096
+REGISTER_COMPILED_ARTIFACT_RESPONSE_BUDGET: Final[int] = 512
+GET_COMPILED_ARTIFACT_RESPONSE_BUDGET: Final[int] = 6_000
+LIST_COMPILE_SOURCES_RESPONSE_BUDGET: Final[int] = 6_000
+
+# Compile target string bound. Targets are short slugs (e.g.,
+# ``playbook_main``); 128 chars is a generous ceiling that still
+# rejects pathological inputs at the MCP boundary.
+_MAX_COMPILE_TARGET_CHARS: Final[int] = 128
 
 # v0.3 tool input bounds. Skill names are user-visible identifiers, so
 # we cap them well below content; descriptions sit between names and
@@ -638,6 +647,78 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
         },
         response_budget_tokens=LIST_CHECKS_FOR_AGENT_RESPONSE_BUDGET,
     ),
+    ToolContract(
+        name="register_compiled_artifact",
+        description=(
+            "Register a compiled artifact (AgenticOS Playbook). The caller-side "
+            "compiler pre-reads sources via list_compile_sources or recall, "
+            "synthesises the narrative, and posts the rendered content here. "
+            "Tessera stores; the caller compiles. Required args: content, "
+            "source_facets (list of source ULIDs), compiler_version. Optional: "
+            "artifact_type (defaults to 'playbook'), metadata, source_tool."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "maxLength": _MAX_CONTENT_CHARS},
+                "source_facets": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": _ULID_PATTERN.pattern},
+                },
+                "compiler_version": {"type": "string"},
+                "artifact_type": {"type": "string"},
+                "metadata": {
+                    "type": "object",
+                    "maxProperties": _MAX_METADATA_KEYS,
+                },
+                "source_tool": {"type": "string", "pattern": _SOURCE_TOOL_PATTERN.pattern},
+            },
+            "required": ["content", "source_facets", "compiler_version"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=REGISTER_COMPILED_ARTIFACT_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="get_compiled_artifact",
+        description=(
+            "Fetch one compiled artifact by external_id. Returns the rendered "
+            "content + provenance (source_facets, compiler_version, is_stale). "
+            "Cross-agent reads return null even when the ULID is leaked."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "external_id": {"type": "string", "pattern": _ULID_PATTERN.pattern},
+            },
+            "required": ["external_id"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=GET_COMPILED_ARTIFACT_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="list_compile_sources",
+        description=(
+            "Enumerate source facets tagged for a compile target. The caller "
+            "tags eligible sources by setting metadata.compile_into = [target] "
+            "on the source facet; this tool returns those tagged rows so the "
+            "caller-side compiler can read the inputs it needs."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "maxLength": _MAX_COMPILE_TARGET_CHARS},
+                "limit": {
+                    "type": "integer",
+                    "minimum": _MIN_LIMIT,
+                    "maximum": _MAX_LIMIT,
+                    "default": 50,
+                },
+            },
+            "required": ["target"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=LIST_COMPILE_SOURCES_RESPONSE_BUDGET,
+    ),
 )
 
 
@@ -875,6 +956,44 @@ class ChecklistView:
 class RecordRetrospectiveResponse:
     external_id: str
     is_new: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterCompiledArtifactResponse:
+    external_id: str
+    artifact_type: str
+    source_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledArtifactView:
+    """Full compiled-artifact payload returned by ``get_compiled_artifact``."""
+
+    external_id: str
+    content: str
+    artifact_type: str
+    source_facets: tuple[str, ...]
+    compiler_version: str
+    compiled_at: int
+    is_stale: bool
+    truncated: bool
+    token_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class CompileSourceView:
+    external_id: str
+    facet_type: str
+    snippet: str
+    captured_at: int
+    token_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ListCompileSourcesResponse:
+    items: tuple[CompileSourceView, ...]
+    truncated: bool
+    total_tokens: int
 
 
 # ---- Tools ---------------------------------------------------------------
@@ -1558,7 +1677,183 @@ async def list_checks_for_agent(
     )
 
 
+async def register_compiled_artifact(
+    tctx: ToolContext,
+    *,
+    content: str,
+    source_facets: Sequence[str],
+    compiler_version: str,
+    artifact_type: str = "playbook",
+    metadata: dict[str, Any] | None = None,
+    source_tool: str | None = None,
+) -> RegisterCompiledArtifactResponse:
+    """MCP ``register_compiled_artifact`` — store a compiled artifact.
+
+    Write scope on ``compiled_notebook`` is required. The two-call
+    API per ADR 0019 §Compilation pipeline: the caller-side
+    compiler reads sources via ``list_compile_sources`` (or
+    ``recall``), synthesises the narrative outside the daemon, and
+    posts the rendered content here. Tessera stores; the caller
+    compiles. There is no ``compile_now`` API by design.
+    """
+
+    _validate_length("content", content, _MAX_CONTENT_CHARS, allow_empty=False)
+    _validate_compile_source_list(source_facets)
+    _validate_length("compiler_version", compiler_version, 128, allow_empty=False)
+    _validate_length("artifact_type", artifact_type, 64, allow_empty=False)
+    _validate_metadata(metadata)
+    resolved_source = source_tool or tctx.verified.client_name
+    _validate_source_tool(resolved_source)
+    _require_scope(tctx, op="write", facet_type="compiled_notebook")
+    try:
+        external_id = vault_compiled.register_compiled_artifact(
+            tctx.conn,
+            agent_id=tctx.verified.agent_id,
+            content=content,
+            source_facets=tuple(source_facets),
+            artifact_type=artifact_type,
+            compiler_version=compiler_version,
+            source_tool=resolved_source,
+            metadata=metadata,
+        )
+    except (
+        vault_compiled.InvalidCompiledArtifactError,
+        vault_compiled.DuplicateCompiledArtifactError,
+    ) as exc:
+        raise ValidationError(str(exc)) from exc
+    except vault_facets.UnknownAgentError as exc:
+        raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
+    return RegisterCompiledArtifactResponse(
+        external_id=external_id,
+        artifact_type=artifact_type,
+        source_count=len(source_facets),
+    )
+
+
+async def get_compiled_artifact(
+    tctx: ToolContext,
+    *,
+    external_id: str,
+) -> CompiledArtifactView | None:
+    """MCP ``get_compiled_artifact`` — fetch one artifact by external_id.
+
+    Returns ``None`` when no artifact matches. Read scope on
+    ``compiled_notebook`` is required. Cross-agent reads are
+    blocked at the boundary by an explicit agent-id guard so a
+    leaked ULID cannot be turned into a cross-agent read.
+    """
+
+    _validate_ulid(external_id)
+    _require_scope(tctx, op="read", facet_type="compiled_notebook")
+    artifact = vault_compiled.get(tctx.conn, external_id=external_id)
+    if artifact is None:
+        return None
+    if artifact.agent_id != tctx.verified.agent_id:
+        return None
+    body = artifact.content
+    body_tokens = count_tokens(body)
+    truncated = False
+    overhead = 256
+    if body_tokens > GET_COMPILED_ARTIFACT_RESPONSE_BUDGET - overhead:
+        body = truncate_snippet(body, max_tokens=GET_COMPILED_ARTIFACT_RESPONSE_BUDGET - overhead)
+        truncated = True
+        body_tokens = count_tokens(body)
+    return CompiledArtifactView(
+        external_id=artifact.external_id,
+        content=body,
+        artifact_type=artifact.artifact_type,
+        source_facets=artifact.source_facets,
+        compiler_version=artifact.compiler_version,
+        compiled_at=artifact.compiled_at,
+        is_stale=artifact.is_stale,
+        truncated=truncated,
+        token_count=body_tokens,
+    )
+
+
+async def list_compile_sources(
+    tctx: ToolContext,
+    *,
+    target: str,
+    limit: int = 50,
+) -> ListCompileSourcesResponse:
+    """MCP ``list_compile_sources`` — enumerate tagged source facets.
+
+    Read scope on ``compiled_notebook`` is required so the caller
+    holding write access can also pre-read its inputs without
+    needing per-type read scopes for every source facet type.
+    Returns rows whose ``metadata.compile_into`` array contains
+    ``target``.
+    """
+
+    _validate_length("target", target, _MAX_COMPILE_TARGET_CHARS, allow_empty=False)
+    _validate_limit(limit)
+    _require_scope(tctx, op="read", facet_type="compiled_notebook")
+    rows = vault_compiled.list_for_compilation(
+        tctx.conn,
+        agent_id=tctx.verified.agent_id,
+        target=target,
+        limit=limit,
+    )
+    items: list[CompileSourceView] = []
+    for row in rows:
+        snippet = truncate_snippet(row.content, max_tokens=512)
+        items.append(
+            CompileSourceView(
+                external_id=row.external_id,
+                facet_type=row.facet_type,
+                snippet=snippet,
+                captured_at=row.captured_at,
+                token_count=count_tokens(snippet),
+            )
+        )
+    trimmed, truncated, total_tokens = _budget_compile_sources(items)
+    return ListCompileSourcesResponse(
+        items=trimmed,
+        truncated=truncated,
+        total_tokens=total_tokens,
+    )
+
+
 # ---- Helpers -------------------------------------------------------------
+
+
+def _validate_compile_source_list(source_facets: Sequence[str]) -> None:
+    """Validate ``source_facets`` is a non-empty list of ULID strings.
+
+    The storage layer enforces the same shape; this gate gives the
+    MCP boundary a clean :class:`ValidationError` rather than
+    surfacing the storage-layer exception verbatim.
+    """
+
+    if not isinstance(source_facets, list | tuple):
+        raise ValidationError(f"source_facets must be a list, got {type(source_facets).__name__}")
+    if not source_facets:
+        raise ValidationError("source_facets must contain at least one entry")
+    for index, entry in enumerate(source_facets):
+        if not isinstance(entry, str) or not _ULID_PATTERN.match(entry):
+            raise ValidationError(f"source_facets[{index}] must be a ULID string")
+
+
+def _budget_compile_sources(
+    items: list[CompileSourceView],
+) -> tuple[tuple[CompileSourceView, ...], bool, int]:
+    """Apply the list_compile_sources budget to source views."""
+
+    per_row_overhead = 48
+    budgeted: list[BudgetedItem] = [
+        BudgetedItem(
+            key=view.external_id,
+            snippet=view.snippet,
+            token_count=view.token_count + per_row_overhead,
+        )
+        for view in items
+    ]
+    trimmed = apply_budget(budgeted, total_budget=LIST_COMPILE_SOURCES_RESPONSE_BUDGET)
+    kept_keys = {b.key for b in trimmed.items}
+    kept = tuple(view for view in items if view.external_id in kept_keys)
+    total = sum(item.token_count for item in trimmed.items)
+    return kept, trimmed.truncated, total
 
 
 def _enforce_same_agent_profile_ref(tctx: ToolContext, agent_ref: str) -> None:
@@ -1922,10 +2217,12 @@ __all__ = [
     "CAPTURE_RESPONSE_BUDGET",
     "FORGET_RESPONSE_BUDGET",
     "GET_AGENT_PROFILE_RESPONSE_BUDGET",
+    "GET_COMPILED_ARTIFACT_RESPONSE_BUDGET",
     "GET_SKILL_RESPONSE_BUDGET",
     "LEARN_SKILL_RESPONSE_BUDGET",
     "LIST_AGENT_PROFILES_RESPONSE_BUDGET",
     "LIST_CHECKS_FOR_AGENT_RESPONSE_BUDGET",
+    "LIST_COMPILE_SOURCES_RESPONSE_BUDGET",
     "LIST_FACETS_RESPONSE_BUDGET",
     "LIST_PEOPLE_RESPONSE_BUDGET",
     "LIST_SKILLS_RESPONSE_BUDGET",
@@ -1934,6 +2231,7 @@ __all__ = [
     "RECORD_RETROSPECTIVE_RESPONSE_BUDGET",
     "REGISTER_AGENT_PROFILE_RESPONSE_BUDGET",
     "REGISTER_CHECKLIST_RESPONSE_BUDGET",
+    "REGISTER_COMPILED_ARTIFACT_RESPONSE_BUDGET",
     "RESOLVE_PERSON_RESPONSE_BUDGET",
     "SHOW_RESPONSE_BUDGET",
     "STATS_RESPONSE_BUDGET",
@@ -1944,11 +2242,14 @@ __all__ = [
     "CaptureResponse",
     "ChecklistCheckView",
     "ChecklistView",
+    "CompileSourceView",
+    "CompiledArtifactView",
     "EmbedHealth",
     "FacetSummary",
     "ForgetResponse",
     "LearnSkillResponse",
     "ListAgentProfilesResponse",
+    "ListCompileSourcesResponse",
     "ListFacetsResponse",
     "ListPeopleResponse",
     "ListSkillsResponse",
@@ -1958,6 +2259,7 @@ __all__ = [
     "RecordRetrospectiveResponse",
     "RegisterAgentProfileResponse",
     "RegisterChecklistResponse",
+    "RegisterCompiledArtifactResponse",
     "ResolvePersonResponse",
     "ScopeDenied",
     "ShowResponse",
@@ -1972,10 +2274,12 @@ __all__ = [
     "capture",
     "forget",
     "get_agent_profile",
+    "get_compiled_artifact",
     "get_skill",
     "learn_skill",
     "list_agent_profiles",
     "list_checks_for_agent",
+    "list_compile_sources",
     "list_facets",
     "list_people",
     "list_skills",
@@ -1983,6 +2287,7 @@ __all__ = [
     "record_retrospective",
     "register_agent_profile",
     "register_checklist",
+    "register_compiled_artifact",
     "resolve_person",
     "show",
     "stats",

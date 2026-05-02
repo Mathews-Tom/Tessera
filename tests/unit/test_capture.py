@@ -75,14 +75,15 @@ def test_capture_dedup_returns_same_external_id_and_marks_duplicate(
 @pytest.mark.unit
 def test_capture_rejects_unsupported_facet_type(open_vault: VaultConnection) -> None:
     agent_id = _make_agent(open_vault)
-    # ``compiled_notebook`` stays outside the writable set until v0.5
-    # activates write-time compilation.
+    # V0.5-P4 activated ``compiled_notebook`` for writes; ``automation``
+    # is the remaining v0.5 reserved type that stays outside the
+    # writable set until V0.5-P5 ships the storage-only registry.
     with pytest.raises(facets.UnsupportedFacetTypeError):
         capture.capture(
             open_vault.connection,
             agent_id=agent_id,
-            facet_type="compiled_notebook",
-            content="not writable until v0.5",
+            facet_type="automation",
+            content="not writable until v0.5-p5",
             source_tool="test",
         )
 

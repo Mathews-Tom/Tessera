@@ -47,10 +47,10 @@ def test_validate_length_rejects_non_string() -> None:
 
 @pytest.mark.unit
 def test_validate_facet_type_accepts_active_v0_5_vocab() -> None:
-    # V0.5-P2 unlocks ``agent_profile``; V0.5-P3 unlocks
-    # ``verification_checklist`` and ``retrospective`` alongside the
-    # v0.3 set (``person`` + ``skill``) and the v0.1 five. The MCP
-    # boundary must accept every writable type.
+    # V0.5-P2 unlocked ``agent_profile``; V0.5-P3 unlocked
+    # ``verification_checklist`` and ``retrospective``; V0.5-P4
+    # unlocks ``compiled_notebook`` (the AgenticOS Playbook). The
+    # MCP boundary must accept every writable type.
     for t in (
         "identity",
         "preference",
@@ -62,24 +62,18 @@ def test_validate_facet_type_accepts_active_v0_5_vocab() -> None:
         "agent_profile",
         "verification_checklist",
         "retrospective",
+        "compiled_notebook",
     ):
         _validate_facet_type(t)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "reserved",
-    [
-        "compiled_notebook",
-        "automation",
-    ],
-)
-def test_validate_facet_type_rejects_reserved_until_their_subphase(reserved: str) -> None:
-    # These types are reserved in the schema CHECK so tokens issued at
-    # v0.5-P3 round-trip a read scope on them, but the write surface
-    # must reject the type until its sub-phase activates the path.
+def test_validate_facet_type_rejects_automation_until_v0_5_p5() -> None:
+    # ``automation`` is the remaining v0.5 reserved type that stays
+    # CHECK-permitted but write-rejected until V0.5-P5 ships the
+    # storage-only registry.
     with pytest.raises(ValidationError, match="not in"):
-        _validate_facet_type(reserved)
+        _validate_facet_type("automation")
 
 
 @pytest.mark.unit
