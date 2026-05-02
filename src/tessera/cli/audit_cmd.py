@@ -24,6 +24,7 @@ treat ``exit 0`` as a stronger guarantee than it is.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
 
 from tessera.cli._common import (
@@ -83,7 +84,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 
 def _print_audit_help_when_no_subcommand(
     parser: argparse.ArgumentParser,
-) -> object:
+) -> Callable[[argparse.Namespace], int]:
     def _handler(_args: argparse.Namespace) -> int:
         parser.print_help()
         return 2
@@ -111,17 +112,18 @@ def _cmd_verify(args: argparse.Namespace) -> int:
                 outcome = verify_chain(vc.connection)
             except AuditChainBrokenError as exc:
                 fail(str(exc))
+                doctor_emoji = EMOJI.get("doctor", "")
                 info(
                     f"first broken row: id={exc.row_id} op={exc.op!r}",
-                    emoji=EMOJI.get("doctor", ""),
+                    emoji=doctor_emoji,
                 )
                 info(
                     f"  expected row_hash: {exc.expected_row_hash}",
-                    emoji=EMOJI.get("doctor", ""),
+                    emoji=doctor_emoji,
                 )
                 info(
                     f"  stored   row_hash: {exc.actual_row_hash}",
-                    emoji=EMOJI.get("doctor", ""),
+                    emoji=doctor_emoji,
                 )
                 return 1
     except FileNotFoundError as exc:
