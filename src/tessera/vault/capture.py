@@ -92,7 +92,7 @@ def capture(
             "facet_type": facet_type,
             "source_tool": source_tool,
             "is_duplicate": not is_new,
-            "content_hash_prefix": facets.content_hash(content)[:8],
+            "content_hash_prefix": digest[:8],
             "volatility": volatility,
             "ttl_seconds": effective_ttl,
         },
