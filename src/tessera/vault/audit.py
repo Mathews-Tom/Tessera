@@ -139,6 +139,18 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     # content, mirroring the people / skills surfaces).
     "agent_profile_link_set": frozenset({"prior_external_id"}),
     "agent_profile_link_cleared": frozenset(set()),
+    # Compiled artifact registration (V0.5-P4 / ADR 0019). The
+    # pair-write inserts the compiled_artifacts row and the
+    # compiled_notebook facet under one external_id. The artifact
+    # content itself rides the standard facets table; this op
+    # carries the compile-side provenance only — artifact type,
+    # compiler version, and the source-count cardinality. Source
+    # ULIDs stay on ``compiled_artifacts.source_facets`` (a JSON
+    # array column) rather than the audit row, so §S4 stays inside
+    # the no-user-content contract.
+    "compiled_artifact_registered": frozenset(
+        {"artifact_type", "compiler_version", "source_count"}
+    ),
 }
 
 
