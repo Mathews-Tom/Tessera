@@ -42,7 +42,7 @@ import sqlcipher3
 from tessera.adapters.protocol import Embedder, Reranker
 from tessera.observability.events import EventLog
 from tessera.retrieval import bm25, budget, dense, mmr, rerank, rrf, seed, swcr
-from tessera.vault import audit
+from tessera.vault import audit, retrospectives
 
 # Default slow-query threshold in milliseconds. The spec frames the
 # threshold as "p99 baseline + 50%"; until a persistent p99 baseline
@@ -200,6 +200,19 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
         # Stage 4 — SWCR reweight (skipped unless mode == "swcr").
         t0 = time.perf_counter()
         if mode == "swcr":
+            # ADR 0018: when the working set includes an agent_profile
+            # facet, augment with the most recent N retrospectives whose
+            # ``agent_ref`` matches that profile. Augmentation runs
+            # before the SWCR graph build so retrospectives enter the
+            # cross-type bonus the same way every other facet type does.
+            await _augment_with_retrospectives(
+                ctx,
+                ordered=ordered,
+                content_lookup=content_lookup,
+                type_lookup=type_lookup,
+                embeddings=embeddings,
+            )
+            working_ids = [c.facet_id for c in ordered]
             entities_lookup = _fetch_entities(ctx.conn, working_ids)
             volatility_lookup = _fetch_volatility(ctx.conn, working_ids)
             swcr_input = [
@@ -558,6 +571,88 @@ def _fetch_entities(
         else:
             out[facet_id] = frozenset()
     return out
+
+
+async def _augment_with_retrospectives(
+    ctx: PipelineContext,
+    *,
+    ordered: list[_ScoredCandidate],
+    content_lookup: dict[int, str],
+    type_lookup: dict[int, str],
+    embeddings: dict[int, list[float]],
+) -> None:
+    """ADR 0018 SWCR augmentation — pull recent retrospectives for any
+    ``agent_profile`` candidate in the working set.
+
+    Mutates ``ordered``, ``content_lookup``, ``type_lookup``, and
+    ``embeddings`` in place so the SWCR build sees the augmented set
+    uniformly. The retrospective rows enter at the originating
+    profile's score so they sit at a comparable level in the SWCR
+    graph; the cross-type bonus then upweights the
+    ``agent_profile ↔ retrospective`` edge naturally.
+
+    Soft no-op when ``retrospective_window=0`` (caller disabled
+    augmentation), when no agent_profile facets are in the working
+    set, or when no matching retrospectives exist.
+    """
+
+    window = ctx.config.retrospective_window
+    if window <= 0:
+        return
+    profile_candidates = [
+        cand for cand in ordered if type_lookup.get(cand.facet_id) == "agent_profile"
+    ]
+    if not profile_candidates:
+        return
+    profile_external_ids = _profile_external_ids(
+        ctx.conn, [cand.facet_id for cand in profile_candidates]
+    )
+    seen_ids: set[int] = {cand.facet_id for cand in ordered}
+    new_rows: list[tuple[int, str, str, float]] = []
+    for cand in profile_candidates:
+        external_id = profile_external_ids.get(cand.facet_id)
+        if external_id is None:
+            continue
+        retros = retrospectives.recent_for_agent(
+            ctx.conn,
+            agent_id=ctx.agent_id,
+            profile_external_id=external_id,
+            limit=window,
+        )
+        for retro in retros:
+            if retro.facet_id in seen_ids:
+                continue
+            seen_ids.add(retro.facet_id)
+            new_rows.append((retro.facet_id, retro.content, "retrospective", cand.score))
+    if not new_rows:
+        return
+    new_ids = [fid for fid, *_ in new_rows]
+    new_contents = [content for _, content, *_ in new_rows]
+    vectors = await ctx.embedder.embed(new_contents)
+    for (fid, content, ftype, score), vec in zip(new_rows, vectors, strict=True):
+        ordered.append(_ScoredCandidate(facet_id=fid, score=score))
+        content_lookup[fid] = content
+        type_lookup[fid] = ftype
+        embeddings[fid] = list(vec)
+    del new_ids
+
+
+def _profile_external_ids(conn: sqlcipher3.Connection, facet_ids: Iterable[int]) -> dict[int, str]:
+    """Return ``{facet_id: external_id}`` for ``agent_profile`` rows."""
+
+    ids = list(facet_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT id, external_id FROM facets
+        WHERE id IN ({placeholders}) AND facet_type = 'agent_profile'
+              AND is_deleted = 0
+        """,
+        tuple(ids),
+    ).fetchall()
+    return {int(row[0]): str(row[1]) for row in rows}
 
 
 def _apply_budget(

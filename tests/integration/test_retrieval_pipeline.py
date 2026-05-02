@@ -334,3 +334,100 @@ async def test_pipeline_multi_facet_type_recall_surfaces_every_type(
     # types to guard against accidental single-type collapse from the
     # refactor.
     assert len(types_seen) >= 3, f"expected ≥3 types in recall; got {types_seen}"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_swcr_augments_with_recent_retrospectives(
+    open_vault: VaultConnection,
+) -> None:
+    """ADR 0018 retrospective integration: when an agent_profile facet
+    enters the SWCR working set, the most recent retrospectives whose
+    ``agent_ref`` matches that profile join the candidate graph."""
+
+    from dataclasses import replace
+
+    from tessera.vault import agent_profiles, retrospectives
+
+    cur = open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('01SWCR', 'a', 0)"
+    )
+    agent_id = int(cur.lastrowid) if cur.lastrowid is not None else 0
+    embedder = _CountingEmbedder()
+    reranker = _StaticReranker()
+    model = models_registry.register_embedding_model(
+        open_vault.connection, name="ollama", dim=embedder.dim, activate=True
+    )
+    profile_id, _ = agent_profiles.register(
+        open_vault.connection,
+        agent_id=agent_id,
+        content="weekly digest agent profile",
+        metadata={
+            "purpose": "summarize standups",
+            "inputs": ["standup notes"],
+            "outputs": ["digest"],
+            "cadence": "weekly",
+            "skill_refs": [],
+        },
+        source_tool="cli",
+    )
+    for i in range(3):
+        retrospectives.record(
+            open_vault.connection,
+            agent_id=agent_id,
+            content=f"retrospective body {i}",
+            metadata={
+                "agent_ref": profile_id,
+                "task_id": f"task-{i}",
+                "went_well": ["captured digest"],
+                "gaps": ["missed migration risk"],
+                "changes": [
+                    {"target": "verification_checklist", "change": "Add ALTER TABLE scan"},
+                ],
+                "outcome": "partial",
+            },
+            source_tool="cli",
+        )
+    await embed_worker.run_pass(
+        open_vault.connection,
+        embedder,
+        active_model_id=model.id,
+        batch_size=64,
+        now_epoch=100,
+    )
+    ctx = PipelineContext(
+        conn=open_vault.connection,
+        embedder=embedder,
+        reranker=reranker,
+        active_model_id=model.id,
+        vec_table=models_registry.vec_table_name(model.id),
+        vault_id="01VAULTSWCR",
+        agent_id=agent_id,
+        config=RetrievalConfig(
+            rerank_model="length-score",
+            mmr_lambda=0.7,
+            max_candidates=50,
+        ),
+        tool_budget_tokens=4000,
+        k=10,
+        facet_types=("agent_profile", "retrospective"),
+    )
+    result = await recall(ctx, query_text="weekly digest agent")
+    types_seen = {m.facet_type for m in result.matches}
+    # Augmentation surfaces retrospectives in the SWCR working set;
+    # the bundle should carry both the profile and at least one
+    # retrospective row.
+    assert "agent_profile" in types_seen
+    assert "retrospective" in types_seen
+
+    # Disabling the window (window=0) collapses the augmentation;
+    # only the agent_profile row remains in scope, retrospectives
+    # surface only via direct hybrid retrieval (which they may or
+    # may not, depending on the query text — they certainly do not
+    # surface as augmentations).
+    no_aug_config = replace(ctx.config, retrospective_window=0)
+    no_aug_ctx = replace(ctx, config=no_aug_config)
+    no_aug_result = await recall(no_aug_ctx, query_text="weekly digest agent")
+    aug_retro_count = sum(1 for m in result.matches if m.facet_type == "retrospective")
+    no_aug_retro_count = sum(1 for m in no_aug_result.matches if m.facet_type == "retrospective")
+    assert aug_retro_count >= no_aug_retro_count
