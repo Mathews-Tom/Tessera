@@ -233,7 +233,16 @@ def audit_log_append(
         )
 
     when = at if at is not None else _now_epoch()
-    payload_json = json.dumps(payload_dict, sort_keys=True, ensure_ascii=False)
+    # Store the canonical bytes directly so the payload column and
+    # the chain hash agree at insert time. Using stdlib ``json.dumps``
+    # for storage while ``canonical_json`` drives the hash leaves the
+    # door open to silent divergence on values that round-trip
+    # differently between the two encoders (e.g. a float that
+    # ``json.dumps`` emits as ``1`` but ``canonical_json`` would emit
+    # as ``1.0`` after JSON parse). Storing the canonical encoding
+    # closes the gap and keeps ``encode_event_for_chain`` a pure
+    # round-trip on the verify path.
+    payload_json = canonical_json(payload_dict).decode("ascii")
 
     # Read the head and write the row inside one transaction. SQLite's
     # default isolation guarantees the head we read is the head we
@@ -289,11 +298,15 @@ def verify_chain(conn: sqlcipher3.Connection) -> ChainVerifyOk:
     """Walk the chain from genesis to head; raise on any break.
 
     Returns a :class:`ChainVerifyOk` summarising the walk. Raises
-    :class:`AuditChainBrokenError` on the first row where the
-    recomputed ``row_hash`` does not match the stored value, where
-    the stored ``prev_hash`` does not match the previous row's
-    ``row_hash``, or where a row's ``id`` skips (insertion of
-    forged rows in the middle).
+    :class:`AuditChainBrokenError` on the first row where:
+
+    * the stored ``prev_hash`` does not match the previous row's
+      ``row_hash`` (deletion, reorder, or splice in the middle), or
+    * the recomputed ``row_hash`` does not match the stored value
+      (modification of any field including ``id`` — the row id is
+      bound into ``ChainEvent.to_canonical_dict``, so id-tampering
+      surfaces here as a recompute mismatch rather than via an
+      explicit id-sequence assertion).
     """
 
     rows = conn.execute(

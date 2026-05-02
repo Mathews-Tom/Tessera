@@ -145,11 +145,22 @@ jobs:
 
   audit-chain-verify-on-test-vault:
     # Per ADR 0021, ``tessera audit verify`` is the canonical
-    # verification surface. The gate exercises the entire walker
-    # against a populated test vault: bootstrap, capture, recall,
-    # forget, retrieval audit rows. ``verify_chain`` must walk
-    # genesis → head without raising. Catches regressions in the
-    # insert path, the canonicalizer, and the migration backfill
+    # verification surface. The gate exercises the chain across
+    # three test surfaces:
+    #
+    # * ``tests/security/test_audit_chain.py`` — the seven
+    #   tampering scenarios that the walker must raise on
+    #   (genesis, append, deletion-detect, modify-detect,
+    #   reorder-detect, insert-detect, full-walk-clean).
+    # * ``tests/integration/test_cli_audit_verify.py`` — end-to-end
+    #   ``tessera audit verify`` exit-code contract (0 / 1 / 2)
+    #   against a real bootstrapped vault.
+    # * ``tests/unit/test_migration_runner.py::test_v3_to_v4_migration_backfills_audit_chain``
+    #   — pre-upgrade row backfill produces a chain that the
+    #   walker accepts.
+    #
+    # Together these cover the chain insert path, the
+    # canonicalizer, the migration backfill, and the CLI surface
     # before they reach a real vault.
     name: Audit-chain verify on test vault
     runs-on: ubuntu-latest
@@ -165,7 +176,12 @@ jobs:
       - run: uv sync --frozen
       - name: Pre-warm tiktoken encoding cache
         run: uv run python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
-      - run: uv run pytest tests/security/test_audit_chain.py -v
+      - run: |
+          uv run pytest \
+            tests/security/test_audit_chain.py \
+            tests/integration/test_cli_audit_verify.py \
+            tests/unit/test_migration_runner.py::test_v3_to_v4_migration_backfills_audit_chain \
+            -v
 
   no-outbound:
     # The adapter framework is the first code in src/tessera that speaks to

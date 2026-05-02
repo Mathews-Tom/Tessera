@@ -114,6 +114,39 @@ def test_canonical_json_deep_dict_round_trip_stable() -> None:
 
 
 @pytest.mark.unit
+def test_canonical_json_byte_locked_for_drift_prone_primitives() -> None:
+    """Lock the exact bytes for the primitives the module docstring
+    calls out as drift-prone between Python releases — float repr,
+    surrogate-pair encoding for non-BMP, control-char escapes, and
+    non-ASCII codepoint escapes. A run-twice equality check (the
+    determinism CI gate) cannot catch a release-to-release shift on
+    its own; the byte lock here closes that gap."""
+
+    # Float: shortest round-trip via repr. Whole-number floats
+    # serialize as ``1.5``, ``1.0`` (not ``1`` or ``1.50``) so a
+    # ``json.dumps`` swap between Python versions is caught.
+    assert canonical_json(1.5) == b"1.5"
+    assert canonical_json(1.0) == b"1.0"
+    assert canonical_json(-3.25) == b"-3.25"
+
+    # Non-BMP: 🦊 (U+1F98A) emits as a UTF-16 surrogate pair.
+    assert canonical_json("🦊") == b'"\\ud83e\\udd8a"'
+
+    # Control characters: \t and \n use the short escape form.
+    assert canonical_json("a\tb\nc") == b'"a\\tb\\nc"'
+
+    # Non-ASCII BMP: every codepoint above 0x7E goes to \uXXXX so
+    # the source-encoding choice for the bytes the canonicalizer
+    # emits cannot affect the output.
+    assert canonical_json("café") == b'"caf\\u00e9"'
+
+    # 0x7F (DEL) sits at the ASCII boundary — the canonicalizer
+    # treats anything ``>= 0x7F`` as non-ASCII and escapes it. Lock
+    # the boundary explicitly so a future "<" → "<=" tweak fires.
+    assert canonical_json("\x7f") == b'"\\u007f"'
+
+
+@pytest.mark.unit
 def test_canonical_json_byte_stable_across_two_runs_on_fixed_vector() -> None:
     """The audit-chain determinism gate runs this exact assertion in CI."""
 
