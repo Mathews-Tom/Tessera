@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -227,7 +226,7 @@ def get(
     ).fetchone()
     if row is None or bool(row[7]):
         return None
-    active_link = _read_active_link(conn, agent_id=int(row[2]))
+    active_link = read_active_link(conn, agent_id=int(row[2]))
     return _row_to_profile(row, is_active_link=(active_link == str(row[1])))
 
 
@@ -272,7 +271,7 @@ def list_for_agent(
             """,
             (agent_id, since, limit),
         ).fetchall()
-    active_link = _read_active_link(conn, agent_id=agent_id)
+    active_link = read_active_link(conn, agent_id=agent_id)
     return [_row_to_profile(r, is_active_link=(active_link == str(r[1]))) for r in rows]
 
 
@@ -283,12 +282,17 @@ def read_active_link(
 ) -> str | None:
     """Return the active-link external_id for ``agent_id`` or ``None``.
 
-    Public surface over :func:`_read_active_link` so callers can
-    answer "which profile is canonical right now?" without rerunning
+    Answers "which profile is canonical right now?" without rerunning
     a list query.
     """
 
-    return _read_active_link(conn, agent_id=agent_id)
+    row = conn.execute(
+        "SELECT profile_facet_external_id FROM agents WHERE id = ?",
+        (agent_id,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return str(row[0])
 
 
 def get_active_for_agent(
@@ -306,7 +310,7 @@ def get_active_for_agent(
     diagnose how the link drifted.
     """
 
-    active_link = _read_active_link(conn, agent_id=agent_id)
+    active_link = read_active_link(conn, agent_id=agent_id)
     if active_link is None:
         return None
     return get(conn, external_id=active_link)
@@ -325,7 +329,7 @@ def clear_active_link(
     operation.
     """
 
-    current = _read_active_link(conn, agent_id=agent_id)
+    current = read_active_link(conn, agent_id=agent_id)
     if current is None:
         return False
     conn.execute(
@@ -356,7 +360,7 @@ def _set_active_link(
     without scanning the facets table.
     """
 
-    current = _read_active_link(conn, agent_id=agent_id)
+    current = read_active_link(conn, agent_id=agent_id)
     if current == profile_external_id:
         return
     conn.execute(
@@ -371,20 +375,6 @@ def _set_active_link(
         target_external_id=profile_external_id,
         payload={"prior_external_id": current},
     )
-
-
-def _read_active_link(
-    conn: sqlcipher3.Connection,
-    *,
-    agent_id: int,
-) -> str | None:
-    row = conn.execute(
-        "SELECT profile_facet_external_id FROM agents WHERE id = ?",
-        (agent_id,),
-    ).fetchone()
-    if row is None or row[0] is None:
-        return None
-    return str(row[0])
 
 
 def _row_to_profile(row: tuple[Any, ...], *, is_active_link: bool) -> AgentProfile:
@@ -417,54 +407,34 @@ def _require_short_string(metadata: dict[str, Any], key: str, max_chars: int) ->
     return value
 
 
+def _require_list(
+    metadata: dict[str, Any],
+    key: str,
+    max_items: int,
+) -> list[Any]:
+    """Type-and-length-check the list at ``metadata[key]`` and return it."""
+
+    value = metadata.get(key)
+    if not isinstance(value, list):
+        raise InvalidAgentProfileMetadataError(
+            f"metadata['{key}'] must be a list, got {type(value).__name__}"
+        )
+    if len(value) > max_items:
+        raise InvalidAgentProfileMetadataError(
+            f"metadata['{key}'] has {len(value)} entries; max {max_items}"
+        )
+    return value
+
+
 def _require_string_list(
     metadata: dict[str, Any],
     key: str,
     max_items: int,
     max_chars: int,
 ) -> tuple[str, ...]:
-    value = metadata.get(key)
-    if not isinstance(value, list):
-        raise InvalidAgentProfileMetadataError(
-            f"metadata['{key}'] must be a list, got {type(value).__name__}"
-        )
-    if len(value) > max_items:
-        raise InvalidAgentProfileMetadataError(
-            f"metadata['{key}'] has {len(value)} entries; max {max_items}"
-        )
-    return tuple(_validate_string_entry(value, key, max_chars))
-
-
-def _require_ulid_list(
-    metadata: dict[str, Any],
-    key: str,
-    max_items: int,
-) -> tuple[str, ...]:
-    value = metadata.get(key)
-    if not isinstance(value, list):
-        raise InvalidAgentProfileMetadataError(
-            f"metadata['{key}'] must be a list, got {type(value).__name__}"
-        )
-    if len(value) > max_items:
-        raise InvalidAgentProfileMetadataError(
-            f"metadata['{key}'] has {len(value)} entries; max {max_items}"
-        )
+    value = _require_list(metadata, key, max_items)
     out: list[str] = []
     for index, entry in enumerate(value):
-        if not isinstance(entry, str) or not _ULID_PATTERN.match(entry):
-            raise InvalidAgentProfileMetadataError(
-                f"metadata['{key}'][{index}] must be a ULID string"
-            )
-        out.append(entry)
-    return tuple(out)
-
-
-def _validate_string_entry(
-    items: Sequence[Any],
-    key: str,
-    max_chars: int,
-) -> Iterable[str]:
-    for index, entry in enumerate(items):
         if not isinstance(entry, str):
             raise InvalidAgentProfileMetadataError(
                 f"metadata['{key}'][{index}] must be a string, got {type(entry).__name__}"
@@ -475,7 +445,24 @@ def _validate_string_entry(
             raise InvalidAgentProfileMetadataError(
                 f"metadata['{key}'][{index}] length {len(entry)} exceeds max {max_chars}"
             )
-        yield entry
+        out.append(entry)
+    return tuple(out)
+
+
+def _require_ulid_list(
+    metadata: dict[str, Any],
+    key: str,
+    max_items: int,
+) -> tuple[str, ...]:
+    value = _require_list(metadata, key, max_items)
+    out: list[str] = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, str) or not _ULID_PATTERN.match(entry):
+            raise InvalidAgentProfileMetadataError(
+                f"metadata['{key}'][{index}] must be a ULID string"
+            )
+        out.append(entry)
+    return tuple(out)
 
 
 __all__ = [
