@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+No unreleased changes yet.
+
+## [0.5.0rc1] — 2026-05-03 (pre-release)
+
 ### Schema v4 (additive over v3, V0.5-P1 + V0.5-P2, ADRs 0016 / 0017)
 
 - New `volatility TEXT NOT NULL DEFAULT 'persistent' CHECK (volatility IN ('persistent', 'session', 'ephemeral'))` column on `facets`. Existing rows default to `persistent` so v0.4 behaviour is preserved.
@@ -502,5 +506,5 @@ the post-reframe decision layer ([ADR 0010](docs/adr/0010-five-facet-user-contex
 
 ## Released versions
 
-No public releases yet. `v0.1.0` ships when the definition-of-done in
-`docs/release-spec.md §v0.1 DoD` is fully green.
+Public pre-releases are tracked above. GA ships when the current
+definition-of-done in `docs/release-spec.md` is fully green.

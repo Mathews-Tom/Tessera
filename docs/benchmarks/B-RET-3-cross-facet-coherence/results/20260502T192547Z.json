@@ -1,0 +1,43 @@
+{
+  "benchmark_id": "B-RET-3",
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.4.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "3cba91f379451376e6167c0c5d3da7583cca96bc"
+  },
+  "inputs": {
+    "adapters": "fake",
+    "dim": 8,
+    "embedder": "hash-fake",
+    "facet_types": [
+      "identity",
+      "preference",
+      "workflow",
+      "project",
+      "style"
+    ],
+    "n_facets_total": 2000,
+    "n_per_type": {
+      "identity": 20,
+      "preference": 60,
+      "project": 900,
+      "style": 900,
+      "workflow": 120
+    },
+    "reranker": "length-fake",
+    "retrieval_mode": "swcr",
+    "scale": 1,
+    "tool_budget_tokens": 6000,
+    "trials": 100
+  },
+  "metrics": {
+    "max_ms": 41.47291596746072,
+    "mean_ms": 39.001085429335944,
+    "min_ms": 37.19920798903331,
+    "p50_ms": 38.95531248417683,
+    "p95_ms": 40.53200001362711,
+    "p99_ms": 40.97945895045996
+  },
+  "timestamp": "2026-05-02T19:25:47Z"
+}

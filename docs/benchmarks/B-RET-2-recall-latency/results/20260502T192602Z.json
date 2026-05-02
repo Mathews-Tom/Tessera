@@ -1,0 +1,28 @@
+{
+  "benchmark_id": "B-RET-2",
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.4.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "3cba91f379451376e6167c0c5d3da7583cca96bc"
+  },
+  "inputs": {
+    "adapters": "fake",
+    "dim": 8,
+    "embedder": "hash-fake",
+    "facets": 1000,
+    "rerank_k": 20,
+    "reranker": "length-fake",
+    "retrieval_mode": "swcr",
+    "trials": 100
+  },
+  "metrics": {
+    "max_ms": 100.85920797428116,
+    "mean_ms": 43.28666667803191,
+    "min_ms": 39.0668329782784,
+    "p50_ms": 40.78389549977146,
+    "p95_ms": 53.56541700894013,
+    "p99_ms": 86.95849997457117
+  },
+  "timestamp": "2026-05-02T19:26:02Z"
+}

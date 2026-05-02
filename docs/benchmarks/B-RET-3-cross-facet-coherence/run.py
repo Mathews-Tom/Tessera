@@ -35,11 +35,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar
 
-import tessera.adapters.ollama_embedder  # noqa: F401 — registration side effect
 from tessera.adapters import models_registry
-from tessera.adapters.ollama_embedder import OllamaEmbedder
+from tessera.adapters.fastembed_embedder import DEFAULT_DIM as FASTEMBED_DIM
+from tessera.adapters.fastembed_embedder import DEFAULT_MODEL as FASTEMBED_EMBED_MODEL
+from tessera.adapters.fastembed_embedder import FastEmbedEmbedder
+from tessera.adapters.fastembed_reranker import DEFAULT_MODEL as FASTEMBED_RERANK_MODEL
+from tessera.adapters.fastembed_reranker import FastEmbedReranker
 from tessera.adapters.protocol import Embedder, Reranker
-from tessera.adapters.st_reranker import SentenceTransformersReranker
 from tessera.migration import bootstrap
 from tessera.retrieval import embed_worker
 from tessera.retrieval.pipeline import PipelineContext, recall
@@ -51,9 +53,6 @@ from tessera.vault.encryption import derive_key, new_salt
 HERE = Path(__file__).parent
 RESULTS_DIR = HERE / "results"
 FAKE_DIM = 8
-OLLAMA_MODEL = "nomic-embed-text"
-OLLAMA_DIM = 768
-OLLAMA_HOST = "http://localhost:11434"
 # Per-facet counts sized to cover the five v0.1 types with a realistic
 # distribution: lots of small-grained project/style rows, fewer stable
 # identity and preference rows. The total (2_000) stays small enough
@@ -103,9 +102,15 @@ def _select_adapters(adapters: str) -> tuple[Embedder, Reranker, int, str, str]:
     if adapters == "fake":
         return _HashEmbedder(), _LengthReranker(), FAKE_DIM, "hash-fake", "length-fake"
     if adapters == "real":
-        embedder = OllamaEmbedder(model_name=OLLAMA_MODEL, dim=OLLAMA_DIM, host=OLLAMA_HOST)
-        reranker = SentenceTransformersReranker()
-        return embedder, reranker, OLLAMA_DIM, f"ollama/{OLLAMA_MODEL}", reranker.model_name
+        embedder = FastEmbedEmbedder(model_name=FASTEMBED_EMBED_MODEL, dim=FASTEMBED_DIM)
+        reranker = FastEmbedReranker(model_name=FASTEMBED_RERANK_MODEL)
+        return (
+            embedder,
+            reranker,
+            FASTEMBED_DIM,
+            f"fastembed/{FASTEMBED_EMBED_MODEL}",
+            f"fastembed/{FASTEMBED_RERANK_MODEL}",
+        )
     raise SystemExit(f"unknown --adapters value: {adapters!r}")
 
 
@@ -182,7 +187,7 @@ async def _run(*, scale: int = 1, trials: int = TRIALS, adapters: str = "fake") 
                     ).fetchone()[0]
                 )
                 model = models_registry.register_embedding_model(
-                    vc.connection, name="ollama", dim=dim, activate=True
+                    vc.connection, name="fastembed", dim=dim, activate=True
                 )
                 now_base = 1_700_000_000
                 # Stagger capture timestamps so ``captured_at DESC`` gives
@@ -286,7 +291,7 @@ def _cli(argv: list[str] | None = None) -> int:
         "--adapters",
         choices=("fake", "real"),
         default="fake",
-        help="'real' requires Ollama nomic-embed-text + sentence-transformers cross-encoder",
+        help="'real' requires local fastembed ONNX model weights or an allowed first-run cache fill",
     )
     args = parser.parse_args(argv)
     return asyncio.run(_run(scale=args.scale, trials=args.trials, adapters=args.adapters))
