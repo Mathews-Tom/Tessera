@@ -64,15 +64,18 @@ def test_insert_dedups_on_same_agent_and_normalized_content(conn: sqlite3.Connec
 
 
 @pytest.mark.unit
-def test_insert_rejects_unsupported_facet_type(conn: sqlite3.Connection) -> None:
-    # V0.5-P4 activated ``compiled_notebook`` for writes; ``automation``
-    # is the remaining v0.5 reserved type that stays CHECK-permitted but
-    # write-rejected until V0.5-P5 ships the storage-only registry.
+def test_insert_rejects_unknown_facet_type(conn: sqlite3.Connection) -> None:
+    # V0.5-P5 activated the final v0.5 reserved type (``automation``).
+    # The writable vocabulary now closes the v0.5 set; any string
+    # outside that allowlist (a typo, a stale client, a future type
+    # that has not been activated yet) surfaces
+    # UnsupportedFacetTypeError at the storage boundary so a stale
+    # caller cannot smuggle a row past the CHECK constraint.
     with pytest.raises(facets.UnsupportedFacetTypeError):
         facets.insert(
             conn,
             agent_id=_agent_id(conn),
-            facet_type="automation",
+            facet_type="not_a_real_facet_type",
             content="x",
             source_tool="cli",
         )
@@ -240,11 +243,12 @@ def test_writable_facet_types_are_subset_of_schema_check() -> None:
 @pytest.mark.unit
 def test_writable_facet_types_match_active_v0_5_vocabulary() -> None:
     """V0.5-P2 unlocked ``agent_profile``; V0.5-P3 unlocked
-    ``verification_checklist`` and ``retrospective``; V0.5-P4 unlocks
-    ``compiled_notebook`` (the AgenticOS Playbook). ``automation``
-    is the remaining v0.5 reserved type that stays CHECK-permitted
-    but write-rejected until V0.5-P5 ships the storage-only
-    registry."""
+    ``verification_checklist`` and ``retrospective``; V0.5-P4
+    unlocked ``compiled_notebook`` (the AgenticOS Playbook); V0.5-P5
+    unlocks ``automation`` (ADR 0020 storage-only registry). The
+    writable set now closes the v0.5 vocabulary — every reserved
+    type is active. Any future facet type opens its own ADR + sub-
+    phase + activation flip."""
 
     assert (
         facets.V0_1_FACET_TYPES
@@ -255,8 +259,8 @@ def test_writable_facet_types_match_active_v0_5_vocabulary() -> None:
             "verification_checklist",
             "retrospective",
             "compiled_notebook",
+            "automation",
         }
         == facets.WRITABLE_FACET_TYPES
     )
-    assert "automation" not in facets.WRITABLE_FACET_TYPES
-    assert "automation" in facets.ALL_FACET_TYPES
+    assert facets.WRITABLE_FACET_TYPES == facets.ALL_FACET_TYPES

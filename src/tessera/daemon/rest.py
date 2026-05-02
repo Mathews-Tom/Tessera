@@ -254,6 +254,20 @@ def build_args_for_route(
             compile_args["limit"] = _coerce_int("limit", limit_raw)
         return "list_compile_sources", compile_args
 
+    if path == "/api/v1/automations" and http_method == "POST":
+        return "register_automation", _parse_json_body(body)
+
+    if path.startswith("/api/v1/automations/"):
+        # /api/v1/automations/<ulid>/runs POST records a run.
+        suffix = path[len("/api/v1/automations/") :]
+        if suffix.endswith("/runs") and http_method == "POST":
+            external_id = suffix[: -len("/runs")]
+            if not external_id or "/" in external_id:
+                raise RestError(404, "unknown_method", "unknown route")
+            run_args = _parse_json_body(body)
+            run_args["external_id"] = external_id
+            return "record_automation_run", run_args
+
     raise RestError(404, "unknown_method", "unknown route")
 
 

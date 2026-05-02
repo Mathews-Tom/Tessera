@@ -151,6 +151,18 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     "compiled_artifact_registered": frozenset(
         {"artifact_type", "compiler_version", "source_count"}
     ),
+    # Automation registry run record (V0.5-P5 / ADR 0020). The
+    # register path uses the standard ``facet_inserted`` op via
+    # ``vault.capture.capture``; this op covers the
+    # ``record_run`` mutation that updates ``last_run`` /
+    # ``last_result`` on an existing automation. ``result_bucket``
+    # is the canonical bucket (``success`` / ``partial`` /
+    # ``failure``) or ``"other"`` for free-form notes — caller
+    # prose never enters the audit payload (§S4 boundary).
+    # ``last_run_at`` is an ISO-8601 timestamp string the runner
+    # supplied; treated as a structural identifier of the run, not
+    # user content.
+    "automation_run_recorded": frozenset({"result_bucket", "last_run_at"}),
     # Compiled-artifact staleness (V0.5-P6 / ADR 0019 §Rationale 6).
     # Emitted once per compiled_artifacts row that flips from
     # ``is_stale = 0`` to ``is_stale = 1`` because one of its source

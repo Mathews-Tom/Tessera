@@ -330,6 +330,79 @@ def test_chain_full_walk_clean_with_compiled_staleness(
 
 
 @pytest.mark.security
+def test_chain_full_walk_clean_with_automation_runs(
+    open_vault: VaultConnection,
+) -> None:
+    """V0.5-P5 ship-gate companion. A vault that has registered
+    automations and accumulated ``automation_run_recorded`` rows
+    walks the chain cleanly. The cascade row's payload
+    (``result_bucket`` + ``last_run_at``) lands in the chain
+    without disturbing the prev_hash → row_hash linkage."""
+
+    from tessera.vault import agent_profiles as vault_agent_profiles
+    from tessera.vault import automations as vault_automations
+
+    agent_id = _seed_agent(open_vault)
+    before = verify_chain(open_vault.connection).total_rows
+    profile_id, _ = vault_agent_profiles.register(
+        open_vault.connection,
+        agent_id=agent_id,
+        content="profile-auto",
+        metadata={
+            "purpose": "summarize",
+            "inputs": ["x"],
+            "outputs": ["y"],
+            "cadence": "weekly",
+            "skill_refs": [],
+        },
+        source_tool="cli",
+    )
+    auto_id, _ = vault_automations.register(
+        open_vault.connection,
+        agent_id=agent_id,
+        content="Daily digest automation",
+        metadata={
+            "agent_ref": profile_id,
+            "trigger_spec": "cron 0 9 * * *",
+            "cadence": "daily 09:00",
+            "runner": "cron",
+        },
+        source_tool="cli",
+    )
+    vault_automations.record_run(
+        open_vault.connection,
+        agent_id=agent_id,
+        external_id=auto_id,
+        last_run="2026-05-02T09:00:00Z",
+        last_result="success",
+    )
+    vault_automations.record_run(
+        open_vault.connection,
+        agent_id=agent_id,
+        external_id=auto_id,
+        last_run="2026-05-03T09:00:00Z",
+        last_result="failure",
+    )
+    outcome = verify_chain(open_vault.connection)
+    assert outcome.head is not None
+    rows = open_vault.connection.execute(
+        "SELECT op, id, row_hash FROM audit_log ORDER BY id ASC"
+    ).fetchall()
+    ops = [str(r[0]) for r in rows]
+    # Two register operations (profile + automation) plus two run
+    # records. Each run record produces one cascade row — non-
+    # idempotent because each call is a genuine state transition
+    # with a fresh timestamp, unlike the staleness flagger.
+    assert ops.count("automation_run_recorded") == 2
+    assert "facet_inserted" in ops
+    last_row_id = int(rows[-1][1])
+    last_row_hash = str(rows[-1][2])
+    assert outcome.head.row_id == last_row_id
+    assert outcome.head.row_hash == last_row_hash
+    assert outcome.total_rows > before
+
+
+@pytest.mark.security
 def test_chain_full_walk_clean(open_vault: VaultConnection) -> None:
     agent_id = _seed_agent(open_vault)
     # Mix of ops to prove the walker handles different payloads.

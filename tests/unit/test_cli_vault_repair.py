@@ -71,11 +71,14 @@ def test_repair_embeds_filters_by_facet_type(open_vault: VaultConnection) -> Non
 
 
 @pytest.mark.unit
-def test_repair_embeds_rejects_unsupported_facet_type(open_vault: VaultConnection) -> None:
-    # ``automation`` is the remaining v0.5 reserved type that is not
-    # writable until V0.5-P5 ships the storage-only registry.
+def test_repair_embeds_rejects_unknown_facet_type(open_vault: VaultConnection) -> None:
+    # V0.5-P5 closed the v0.5 writable vocabulary by activating
+    # ``automation``. An unknown facet type (typo, stale client,
+    # unactivated future type) still surfaces as unsupported so the
+    # repair path cannot drive embeds against a vocabulary the
+    # storage layer never accepted.
     with pytest.raises(ValueError, match="unsupported"):
-        cli_vault.repair_embeds(open_vault.connection, facet_type="automation")
+        cli_vault.repair_embeds(open_vault.connection, facet_type="not_a_real_facet_type")
 
 
 @pytest.mark.unit

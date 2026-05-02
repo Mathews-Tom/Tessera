@@ -56,6 +56,7 @@ from tessera.retrieval.pipeline import PipelineContext, RecallDegradedReason, Re
 from tessera.retrieval.pipeline import recall as _pipeline_recall
 from tessera.vault import agent_profiles as vault_agent_profiles
 from tessera.vault import audit as vault_audit
+from tessera.vault import automations as vault_automations
 from tessera.vault import capture as vault_capture
 from tessera.vault import compiled as vault_compiled
 from tessera.vault import facets as vault_facets
@@ -109,6 +110,8 @@ LIST_CHECKS_FOR_AGENT_RESPONSE_BUDGET: Final[int] = 4_096
 REGISTER_COMPILED_ARTIFACT_RESPONSE_BUDGET: Final[int] = 512
 GET_COMPILED_ARTIFACT_RESPONSE_BUDGET: Final[int] = 6_000
 LIST_COMPILE_SOURCES_RESPONSE_BUDGET: Final[int] = 6_000
+REGISTER_AUTOMATION_RESPONSE_BUDGET: Final[int] = 512
+RECORD_AUTOMATION_RUN_RESPONSE_BUDGET: Final[int] = 256
 
 # Compile target string bound. Targets are short slugs (e.g.,
 # ``playbook_main``); 128 chars is a generous ceiling that still
@@ -719,6 +722,64 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
         },
         response_budget_tokens=LIST_COMPILE_SOURCES_RESPONSE_BUDGET,
     ),
+    ToolContract(
+        name="register_automation",
+        description=(
+            "Register an automation facet — the storage-only record of a "
+            "scheduled-or-triggered task that a caller-side runner (Claude "
+            "Code /schedule, OpenClaw HEARTBEAT, cron, systemd, GitHub "
+            "Actions, custom shell loop) executes. Tessera registers; "
+            "runners run (ADR 0020 boundary). Required args: content, "
+            "metadata (agent_ref, trigger_spec, cadence, runner). Optional "
+            "metadata: last_run (ISO-8601), last_result. There is no "
+            "scheduler runtime, no outbound trigger, no in-process timer."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "maxLength": _MAX_CONTENT_CHARS},
+                "metadata": {
+                    "type": "object",
+                    "properties": {
+                        "agent_ref": {"type": "string", "pattern": _ULID_PATTERN.pattern},
+                        "trigger_spec": {"type": "string"},
+                        "cadence": {"type": "string"},
+                        "runner": {"type": "string"},
+                        "last_run": {"type": "string"},
+                        "last_result": {"type": "string"},
+                    },
+                    "required": ["agent_ref", "trigger_spec", "cadence", "runner"],
+                    "additionalProperties": False,
+                },
+                "source_tool": {"type": "string", "pattern": _SOURCE_TOOL_PATTERN.pattern},
+            },
+            "required": ["content", "metadata"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=REGISTER_AUTOMATION_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="record_automation_run",
+        description=(
+            "Update last_run + last_result on an existing automation after the "
+            "runner fires. The runner is the source of truth for run history; "
+            "Tessera stores the receipt. Required args: external_id (ULID of the "
+            "automation), last_run (ISO-8601 timestamp), last_result (free-form, "
+            "or one of 'success' | 'partial' | 'failure'). Cross-agent updates "
+            "are blocked at the storage layer."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "external_id": {"type": "string", "pattern": _ULID_PATTERN.pattern},
+                "last_run": {"type": "string"},
+                "last_result": {"type": "string"},
+            },
+            "required": ["external_id", "last_run", "last_result"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=RECORD_AUTOMATION_RUN_RESPONSE_BUDGET,
+    ),
 )
 
 
@@ -966,6 +1027,19 @@ class RegisterCompiledArtifactResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class RegisterAutomationResponse:
+    external_id: str
+    is_new: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RecordAutomationRunResponse:
+    external_id: str
+    last_run: str
+    last_result: str
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledArtifactView:
     """Full compiled-artifact payload returned by ``get_compiled_artifact``."""
 
@@ -1032,6 +1106,21 @@ async def capture(
         # row whose metadata fails ``validate_metadata`` on retrieval.
         raise ValidationError(
             "agent_profile facets must be written via register_agent_profile, "
+            "not the generic capture tool"
+        )
+    if facet_type == "automation":
+        # ADR 0020: same structural concern as agent_profile —
+        # automation carries a closed metadata contract (agent_ref,
+        # trigger_spec, cadence, runner, optional last_run /
+        # last_result) that ``vault.automations.validate_metadata``
+        # enforces. The generic capture path skips that validation,
+        # so a write-scoped caller could plant an automation with a
+        # malformed shape that later breaks ``_row_to_automation``
+        # for every read. The storage-only registry is only useful
+        # if every stored row is parseable; routing writes
+        # exclusively through ``register_automation`` upholds that.
+        raise ValidationError(
+            "automation facets must be written via register_automation, "
             "not the generic capture tool"
         )
     _validate_metadata(metadata)
@@ -1626,6 +1715,98 @@ async def record_retrospective(
     except vault_facets.UnknownAgentError as exc:
         raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
     return RecordRetrospectiveResponse(external_id=external_id, is_new=is_new)
+
+
+async def register_automation(
+    tctx: ToolContext,
+    *,
+    content: str,
+    metadata: dict[str, Any],
+    source_tool: str | None = None,
+) -> RegisterAutomationResponse:
+    """MCP ``register_automation`` — create an ``automation`` facet.
+
+    Write scope on ``automation`` is required. The ``agent_ref`` in
+    metadata must be the ULID of an ``agent_profile`` facet owned by
+    the same agent — the cross-agent guard runs at the MCP boundary
+    so a write-scoped caller cannot register an automation that
+    references another agent's profile.
+
+    Tessera **stores** the automation; the runner identified by
+    ``metadata.runner`` (cron, /schedule, HEARTBEAT, etc.) executes
+    it. There is no scheduler runtime, no outbound trigger, no
+    in-process timer (ADR 0020 §Boundary statement).
+    """
+
+    _validate_length("content", content, _MAX_CONTENT_CHARS, allow_empty=False)
+    if not isinstance(metadata, dict):
+        raise ValidationError("metadata must be an object")
+    resolved_source = source_tool or tctx.verified.client_name
+    _validate_source_tool(resolved_source)
+    _require_scope(tctx, op="write", facet_type="automation")
+    agent_ref = metadata.get("agent_ref")
+    if isinstance(agent_ref, str):
+        _enforce_same_agent_profile_ref(tctx, agent_ref)
+    try:
+        external_id, is_new = vault_automations.register(
+            tctx.conn,
+            agent_id=tctx.verified.agent_id,
+            content=content,
+            metadata=metadata,
+            source_tool=resolved_source,
+        )
+    except vault_automations.InvalidAutomationMetadataError as exc:
+        raise ValidationError(str(exc)) from exc
+    except vault_facets.UnknownAgentError as exc:
+        raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
+    return RegisterAutomationResponse(external_id=external_id, is_new=is_new)
+
+
+async def record_automation_run(
+    tctx: ToolContext,
+    *,
+    external_id: str,
+    last_run: str,
+    last_result: str,
+) -> RecordAutomationRunResponse:
+    """MCP ``record_automation_run`` — update last_run/last_result on an
+    existing automation.
+
+    Write scope on ``automation`` is required. Tessera does not parse
+    ``last_run`` beyond the ISO-8601 shape check; the runner is the
+    source of truth for run history. Cross-agent updates are blocked
+    at the storage layer (the SQL filter on ``agent_id`` raises
+    :class:`UnknownAutomationError` rather than returning a no-op).
+
+    Per V0.5-P5 §S4 boundary, the audit row carries a bucketed
+    ``result_bucket`` (``success`` / ``partial`` / ``failure`` /
+    ``other``) and the ISO-8601 timestamp; free-form caller prose
+    never enters the audit payload.
+    """
+
+    _validate_ulid(external_id)
+    _require_scope(tctx, op="write", facet_type="automation")
+    try:
+        vault_automations.record_run(
+            tctx.conn,
+            agent_id=tctx.verified.agent_id,
+            external_id=external_id,
+            last_run=last_run,
+            last_result=last_result,
+        )
+    except vault_automations.UnknownAutomationError as exc:
+        # Cross-agent reads return null elsewhere on the surface; here
+        # we surface as a validation error because the caller named a
+        # specific external_id and we owe them an explicit denial
+        # rather than a silent no-op.
+        raise ValidationError(str(exc)) from exc
+    except vault_automations.InvalidAutomationMetadataError as exc:
+        raise ValidationError(str(exc)) from exc
+    return RecordAutomationRunResponse(
+        external_id=external_id,
+        last_run=last_run,
+        last_result=last_result,
+    )
 
 
 async def list_checks_for_agent(
@@ -2256,8 +2437,10 @@ __all__ = [
     "PersonMatch",
     "RecallMatchView",
     "RecallResponse",
+    "RecordAutomationRunResponse",
     "RecordRetrospectiveResponse",
     "RegisterAgentProfileResponse",
+    "RegisterAutomationResponse",
     "RegisterChecklistResponse",
     "RegisterCompiledArtifactResponse",
     "ResolvePersonResponse",
@@ -2284,8 +2467,10 @@ __all__ = [
     "list_people",
     "list_skills",
     "recall",
+    "record_automation_run",
     "record_retrospective",
     "register_agent_profile",
+    "register_automation",
     "register_checklist",
     "register_compiled_artifact",
     "resolve_person",
