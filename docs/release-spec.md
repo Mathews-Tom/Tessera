@@ -254,8 +254,9 @@ Per-item status is annotated below. Implementation lands in the v0.3 commit seri
 
 ### Scope
 
-**New facet activated**
+**New facets activated**
 - `compiled_notebook` — write-time compiled artifact. Sources: user-tagged `project` and `skill` facets. Output: synthesized markdown artifact in `compiled_artifacts` table.
+- `agent_profile` (V0.5-P2, ADR 0017) — recallable description of an autonomous worker: `purpose`, `inputs`, `outputs`, `cadence`, `skill_refs`, optional `verification_ref`. Linked to its authentication principal via the new nullable `agents.profile_facet_external_id` FK. Three new MCP tools (`register_agent_profile`, `get_agent_profile`, `list_agent_profiles`) and parallel REST routes ship under `read:agent_profile` / `write:agent_profile` scopes. `recall` defaults include `agent_profile` so the SWCR cross-facet bundle answers "what is the digest agent doing?" by surfacing the profile alongside related project / skill / verification facets without an explicit filter. The `verification_checklist`, `retrospective`, and `automation` types are reserved in the same v3 → v4 schema CHECK extension; activation lands in V0.5-P3 / V0.5-P5.
 
 **Write-time compilation**
 - Compilation agent reads source facets, synthesizes narrative artifact

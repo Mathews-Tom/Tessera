@@ -204,6 +204,24 @@ def build_args_for_route(
             raise RestError(400, "invalid_input", "mention must be a string")
         return "resolve_person", {"mention": mention}
 
+    if path == "/api/v1/agent_profiles" and http_method == "POST":
+        return "register_agent_profile", _parse_json_body(body)
+
+    if path == "/api/v1/agent_profiles" and http_method == "GET":
+        profile_args: dict[str, Any] = {}
+        if (limit_raw := _single(qs, "limit")) is not None:
+            profile_args["limit"] = _coerce_int("limit", limit_raw)
+        if (since_raw := _single(qs, "since")) is not None:
+            profile_args["since"] = _coerce_int("since", since_raw)
+        return "list_agent_profiles", profile_args
+
+    if path.startswith("/api/v1/agent_profiles/"):
+        external_id = path[len("/api/v1/agent_profiles/") :]
+        if not external_id or "/" in external_id:
+            raise RestError(404, "unknown_method", "unknown route")
+        if http_method == "GET":
+            return "get_agent_profile", {"external_id": external_id}
+
     raise RestError(404, "unknown_method", "unknown route")
 
 

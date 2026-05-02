@@ -242,6 +242,7 @@ INSERT INTO _meta VALUES ('vault_id', /* ULID */);
 - `facet_type` CHECK constraint lists all facets (v0.1 + reserved). Adding a v0.3 facet type is a small migration, not a schema rewrite.
 - `mode` column is set on every facet. v0.1 always writes `query_time`. Write-time and hybrid are reserved for v0.5. The column exists now so v0.5 is an additive change.
 - `volatility` column is set on every facet (V0.5-P1, ADR 0016). `persistent` is the default and what every v0.4 vault carries after the v3→v4 migration; `session` and `ephemeral` are caller opt-ins for AgenticOS Layer 4 working memory. SWCR weights freshness by a closed-form decay; an idle-time sweep soft-deletes expired rows so the audit trail captures the lifecycle.
+- `agents.profile_facet_external_id` (V0.5-P2, ADR 0017) is a nullable FK pointing at the agent's canonical `agent_profile` facet. The `agents` table remains the JWT subject store; the linked facet carries the recallable profile context. The two are linked, not merged: every auth-pipeline read goes against `agents`, every recall-pipeline read goes against the facet, and a per-row scope check on `read:agent_profile` keeps one tool from observing another tool's profile metadata.
 - `compiled_artifacts` table is reserved. v0.1 never writes to it. v0.5 populates it from the write-time compiler. Shipping the table empty is a 50-byte SQL cost; retrofitting it later is a migration.
 - `source_tool` on every facet answers "which AI tool captured this?" — important for diagnosing bad captures later.
 - Soft delete preserves audit trail; hard delete happens only via explicit `vault vacuum` command.
@@ -258,6 +259,9 @@ Six tools. The heavy lifting is done by `recall`, which is cross-facet by defaul
 | `list_facets` | `facet_type: str`, `limit: int = 20`, `since: int?` | array of summaries | 2048 | Browse mode |
 | `stats` | (none) | `{embed_health, by_source, vault_size, active_models, facet_count}` | 1024 | Corpus overview |
 | `forget` | `external_id: str`, `reason: str?` | `{external_id, facet_type, deleted_at}` | 256 | Soft delete; writes audit entry |
+| `register_agent_profile` | `content: str`, `metadata: {purpose, inputs[], outputs[], cadence, skill_refs[], verification_ref?}`, `source_tool: str?`, `set_active_link: bool = true` | `{external_id, is_new, is_active_link}` | 512 | V0.5-P2 / ADR 0017. Inserts an `agent_profile` facet, validates the structured metadata, and (by default) updates `agents.profile_facet_external_id` to point at it. |
+| `get_agent_profile` | `external_id: str` | `{profile: {external_id, content, purpose, inputs, outputs, cadence, skill_refs, verification_ref, captured_at, embed_status, is_active_link, truncated, token_count}}` or `{profile: null}` | 4096 | V0.5-P2. Cross-agent reads return null even when the ULID is leaked. |
+| `list_agent_profiles` | `limit: int = 20`, `since: int?` | array of summaries (`external_id, purpose, cadence, skill_refs, captured_at, is_active_link`) | 4096 | V0.5-P2. Ordered by `captured_at DESC, id DESC` so the most recent registration lands first. |
 
 **Why `recall` is the load-bearing tool.** Almost every real user query crosses facets. Drafting a LinkedIn post needs style (LinkedIn voice) + workflow (5-act) + project (what the post is about) + preference (length, no emojis). A Reddit comment needs style (Reddit register) + preference (4-sentence cap) + project (topic context). The default retrieval mode has to be cross-facet or the product doesn't land for its target user.
 

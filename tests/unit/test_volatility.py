@@ -16,6 +16,8 @@ surface guarantees on top of that schema.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 import sqlcipher3
 
@@ -352,9 +354,14 @@ def test_v3_to_v4_adds_volatility_column_and_index(open_vault: VaultConnection) 
 
 
 @pytest.mark.unit
-def test_v3_to_v4_migration_step_runs_on_v3_vault(tmp_path) -> None:
+def test_v3_to_v4_migration_step_runs_on_v3_vault(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Forward migration from a v3 vault leaves rows defaulting to persistent."""
 
+    import tessera.migration.runner as runner_module
+    import tessera.vault.connection as connection_module
+    import tessera.vault.schema as schema_module
     from tessera.migration.runner import bootstrap, upgrade
     from tessera.vault.connection import BINARY_SCHEMA_VERSION
     from tessera.vault.encryption import derive_key, new_salt
@@ -362,33 +369,24 @@ def test_v3_to_v4_migration_step_runs_on_v3_vault(tmp_path) -> None:
     # Force the bootstrap to land at v3 by temporarily pinning the
     # binary version. The runner's upgrade step list owns the v3→v4
     # transition, so the second pass with the real binary runs it.
+    # Routing the patches through ``monkeypatch.setattr`` keeps mypy
+    # from objecting to direct assignment against ``Final`` constants
+    # while preserving the rollback semantics of the original try /
+    # finally.
     salt = new_salt()
     salt_path = tmp_path / "vault.db.salt"
     salt_path.write_bytes(salt)
     vault_path = tmp_path / "vault.db"
 
-    import tessera.migration.runner as runner_module
-    import tessera.vault.connection as connection_module
-    import tessera.vault.schema as schema_module
-
-    # Bootstrap a v3 vault. Patching SCHEMA_VERSION + BINARY_SCHEMA_VERSION
-    # mirrors how test_migration_runner.py rolls back to earlier versions.
-    original_schema_version = schema_module.SCHEMA_VERSION
-    original_binary_version = connection_module.BINARY_SCHEMA_VERSION
-    schema_module.SCHEMA_VERSION = 3
-    connection_module.BINARY_SCHEMA_VERSION = 3
-    runner_module.SCHEMA_VERSION = 3
-    runner_module.BINARY_SCHEMA_VERSION = 3
-    try:
-        passphrase = bytearray(b"correct horse battery staple")
-        k = derive_key(passphrase, salt)
-        bootstrap(vault_path, k)
-        k.wipe()
-    finally:
-        schema_module.SCHEMA_VERSION = original_schema_version
-        connection_module.BINARY_SCHEMA_VERSION = original_binary_version
-        runner_module.SCHEMA_VERSION = original_schema_version
-        runner_module.BINARY_SCHEMA_VERSION = original_binary_version
+    monkeypatch.setattr(schema_module, "SCHEMA_VERSION", 3)
+    monkeypatch.setattr(connection_module, "BINARY_SCHEMA_VERSION", 3)
+    monkeypatch.setattr(runner_module, "SCHEMA_VERSION", 3)
+    monkeypatch.setattr(runner_module, "BINARY_SCHEMA_VERSION", 3)
+    passphrase = bytearray(b"correct horse battery staple")
+    k = derive_key(passphrase, salt)
+    bootstrap(vault_path, k)
+    k.wipe()
+    monkeypatch.undo()
 
     # Now the binary is back at v4 and upgrade runs the v3→v4 step list.
     passphrase = bytearray(b"correct horse battery staple")

@@ -46,19 +46,39 @@ def test_validate_length_rejects_non_string() -> None:
 
 
 @pytest.mark.unit
-def test_validate_facet_type_accepts_v0_3_vocab() -> None:
-    # v0.3 unlocks ``person`` and ``skill`` alongside the original five
-    # v0.1 types. The MCP boundary must accept every writable type.
-    for t in ("identity", "preference", "workflow", "project", "style", "person", "skill"):
+def test_validate_facet_type_accepts_active_v0_5_vocab() -> None:
+    # V0.5-P2 unlocks ``agent_profile`` alongside the v0.3 set
+    # (``person`` + ``skill``) and the v0.1 five. The MCP boundary
+    # must accept every writable type.
+    for t in (
+        "identity",
+        "preference",
+        "workflow",
+        "project",
+        "style",
+        "person",
+        "skill",
+        "agent_profile",
+    ):
         _validate_facet_type(t)
 
 
 @pytest.mark.unit
-def test_validate_facet_type_rejects_compiled_notebook_until_v0_5() -> None:
-    # ``compiled_notebook`` is reserved in the schema CHECK but is not
-    # writable until v0.5 ships write-time compilation.
+@pytest.mark.parametrize(
+    "reserved",
+    [
+        "compiled_notebook",
+        "verification_checklist",
+        "retrospective",
+        "automation",
+    ],
+)
+def test_validate_facet_type_rejects_reserved_until_their_subphase(reserved: str) -> None:
+    # These types are reserved in the schema CHECK so tokens issued at
+    # v0.5-P2 round-trip a read scope on them, but the write surface
+    # must reject the type until its sub-phase activates the path.
     with pytest.raises(ValidationError, match="not in"):
-        _validate_facet_type("compiled_notebook")
+        _validate_facet_type(reserved)
 
 
 @pytest.mark.unit

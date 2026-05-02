@@ -1,12 +1,16 @@
 """v4 vault schema per docs/system-design.md §Vault schema and §Failure taxonomy.
 
-Schema v4 (V0.5-P1, ADR 0016) adds a ``volatility`` column to ``facets``
-covering AgenticOS Layer 4 (Memory) lifecycles: ``persistent``,
-``session``, and ``ephemeral``. The column is orthogonal to facet type
-so a row of any type can be marked working memory without fragmenting
-the type vocabulary. SWCR consumes the column through a closed-form
-``freshness(f)`` term; auto-compaction sweeps non-persistent rows after
-their TTL expires via the existing soft-delete + audit pipeline.
+Schema v4 absorbs the v0.5 reconciliation in cumulative form. V0.5-P1
+(ADR 0016) added a ``volatility`` column to ``facets`` covering
+AgenticOS Layer 4 (Memory) lifecycles. V0.5-P2 (ADR 0017) reserves the
+remaining v0.5 facet types in the ``facet_type`` CHECK constraint
+(``agent_profile``, ``verification_checklist``, ``retrospective``,
+``automation``) and adds a nullable ``profile_facet_external_id`` FK
+column to ``agents`` that points at the canonical agent_profile facet
+for each authentication principal. Reserving every v0.5 type in the
+CHECK now keeps subsequent sub-phases (V0.5-P3, V0.5-P5) from each
+having to re-run the SQLite table-recreate dance — they only need to
+flip Python-layer allowlists to activate writes.
 
 Schema v3 activated the v0.3 People + Skills surface: ``facets`` carries
 an optional ``disk_path`` for skills synced to disk, the ``people`` and
@@ -50,11 +54,13 @@ _TABLES: Final[tuple[str, ...]] = (
     """,
     """
     CREATE TABLE IF NOT EXISTS agents (
-        id           INTEGER PRIMARY KEY,
-        external_id  TEXT NOT NULL UNIQUE,
-        name         TEXT NOT NULL,
-        created_at   INTEGER NOT NULL,
-        metadata     TEXT NOT NULL DEFAULT '{}'
+        id                          INTEGER PRIMARY KEY,
+        external_id                 TEXT NOT NULL UNIQUE,
+        name                        TEXT NOT NULL,
+        created_at                  INTEGER NOT NULL,
+        metadata                    TEXT NOT NULL DEFAULT '{}',
+        profile_facet_external_id   TEXT REFERENCES facets(external_id)
+            DEFERRABLE INITIALLY DEFERRED
     )
     """,
     """
@@ -77,7 +83,9 @@ _TABLES: Final[tuple[str, ...]] = (
         agent_id               INTEGER NOT NULL REFERENCES agents(id),
         facet_type             TEXT NOT NULL CHECK (facet_type IN
             ('identity', 'preference', 'workflow', 'project', 'style',
-             'person', 'skill', 'compiled_notebook')),
+             'person', 'skill', 'compiled_notebook',
+             'agent_profile', 'verification_checklist',
+             'retrospective', 'automation')),
         content                TEXT NOT NULL,
         content_hash           TEXT NOT NULL,
         mode                   TEXT NOT NULL DEFAULT 'query_time'

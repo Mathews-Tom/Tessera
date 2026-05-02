@@ -723,3 +723,211 @@ async def test_resolve_person_rejects_empty_mention(
     )
     with pytest.raises(mcp.ValidationError, match="must not be empty"):
         await mcp.resolve_person(tctx, mention="")
+
+
+# ---- V0.5-P2 agent_profile tools ---------------------------------------
+
+
+_V0_5_P2_SCOPES: tuple[str, ...] = (
+    "style",
+    "project",
+    "skill",
+    "person",
+    "agent_profile",
+)
+
+
+def _profile_metadata() -> dict[str, object]:
+    return {
+        "purpose": "summarize daily standups",
+        "inputs": ["standup notes"],
+        "outputs": ["weekly digest"],
+        "cadence": "weekly",
+        "skill_refs": [],
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_mcp_capture_rejects_agent_profile_facet_type(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """ADR 0017: ``agent_profile`` writes go through
+    ``register_agent_profile`` so the structured-metadata contract
+    cannot be bypassed by a write-scoped caller targeting the
+    generic ``capture`` tool."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P2_SCOPES, scope_write=_V0_5_P2_SCOPES
+    )
+    with pytest.raises(mcp.ValidationError, match="register_agent_profile"):
+        await mcp.capture(
+            tctx,
+            content="bypass attempt",
+            facet_type="agent_profile",
+            metadata={"any_shape": "would otherwise poison reads"},
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_agent_profile_creates_facet_and_active_link(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P2_SCOPES, scope_write=_V0_5_P2_SCOPES
+    )
+    resp = await mcp.register_agent_profile(
+        tctx, content="The digest agent", metadata=_profile_metadata()
+    )
+    assert resp.is_new is True
+    assert resp.is_active_link is True
+    assert len(resp.external_id) == 26
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_agent_profile_requires_write_scope(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault,
+        vault_path,
+        scope_read=_V0_5_P2_SCOPES,
+        scope_write=("style", "project"),
+    )
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.register_agent_profile(tctx, content="denied", metadata=_profile_metadata())
+    assert exc.value.required_facet_type == "agent_profile"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_agent_profile_rejects_invalid_metadata(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P2_SCOPES, scope_write=_V0_5_P2_SCOPES
+    )
+    bad = _profile_metadata()
+    del bad["purpose"]
+    with pytest.raises(mcp.ValidationError, match="purpose"):
+        await mcp.register_agent_profile(tctx, content="x", metadata=bad)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_register_agent_profile_without_link_leaves_pointer_unset(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P2_SCOPES, scope_write=_V0_5_P2_SCOPES
+    )
+    resp = await mcp.register_agent_profile(
+        tctx,
+        content="staged",
+        metadata=_profile_metadata(),
+        set_active_link=False,
+    )
+    assert resp.is_active_link is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_agent_profile_returns_view(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P2_SCOPES, scope_write=_V0_5_P2_SCOPES
+    )
+    reg = await mcp.register_agent_profile(
+        tctx, content="profile body", metadata=_profile_metadata()
+    )
+    view = await mcp.get_agent_profile(tctx, external_id=reg.external_id)
+    assert view is not None
+    assert view.purpose.startswith("summarize")
+    assert view.is_active_link is True
+    assert view.cadence == "weekly"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_agent_profile_returns_none_for_other_agent(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    """Cross-agent reads must return None even when the ULID is leaked."""
+
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P2_SCOPES, scope_write=_V0_5_P2_SCOPES
+    )
+    reg = await mcp.register_agent_profile(
+        tctx, content="owned by agent A", metadata=_profile_metadata()
+    )
+    # Seed a second agent whose token has the same scope.
+    open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('01OTHER', 'b', 0)"
+    )
+    other_id = int(
+        open_vault.connection.execute(
+            "SELECT id FROM agents WHERE external_id='01OTHER'"
+        ).fetchone()[0]
+    )
+    issued_other = tokens.issue(
+        open_vault.connection,
+        agent_id=other_id,
+        client_name="cli",
+        token_class="session",
+        scope=build_scope(read=_V0_5_P2_SCOPES, write=_V0_5_P2_SCOPES),
+        now_epoch=1_000_000,
+    )
+    other_verified = tokens.verify_and_touch(
+        open_vault.connection,
+        raw_token=issued_other.raw_token,
+        now_epoch=1_000_001,
+    )
+    other_tctx = mcp.ToolContext(
+        conn=open_vault.connection,
+        verified=other_verified,
+        vault_path=vault_path,
+        pipeline=tctx.pipeline,
+        clock=lambda: 1_000_100,
+    )
+    assert await mcp.get_agent_profile(other_tctx, external_id=reg.external_id) is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_agent_profile_returns_none_for_missing_id(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P2_SCOPES, scope_write=_V0_5_P2_SCOPES
+    )
+    assert await mcp.get_agent_profile(tctx, external_id="01AAAAAAAAAAAAAAAAAAAAAAAA") is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_agent_profiles_orders_by_capture_desc(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(
+        open_vault, vault_path, scope_read=_V0_5_P2_SCOPES, scope_write=_V0_5_P2_SCOPES
+    )
+    first = await mcp.register_agent_profile(tctx, content="v1", metadata=_profile_metadata())
+    second = await mcp.register_agent_profile(tctx, content="v2", metadata=_profile_metadata())
+    resp = await mcp.list_agent_profiles(tctx)
+    ordered = [item.external_id for item in resp.items]
+    assert ordered.index(second.external_id) < ordered.index(first.external_id)
+    assert any(item.is_active_link for item in resp.items)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_list_agent_profiles_requires_read_scope(
+    open_vault: VaultConnection, vault_path: Path
+) -> None:
+    tctx = await _bootstrap(open_vault, vault_path, scope_read=("style", "project"), scope_write=())
+    with pytest.raises(mcp.ScopeDenied) as exc:
+        await mcp.list_agent_profiles(tctx)
+    assert exc.value.required_facet_type == "agent_profile"

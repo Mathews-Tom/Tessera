@@ -219,6 +219,60 @@ Response: `{matches: [...], is_exact: bool}`. `is_exact: true` when there is a s
 
 Required scope: `read` on `person`.
 
+### `POST /api/v1/agent_profiles`
+
+Register an `agent_profile` facet (V0.5-P2 / ADR 0017). Validates the structured metadata shape and, by default, repoints `agents.profile_facet_external_id` at the new facet so subsequent `recall` calls surface it as the agent's canonical profile.
+
+```bash
+curl -s -X POST 'http://127.0.0.1:5710/api/v1/agent_profiles' \
+     -H "Authorization: Bearer ${TESSERA_TOKEN}" \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "content": "The digest agent compiles weekly engineering updates.",
+       "metadata": {
+         "purpose": "summarize standups into a weekly digest",
+         "inputs": ["daily standup notes"],
+         "outputs": ["weekly digest markdown"],
+         "cadence": "weekly",
+         "skill_refs": []
+       }
+     }'
+```
+
+Body: `content` (required, ≤ 65 536 chars), `metadata` (required object: `purpose`, `inputs[]`, `outputs[]`, `cadence`, `skill_refs[]`, optional `verification_ref`), `source_tool` (optional, defaults to the capability's client name), `set_active_link` (optional bool, default `true`).
+
+Response: `{external_id, is_new, is_active_link}`.
+
+Required scope: `write` on `agent_profile`.
+
+### `GET /api/v1/agent_profiles`
+
+List the calling agent's profile facets, ordered by capture time descending.
+
+```bash
+curl -s 'http://127.0.0.1:5710/api/v1/agent_profiles?limit=20' \
+     -H "Authorization: Bearer ${TESSERA_TOKEN}"
+```
+
+Query params: `limit` (optional, default 20, max 100), `since` (optional epoch).
+
+Response: `{items: [{external_id, purpose, cadence, skill_refs, captured_at, is_active_link}], truncated, total_tokens}`.
+
+Required scope: `read` on `agent_profile`.
+
+### `GET /api/v1/agent_profiles/<external_id>`
+
+Fetch one agent_profile by external_id. Cross-agent reads return `{profile: null}` even when the ULID is leaked.
+
+```bash
+curl -s 'http://127.0.0.1:5710/api/v1/agent_profiles/01HXY...' \
+     -H "Authorization: Bearer ${TESSERA_TOKEN}"
+```
+
+Response: `{profile: {external_id, content, purpose, inputs, outputs, cadence, skill_refs, verification_ref, captured_at, embed_status, is_active_link, truncated, token_count}}` or `{profile: null}` when no live profile matches.
+
+Required scope: `read` on `agent_profile`.
+
 ## Recipes
 
 ### Pre-prompt hook (Claude Code)

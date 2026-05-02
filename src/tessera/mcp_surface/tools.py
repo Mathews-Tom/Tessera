@@ -54,6 +54,7 @@ from tessera.observability.events import EventLog
 from tessera.retrieval.budget import BudgetedItem, apply_budget, count_tokens, truncate_snippet
 from tessera.retrieval.pipeline import PipelineContext, RecallDegradedReason, RecallResult
 from tessera.retrieval.pipeline import recall as _pipeline_recall
+from tessera.vault import agent_profiles as vault_agent_profiles
 from tessera.vault import audit as vault_audit
 from tessera.vault import capture as vault_capture
 from tessera.vault import facets as vault_facets
@@ -96,6 +97,9 @@ GET_SKILL_RESPONSE_BUDGET: Final[int] = 4_096
 LIST_SKILLS_RESPONSE_BUDGET: Final[int] = 2_048
 RESOLVE_PERSON_RESPONSE_BUDGET: Final[int] = 1_024
 LIST_PEOPLE_RESPONSE_BUDGET: Final[int] = 2_048
+REGISTER_AGENT_PROFILE_RESPONSE_BUDGET: Final[int] = 512
+GET_AGENT_PROFILE_RESPONSE_BUDGET: Final[int] = 4_096
+LIST_AGENT_PROFILES_RESPONSE_BUDGET: Final[int] = 4_096
 
 # v0.3 tool input bounds. Skill names are user-visible identifiers, so
 # we cap them well below content; descriptions sit between names and
@@ -104,6 +108,11 @@ LIST_PEOPLE_RESPONSE_BUDGET: Final[int] = 2_048
 _MAX_SKILL_NAME_CHARS: Final[int] = 256
 _MAX_SKILL_DESCRIPTION_CHARS: Final[int] = 1_024
 _MAX_MENTION_CHARS: Final[int] = 256
+
+# Agent profile bounds. Profile content is the human-readable narrative;
+# the structured metadata limits live in :mod:`tessera.vault.agent_profiles`
+# so this boundary only enforces an outer envelope before delegation.
+_MAX_AGENT_PROFILE_CONTENT_CHARS: Final[int] = _MAX_CONTENT_CHARS
 
 # ULID shape: 26 chars Crockford base32. We accept the canonical upper
 # alphabet only; the facets module mints via python-ulid which emits
@@ -430,6 +439,81 @@ MCP_TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
         },
         response_budget_tokens=LIST_PEOPLE_RESPONSE_BUDGET,
     ),
+    ToolContract(
+        name="register_agent_profile",
+        description=(
+            "Register an agent_profile facet describing what an autonomous worker does. "
+            "Required args: content, metadata (purpose, inputs, outputs, cadence, skill_refs). "
+            "Optional metadata.verification_ref links a verification_checklist facet. "
+            "Updates agents.profile_facet_external_id to the new profile's id."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "maxLength": _MAX_AGENT_PROFILE_CONTENT_CHARS},
+                "metadata": {
+                    "type": "object",
+                    "properties": {
+                        "purpose": {"type": "string"},
+                        "inputs": {"type": "array", "items": {"type": "string"}},
+                        "outputs": {"type": "array", "items": {"type": "string"}},
+                        "cadence": {"type": "string"},
+                        "skill_refs": {"type": "array", "items": {"type": "string"}},
+                        "verification_ref": {"type": ["string", "null"]},
+                    },
+                    "required": ["purpose", "inputs", "outputs", "cadence", "skill_refs"],
+                    "additionalProperties": False,
+                },
+                "source_tool": {"type": "string", "pattern": _SOURCE_TOOL_PATTERN.pattern},
+                "set_active_link": {"type": "boolean", "default": True},
+            },
+            "required": ["content", "metadata"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=REGISTER_AGENT_PROFILE_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="get_agent_profile",
+        description=(
+            "Fetch one agent_profile facet by external_id. Returns null when no live "
+            "profile matches. The active-link flag indicates whether the profile is the "
+            "one currently linked from agents.profile_facet_external_id."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "external_id": {"type": "string", "pattern": _ULID_PATTERN.pattern},
+            },
+            "required": ["external_id"],
+            "additionalProperties": False,
+        },
+        response_budget_tokens=GET_AGENT_PROFILE_RESPONSE_BUDGET,
+    ),
+    ToolContract(
+        name="list_agent_profiles",
+        description=(
+            "List the calling agent's agent_profile facets, ordered by capture time "
+            "descending. Optional limit defaults to 20."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": _MIN_LIMIT,
+                    "maximum": _MAX_LIMIT,
+                    "default": 20,
+                },
+                "since": {
+                    "type": "integer",
+                    "minimum": _MIN_SINCE_EPOCH,
+                    "maximum": _MAX_SINCE_EPOCH,
+                },
+            },
+            "additionalProperties": False,
+        },
+        response_budget_tokens=LIST_AGENT_PROFILES_RESPONSE_BUDGET,
+    ),
 )
 
 
@@ -591,6 +675,49 @@ class ListPeopleResponse:
     total_tokens: int
 
 
+@dataclass(frozen=True, slots=True)
+class RegisterAgentProfileResponse:
+    external_id: str
+    is_new: bool
+    is_active_link: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AgentProfileView:
+    """Full agent_profile payload returned by ``get_agent_profile``."""
+
+    external_id: str
+    content: str
+    purpose: str
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+    cadence: str
+    skill_refs: tuple[str, ...]
+    verification_ref: str | None
+    captured_at: int
+    embed_status: str
+    is_active_link: bool
+    truncated: bool
+    token_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class AgentProfileSummary:
+    external_id: str
+    purpose: str
+    cadence: str
+    skill_refs: tuple[str, ...]
+    captured_at: int
+    is_active_link: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ListAgentProfilesResponse:
+    items: tuple[AgentProfileSummary, ...]
+    truncated: bool
+    total_tokens: int
+
+
 # ---- Tools ---------------------------------------------------------------
 
 
@@ -618,6 +745,17 @@ async def capture(
 
     _validate_length("content", content, _MAX_CONTENT_CHARS, allow_empty=False)
     _validate_facet_type(facet_type)
+    if facet_type == "agent_profile":
+        # ADR 0017: agent_profile carries a structured metadata contract
+        # that the generic capture path does not enforce. Routing writes
+        # exclusively through ``register_agent_profile`` keeps every
+        # stored profile parseable by the read tools and prevents a
+        # write-scoped caller from poisoning subsequent reads with a
+        # row whose metadata fails ``validate_metadata`` on retrieval.
+        raise ValidationError(
+            "agent_profile facets must be written via register_agent_profile, "
+            "not the generic capture tool"
+        )
     _validate_metadata(metadata)
     _validate_volatility(volatility)
     _validate_ttl_seconds(ttl_seconds, volatility=volatility)
@@ -993,6 +1131,143 @@ async def list_people(
     return ListPeopleResponse(items=items, truncated=truncated, total_tokens=total_tokens)
 
 
+async def register_agent_profile(
+    tctx: ToolContext,
+    *,
+    content: str,
+    metadata: dict[str, Any],
+    source_tool: str | None = None,
+    set_active_link: bool = True,
+) -> RegisterAgentProfileResponse:
+    """MCP ``register_agent_profile`` — create an agent_profile facet.
+
+    Write scope on ``agent_profile`` is required. The structured
+    metadata shape is enforced by
+    :func:`tessera.vault.agent_profiles.validate_metadata` per ADR
+    0017. The active link on ``agents.profile_facet_external_id``
+    moves to the new profile unless the caller passes
+    ``set_active_link=False`` (useful for staging a draft without
+    swapping the canonical pointer in the same call).
+    """
+
+    _validate_length("content", content, _MAX_AGENT_PROFILE_CONTENT_CHARS, allow_empty=False)
+    if not isinstance(metadata, dict):
+        raise ValidationError("metadata must be an object")
+    resolved_source = source_tool or tctx.verified.client_name
+    _validate_source_tool(resolved_source)
+    _require_scope(tctx, op="write", facet_type="agent_profile")
+    try:
+        external_id, is_new = vault_agent_profiles.register(
+            tctx.conn,
+            agent_id=tctx.verified.agent_id,
+            content=content,
+            metadata=metadata,
+            source_tool=resolved_source,
+            set_active_link=set_active_link,
+        )
+    except vault_agent_profiles.InvalidAgentProfileMetadataError as exc:
+        raise ValidationError(str(exc)) from exc
+    except vault_facets.UnknownAgentError as exc:
+        raise StorageError(f"agent resolution failed: {type(exc).__name__}") from exc
+    # Reflect ground truth: even when the caller staged a draft with
+    # ``set_active_link=False``, the new facet may already be the
+    # canonical row if it dedupes to the currently linked profile.
+    # Read the link unconditionally so the response cannot mislabel.
+    is_active = (
+        vault_agent_profiles.read_active_link(tctx.conn, agent_id=tctx.verified.agent_id)
+        == external_id
+    )
+    return RegisterAgentProfileResponse(
+        external_id=external_id,
+        is_new=is_new,
+        is_active_link=is_active,
+    )
+
+
+async def get_agent_profile(
+    tctx: ToolContext,
+    *,
+    external_id: str,
+) -> AgentProfileView | None:
+    """MCP ``get_agent_profile`` — fetch one profile by external_id.
+
+    Returns ``None`` when no live profile matches. Read scope on
+    ``agent_profile`` is required. Cross-agent reads are blocked here
+    by an explicit agent-id check after the row lookup so a token
+    scoped for one agent cannot peek at another agent's profile by
+    guessing its ULID.
+    """
+
+    _validate_ulid(external_id)
+    _require_scope(tctx, op="read", facet_type="agent_profile")
+    profile = vault_agent_profiles.get(tctx.conn, external_id=external_id)
+    if profile is None:
+        return None
+    if profile.agent_id != tctx.verified.agent_id:
+        return None
+    body = profile.content
+    body_tokens = count_tokens(body)
+    truncated = False
+    overhead = 128
+    if body_tokens > GET_AGENT_PROFILE_RESPONSE_BUDGET - overhead:
+        body = truncate_snippet(body, max_tokens=GET_AGENT_PROFILE_RESPONSE_BUDGET - overhead)
+        truncated = True
+        body_tokens = count_tokens(body)
+    meta = profile.metadata
+    return AgentProfileView(
+        external_id=profile.external_id,
+        content=body,
+        purpose=meta.purpose,
+        inputs=meta.inputs,
+        outputs=meta.outputs,
+        cadence=meta.cadence,
+        skill_refs=meta.skill_refs,
+        verification_ref=meta.verification_ref,
+        captured_at=profile.captured_at,
+        embed_status=profile.embed_status,
+        is_active_link=profile.is_active_link,
+        truncated=truncated,
+        token_count=body_tokens,
+    )
+
+
+async def list_agent_profiles(
+    tctx: ToolContext,
+    *,
+    limit: int = 20,
+    since: int | None = None,
+) -> ListAgentProfilesResponse:
+    """MCP ``list_agent_profiles`` — paginated metadata of profile rows."""
+
+    _validate_limit(limit)
+    if since is not None:
+        _validate_since(since)
+    _require_scope(tctx, op="read", facet_type="agent_profile")
+    rows = vault_agent_profiles.list_for_agent(
+        tctx.conn,
+        agent_id=tctx.verified.agent_id,
+        limit=limit,
+        since=since,
+    )
+    summaries = [
+        AgentProfileSummary(
+            external_id=p.external_id,
+            purpose=p.metadata.purpose,
+            cadence=p.metadata.cadence,
+            skill_refs=p.metadata.skill_refs,
+            captured_at=p.captured_at,
+            is_active_link=p.is_active_link,
+        )
+        for p in rows
+    ]
+    items, truncated, total_tokens = _budget_agent_profile_summaries(summaries)
+    return ListAgentProfilesResponse(
+        items=items,
+        truncated=truncated,
+        total_tokens=total_tokens,
+    )
+
+
 # ---- Helpers -------------------------------------------------------------
 
 
@@ -1215,6 +1490,42 @@ def _budget_skill_summaries(
     return kept, trimmed.truncated, total
 
 
+def _budget_agent_profile_summaries(
+    summaries: list[AgentProfileSummary],
+) -> tuple[tuple[AgentProfileSummary, ...], bool, int]:
+    """Apply the list_agent_profiles budget to profile summaries.
+
+    Each summary's token cost is the purpose snippet plus the cadence
+    label, the skill-ref ULID list, and a per-row overhead for
+    metadata. Truncation falls back to the trailing items so the
+    most-recently-registered profile (the most likely active link)
+    survives in the response.
+    """
+
+    items: list[BudgetedItem] = []
+    for s in summaries:
+        per_row_overhead = 48
+        skill_ref_tokens = sum(count_tokens(ref) for ref in s.skill_refs)
+        snippet = f"{s.purpose} | cadence={s.cadence}"
+        items.append(
+            BudgetedItem(
+                key=s.external_id,
+                snippet=snippet,
+                token_count=(
+                    count_tokens(s.purpose)
+                    + count_tokens(s.cadence)
+                    + skill_ref_tokens
+                    + per_row_overhead
+                ),
+            )
+        )
+    trimmed = apply_budget(items, total_budget=LIST_AGENT_PROFILES_RESPONSE_BUDGET)
+    kept_keys = {item.key for item in trimmed.items}
+    kept = tuple(s for s in summaries if s.external_id in kept_keys)
+    total = sum(item.token_count for item in trimmed.items)
+    return kept, trimmed.truncated, total
+
+
 def _budget_person_matches(
     matches: list[PersonMatch],
 ) -> tuple[tuple[PersonMatch, ...], bool, int]:
@@ -1300,29 +1611,36 @@ def _now_epoch() -> int:
 __all__ = [
     "CAPTURE_RESPONSE_BUDGET",
     "FORGET_RESPONSE_BUDGET",
+    "GET_AGENT_PROFILE_RESPONSE_BUDGET",
     "GET_SKILL_RESPONSE_BUDGET",
     "LEARN_SKILL_RESPONSE_BUDGET",
+    "LIST_AGENT_PROFILES_RESPONSE_BUDGET",
     "LIST_FACETS_RESPONSE_BUDGET",
     "LIST_PEOPLE_RESPONSE_BUDGET",
     "LIST_SKILLS_RESPONSE_BUDGET",
     "MCP_TOOL_CONTRACTS",
     "RECALL_RESPONSE_BUDGET",
+    "REGISTER_AGENT_PROFILE_RESPONSE_BUDGET",
     "RESOLVE_PERSON_RESPONSE_BUDGET",
     "SHOW_RESPONSE_BUDGET",
     "STATS_RESPONSE_BUDGET",
     "ActiveModel",
+    "AgentProfileSummary",
+    "AgentProfileView",
     "BudgetExceeded",
     "CaptureResponse",
     "EmbedHealth",
     "FacetSummary",
     "ForgetResponse",
     "LearnSkillResponse",
+    "ListAgentProfilesResponse",
     "ListFacetsResponse",
     "ListPeopleResponse",
     "ListSkillsResponse",
     "PersonMatch",
     "RecallMatchView",
     "RecallResponse",
+    "RegisterAgentProfileResponse",
     "ResolvePersonResponse",
     "ScopeDenied",
     "ShowResponse",
@@ -1336,12 +1654,15 @@ __all__ = [
     "ValidationError",
     "capture",
     "forget",
+    "get_agent_profile",
     "get_skill",
     "learn_skill",
+    "list_agent_profiles",
     "list_facets",
     "list_people",
     "list_skills",
     "recall",
+    "register_agent_profile",
     "resolve_person",
     "show",
     "stats",
