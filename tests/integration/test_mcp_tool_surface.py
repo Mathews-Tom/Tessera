@@ -10,6 +10,7 @@ module's test file; here we pin the boundary contract.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -1510,9 +1511,7 @@ async def test_record_automation_run_updates_metadata_and_audits(
         "AND target_external_id = ?",
         (reg.external_id,),
     ).fetchone()
-    import json as _json
-
-    payload = _json.loads(audit_payload[0])
+    payload = json.loads(audit_payload[0])
     assert payload["result_bucket"] == "success"
     assert payload["last_run_at"] == "2026-05-02T09:00:05Z"
 
