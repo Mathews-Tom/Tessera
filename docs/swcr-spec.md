@@ -93,6 +93,14 @@ with $\text{age}(f) = \text{now} - \text{captured\_at}(f)$ and $\text{ttl}(f) = 
 
 Intuition: a facet's SWCR score is its own relevance plus a boost proportional to how strongly it connects to other high-relevance candidates across the graph — especially across facet types. A style sample that aligns with the entities appearing in the project facets and with the workflow in scope is boosted; a style sample that is topically isolated from the rest of the candidate set is not. After V0.5-P1, that boost is also weighted by freshness: a `session`-scoped working-memory note halfway through its TTL contributes half the coherence weight a persistent row would, and an `ephemeral` row past its window contributes nothing.
 
+### Retrospective augmentation (V0.5-P3, ADR 0018)
+
+When the post-rerank working set includes a candidate of `facet_type='agent_profile'`, the pipeline augments the SWCR candidate set with the **most recent N retrospectives whose `metadata.agent_ref` matches that profile's `external_id`**. N defaults to 3 and is exposed as `RetrievalConfig.retrospective_window` (configurable to 0 for ablations). The augmented retrospective rows enter the graph at the originating profile's score, so the cross-type bonus γ already in play upweights the `agent_profile ↔ retrospective` edge naturally — the bundle answers "how is the digest agent doing?" by pulling the profile alongside the most recent record of how the agent ran.
+
+The augmentation runs after rerank but before the SWCR graph build. Retrospective rows are subject to the same per-type budget envelope as every other facet type — they are not allotted a privileged slice. The augmentation is closed-form and deterministic given fixed `now`; it changes neither the SWCR algorithm proper nor the determinism CI gate. Augmentation is filtered by `agent_id` so a token cannot pull in retrospectives owned by another agent.
+
+The integration is structural, not statistical. Tessera does not learn weights from retrospectives, mutate SWCR parameters from outcomes, or reorder bundles based on past success rates — those would violate the no-telemetry ideology bar and the closed-form determinism guarantee. Retrospectives merely enter the candidate graph at the right moment so the user (or the agent itself) sees what the last run flagged when the next run starts.
+
 ### Per-facet-type budget enforcement (cross-facet `recall`)
 
 `recall` is cross-facet by default. For a call with all five v0.1 facet types in scope and a total budget $B$, SWCR runs per-facet-type over its candidate subset, using the full top-$M$ cross-type candidate graph for the coherence term. The per-type envelope is set by the system-design spec — the token budget is distributed proportionally across the facet types the caller's token granted and the query engaged.
@@ -127,6 +135,7 @@ At $M = 50$: total overhead < 5 ms on M1 Pro. Not on the latency critical path.
 | Coherence reweighting         | λ      | 0.25    | [0.0, 1.0]    |
 | Edge sparsification threshold | τ_e    | 0.1     | [0.0, 0.3]    |
 | Candidate set size            | M      | 50      | [20, 200]     |
+| Retrospective augmentation N  | —      | 3       | [0, 32]       |
 
 All six are exposed via `config.yaml` under `retrieval.swcr`. A `retrieval_mode: rrf_only | rerank_only | swcr` switch controls the pipeline shape. **Default is `swcr`** (per ADR 0011). The non-default modes remain wired for ablation work and for users who want to reproduce pre-SWCR behavior without recompiling.
 
