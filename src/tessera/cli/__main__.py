@@ -21,6 +21,7 @@ from collections.abc import Callable
 from tessera import __version__ as TESSERA_VERSION
 from tessera.cli import (
     agents_cmd,
+    audit_cmd,
     connect_cmd,
     curl_cmd,
     daemon_cmd,
@@ -76,6 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
     people_cmd.register(subparsers)
     import_cmd.register(subparsers)
     curl_cmd.register(subparsers)
+    audit_cmd.register(subparsers)
 
     # Existing stubs from earlier phases. Each of these delegates its
     # argv slice to a submodule's own argparse parser; argparse.REMAINDER

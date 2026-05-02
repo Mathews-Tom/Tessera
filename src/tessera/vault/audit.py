@@ -5,12 +5,17 @@ The audit log is the legal-grade record of vault mutations, separate from
 §S4 the allowlist is explicit and enforced on every write: payloads carry
 IDs and operation metadata, never facet content, query text, token values,
 or embedding vectors.
+
+V0.5-P8 (ADR 0021) makes ``audit_log`` tamper-evident: every row carries a
+``prev_hash`` / ``row_hash`` pair forming a forward-only linear hash chain
+walked by ``tessera audit verify``. The chain insert path lives in
+:mod:`tessera.vault.audit_chain`; this module's :func:`write` delegates to
+it so the per-op payload allowlist and the chain-aware insert remain a
+single function for callers (capture, retrieval, auth, daemon, migration).
 """
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime
 from typing import Any, Final
 
 import sqlcipher3
@@ -169,42 +174,32 @@ def write(
     payload: dict[str, Any] | None = None,
     at: int | None = None,
 ) -> int:
-    """Append an audit row. Returns the inserted rowid.
+    """Append an audit row through the V0.5-P8 chain insert path.
 
-    Raises :class:`UnknownOpError` when ``op`` is not in the allowlist and
-    :class:`DisallowedPayloadKeyError` when ``payload`` carries keys outside
-    the per-op allowlist. The allowlist is closed by design: adding a new op
-    requires editing this module in the same commit as the emitter.
+    Validation (op + payload allowlist) runs inside
+    :func:`tessera.vault.audit_chain.audit_log_append`; this function
+    is the historical entry point that capture / retrieval / auth /
+    daemon / migration call. Routing every write through one
+    chain-aware function is the ADR 0021 §Insert path single-writer
+    invariant, enforced statically by the
+    ``audit-chain-single-writer`` CI gate.
+
+    Raises :class:`UnknownOpError` when ``op`` is not in the
+    allowlist, :class:`DisallowedPayloadKeyError` when ``payload``
+    carries keys outside the per-op allowlist, and
+    :class:`AuditError` (or its
+    :class:`tessera.vault.audit_chain.AuditChainError` subclass)
+    when the chain insert fails.
     """
 
-    if op not in _PAYLOAD_ALLOWLIST:
-        raise UnknownOpError(f"op {op!r} is not in the audit allowlist")
-    allowed = _PAYLOAD_ALLOWLIST[op]
-    payload = payload or {}
-    extra = set(payload.keys()) - allowed
-    if extra:
-        raise DisallowedPayloadKeyError(
-            f"op {op!r} received disallowed keys {sorted(extra)}; allowed: {sorted(allowed)}"
-        )
-    payload_json = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    cur = conn.execute(
-        """
-        INSERT INTO audit_log(at, actor, agent_id, op, target_external_id, payload)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            at if at is not None else _now_epoch(),
-            actor,
-            agent_id,
-            op,
-            target_external_id,
-            payload_json,
-        ),
+    from tessera.vault import audit_chain
+
+    return audit_chain.audit_log_append(
+        conn,
+        op=op,
+        actor=actor,
+        agent_id=agent_id,
+        target_external_id=target_external_id,
+        payload=payload,
+        at=at,
     )
-    if cur.lastrowid is None:
-        raise AuditError("audit INSERT produced no rowid")
-    return int(cur.lastrowid)
-
-
-def _now_epoch() -> int:
-    return int(datetime.now(UTC).timestamp())

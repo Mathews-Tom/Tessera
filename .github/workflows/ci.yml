@@ -108,6 +108,81 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash scripts/assume_identity_grep.sh
 
+  audit-chain-determinism:
+    # Per ADR 0021, the audit-chain row hash is derived from
+    # ``sha256(prev_hash || canonical_json(event))``. The chain only
+    # stays verifiable if the canonicalizer produces byte-stable
+    # bytes for byte-equivalent inputs across Python versions, OSes,
+    # and BYO-sync round trips. The gate runs the project-local
+    # canonicalizer twice on a fixed input vector and asserts the
+    # output is identical. A drift fails the build before it reaches
+    # the chain insert path.
+    name: Audit-chain determinism
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen
+      - run: uv run python scripts/audit_chain_determinism.py
+
+  audit-chain-single-writer:
+    # Per ADR 0021 §Insert path, every audit insert must go through
+    # the chain-aware ``audit_log_append`` function. Direct
+    # ``INSERT INTO audit_log`` from anywhere else in src/tessera/
+    # bypasses the row hash and breaks the tamper-evidence claim.
+    # The gate scans src/tessera/ for the literal SQL and rejects
+    # any match outside the canonical insert path.
+    name: Audit-chain single writer
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/audit_chain_single_writer.sh
+
+  audit-chain-verify-on-test-vault:
+    # Per ADR 0021, ``tessera audit verify`` is the canonical
+    # verification surface. The gate exercises the chain across
+    # three test surfaces:
+    #
+    # * ``tests/security/test_audit_chain.py`` — the seven
+    #   tampering scenarios that the walker must raise on
+    #   (genesis, append, deletion-detect, modify-detect,
+    #   reorder-detect, insert-detect, full-walk-clean).
+    # * ``tests/integration/test_cli_audit_verify.py`` — end-to-end
+    #   ``tessera audit verify`` exit-code contract (0 / 1 / 2)
+    #   against a real bootstrapped vault.
+    # * ``tests/unit/test_migration_runner.py::test_v3_to_v4_migration_backfills_audit_chain``
+    #   — pre-upgrade row backfill produces a chain that the
+    #   walker accepts.
+    #
+    # Together these cover the chain insert path, the
+    # canonicalizer, the migration backfill, and the CLI surface
+    # before they reach a real vault.
+    name: Audit-chain verify on test vault
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TESSERA_NO_OUTBOUND: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen
+      - name: Pre-warm tiktoken encoding cache
+        run: uv run python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+      - run: |
+          uv run pytest \
+            tests/security/test_audit_chain.py \
+            tests/integration/test_cli_audit_verify.py \
+            tests/unit/test_migration_runner.py::test_v3_to_v4_migration_backfills_audit_chain \
+            -v
+
   no-outbound:
     # The adapter framework is the first code in src/tessera that speaks to
     # the network (Ollama, OpenAI, Cohere). Per docs/determinism-and-

@@ -374,7 +374,9 @@ def test_register_writes_facet_inserted_audit_with_agent_profile_type(
         WHERE op = 'facet_inserted'
         """
     ).fetchall()
-    assert any('"facet_type": "agent_profile"' in str(r[0]) for r in rows)
+    # ADR 0021 §canonical_json — payload column stores canonical bytes
+    # (no whitespace) so the storage and chain-encoding paths agree.
+    assert any('"facet_type":"agent_profile"' in str(r[0]) for r in rows)
 
 
 @pytest.mark.unit

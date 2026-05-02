@@ -10,7 +10,12 @@ column to ``agents`` that points at the canonical agent_profile facet
 for each authentication principal. Reserving every v0.5 type in the
 CHECK now keeps subsequent sub-phases (V0.5-P3, V0.5-P5) from each
 having to re-run the SQLite table-recreate dance — they only need to
-flip Python-layer allowlists to activate writes.
+flip Python-layer allowlists to activate writes. V0.5-P8 (ADR 0021)
+adds ``prev_hash`` and ``row_hash`` columns to ``audit_log`` so every
+write extends a forward-only linear hash chain that ``tessera audit
+verify`` walks end-to-end. Both columns default to ``''`` so the
+column add is purely additive at bootstrap; the migration runner
+backfills the chain in id-ASC order.
 
 Schema v3 activated the v0.3 People + Skills surface: ``facets`` carries
 an optional ``disk_path`` for skills synced to disk, the ``people`` and
@@ -247,7 +252,9 @@ _TABLES: Final[tuple[str, ...]] = (
         agent_id            INTEGER REFERENCES agents(id),
         op                  TEXT NOT NULL,
         target_external_id  TEXT,
-        payload             TEXT NOT NULL DEFAULT '{}'
+        payload             TEXT NOT NULL DEFAULT '{}',
+        prev_hash           TEXT NOT NULL DEFAULT '',
+        row_hash            TEXT NOT NULL DEFAULT ''
     )
     """,
     """

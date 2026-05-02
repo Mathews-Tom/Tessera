@@ -221,7 +221,9 @@ def test_register_emits_facet_inserted_audit(open_vault: VaultConnection) -> Non
     rows = open_vault.connection.execute(
         "SELECT payload FROM audit_log WHERE op = 'facet_inserted'"
     ).fetchall()
-    assert any('"facet_type": "verification_checklist"' in str(r[0]) for r in rows)
+    # ADR 0021 §canonical_json — payload column stores canonical bytes
+    # (no whitespace) so the storage and chain-encoding paths agree.
+    assert any('"facet_type":"verification_checklist"' in str(r[0]) for r in rows)
 
 
 @pytest.mark.unit
