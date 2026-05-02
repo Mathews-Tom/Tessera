@@ -152,6 +152,16 @@ async def test_dispatch_recall(open_vault: VaultConnection, vault_path: Path) ->
     result = await dispatch_tool_call(state, verified, "recall", {"query_text": "voice", "k": 3})
     assert "matches" in result
     assert "seed" in result
+    # V0.5-P7: every match dict carries mode + is_stale on the wire.
+    # Non-compiled facet types default to query_time / False; the
+    # MCP-layer integration suite covers the write_time path. This
+    # assertion pins the dispatch JSON shape so a regression that
+    # drops either key from ``_match_to_json`` fails here.
+    for match in result["matches"]:
+        assert "mode" in match
+        assert "is_stale" in match
+        assert match["mode"] == "query_time"
+        assert match["is_stale"] is False
 
 
 @pytest.mark.integration

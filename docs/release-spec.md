@@ -296,7 +296,7 @@ Per-item status is annotated below. Implementation lands in the v0.3 commit seri
 - [ ] BYO sync round-trip: vault → S3-compatible bucket → restore on second machine → identical state, **and `tessera audit verify` succeeds on the restored vault**
 - [ ] Sync handles 50K+ facets without blocking the daemon
 - [ ] Encryption: data at rest in cloud is unreadable without local key (verified by attempting read with key absent)
-- [ ] `recall` transparently surfaces compiled artifacts when relevant, marks stale ones in response metadata
+- [x] **`recall` transparently surfaces compiled artifacts and marks stale ones (V0.5-P7, ADR 0019 §Retrieval surface).** Every recall match carries `mode` (the row's production method — `query_time` or `write_time`) and `is_stale` (V0.5-P6 staleness flag for `compiled_notebook` rows; always `False` for other facet types). Hydration runs as a single `LEFT JOIN compiled_artifacts ON external_id` SQL pass against the K survivors so cost is proportional to response size. No privileged slice — the bundle's token budget envelope treats compiled artifacts as one more facet type per ADR 0019 §Retrieval surface. New `tests/unit/test_recall_stale_surface.py` (8 tests) covers hydration shape and end-to-end propagation; integration `test_recall_match_view_carries_mode_and_is_stale` and `test_recall_match_view_surfaces_is_stale_after_mutation` pin the round-trip through the MCP boundary.
 - [ ] 1+ user reports running multi-machine sync continuously for 30+ days
 - [ ] Tom has dogfooded write-time compilation for his actual research for 60+ days
 
