@@ -626,7 +626,6 @@ async def _augment_with_retrospectives(
             new_rows.append((retro.facet_id, retro.content, "retrospective", cand.score))
     if not new_rows:
         return
-    new_ids = [fid for fid, *_ in new_rows]
     new_contents = [content for _, content, *_ in new_rows]
     vectors = await ctx.embedder.embed(new_contents)
     for (fid, content, ftype, score), vec in zip(new_rows, vectors, strict=True):
@@ -634,7 +633,6 @@ async def _augment_with_retrospectives(
         content_lookup[fid] = content
         type_lookup[fid] = ftype
         embeddings[fid] = list(vec)
-    del new_ids
 
 
 def _profile_external_ids(conn: sqlcipher3.Connection, facet_ids: Iterable[int]) -> dict[int, str]:
