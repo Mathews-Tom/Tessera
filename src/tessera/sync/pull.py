@@ -45,6 +45,20 @@ class NoManifestAvailableError(PullError):
     """The store has no manifests — nothing to pull."""
 
 
+class StoreInconsistencyError(PullError):
+    """A manifest the store listed disappeared between list and read.
+
+    Distinct from :class:`NoManifestAvailableError` because the
+    operator action differs: "no manifests" is benign (no push
+    has happened); "listed but missing" indicates a concurrent
+    prune, a failed write, or a permissions change mid-operation
+    — a state that monitoring should flag rather than retry
+    silently. Pull surfaces this as a typed exception so a
+    future CLI / daemon caller can route it to the right alert
+    channel.
+    """
+
+
 class BlobIntegrityError(PullError):
     """The fetched blob's sha256 does not match the manifest's blob_id."""
 
@@ -97,11 +111,16 @@ def pull(
     try:
         raw = store.get_manifest(latest)
     except ManifestNotFoundError as exc:
-        # Race against a concurrent prune that deleted the manifest
-        # between list and read. Surface as the same not-available
-        # error since the operator action is identical.
-        raise NoManifestAvailableError(
-            f"manifest sequence {latest} disappeared between list and read"
+        # The list returned this sequence but the manifest is
+        # gone now — concurrent prune, failed write, permissions
+        # change mid-op, or a sync provider that propagated a
+        # deletion before propagating its replacement. This is a
+        # store-inconsistency state distinct from "no manifests
+        # at all"; surface a separate typed error so a future
+        # caller can alert vs retry silently.
+        raise StoreInconsistencyError(
+            f"manifest sequence {latest} disappeared between list and read "
+            f"(store inconsistency, not a benign empty store)"
         ) from exc
 
     manifest = parse_manifest(raw)
@@ -130,7 +149,7 @@ def pull(
     wrapped = manifest.wrapped_key()
     dek = envelope.unwrap_dek(master_key=master_key, wrapped=wrapped)
     blob = envelope.EncryptedBlob(
-        nonce=manifest.encrypted_blob().nonce,
+        nonce=manifest.blob_nonce(),
         ciphertext=ciphertext,
     )
     plaintext = envelope.decrypt_blob(dek=dek, blob=blob)
@@ -191,6 +210,7 @@ __all__ = [
     "PullError",
     "PullResult",
     "ReplayedManifestError",
+    "StoreInconsistencyError",
     "VaultIdMismatchError",
     "fetch_manifest",
     "pull",

@@ -48,10 +48,21 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-from tessera.sync.envelope import EncryptedBlob, WrappedKey
+from tessera.sync.envelope import WrappedKey
 from tessera.vault.canonical_json import canonical_json
 
 MANIFEST_VERSION: Final[int] = 1
+
+# Sentinel emitted into ``audit_chain_head`` when the source vault
+# has no audit rows at push time. Real audit-chain row hashes are
+# 64-character lowercase hex (sha256); this sentinel cannot collide
+# (contains a colon, only 12 chars). A distinguished value rather
+# than the empty string forecloses the "if x: verify_chain(...)"
+# unsafe-caller pattern that would silently skip integrity
+# enforcement on a forged empty-vault manifest. The sentinel is
+# part of the signed payload so an attacker cannot substitute it
+# without breaking the HMAC.
+EMPTY_CHAIN_SENTINEL: Final[str] = "sha256:empty"
 
 
 class ManifestError(Exception):
@@ -119,19 +130,19 @@ class Manifest:
         payload.pop("signature_b64")
         return canonical_json(payload)
 
-    def encrypted_blob(self) -> EncryptedBlob:
-        """Reconstruct the AES-GCM nonce + matching ciphertext context.
+    def blob_nonce(self) -> bytes:
+        """Decode the AES-GCM nonce used for the vault-blob encrypt.
 
         The ciphertext bytes themselves live in the BlobStore under
-        ``blob_id``; this helper packages the nonce so the pull
-        side can call ``decrypt_blob`` with the bytes the store
-        returned alongside the manifest's nonce.
+        ``blob_id``; the pull side fetches them separately and
+        constructs an :class:`EncryptedBlob` with this nonce paired
+        against the fetched bytes. Returning the raw nonce (not a
+        half-built ``EncryptedBlob`` with empty ciphertext) avoids
+        the partial-construction footgun a future caller could trip
+        on.
         """
 
-        return EncryptedBlob(
-            nonce=base64.b64decode(self.blob_nonce_b64),
-            ciphertext=b"",  # filled in from the BlobStore on pull
-        )
+        return base64.b64decode(self.blob_nonce_b64)
 
     def wrapped_key(self) -> WrappedKey:
         """Reconstruct the wrapped DEK for ``unwrap_dek``."""
@@ -292,6 +303,7 @@ def _compute_signature(manifest: Manifest, master_key: bytes) -> str:
 
 
 __all__ = [
+    "EMPTY_CHAIN_SENTINEL",
     "MANIFEST_VERSION",
     "InvalidManifestError",
     "InvalidSignatureError",

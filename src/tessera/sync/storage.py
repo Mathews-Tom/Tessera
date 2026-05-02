@@ -27,11 +27,15 @@ addition (one of the V0.5-P9b CLI commands).
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Final, Protocol
 
 _MANIFEST_SUFFIX: Final[str] = ".json"
+_TMP_SUFFIX_BYTES: Final[int] = 4
+_logger = logging.getLogger(__name__)
 
 
 class BlobStoreError(Exception):
@@ -131,9 +135,13 @@ class LocalFilesystemStore:
         target = self._blob_path(blob_id)
         # Atomic write via tmp + rename so a crash mid-write never
         # leaves a half-written blob the pull side might read. The
-        # tmp suffix carries the blob_id prefix so concurrent puts
-        # to different blobs do not collide.
-        tmp = target.with_suffix(".tmp")
+        # tmp filename carries a per-call random suffix so two
+        # concurrent puts of the same blob_id (e.g., a retry
+        # racing with the original push) cannot stomp each other's
+        # tmp file mid-write. Content-addressed storage means the
+        # bytes are identical anyway, but isolating the tmp paths
+        # closes the rename-during-write window.
+        tmp = target.with_name(f"{target.name}.{os.urandom(_TMP_SUFFIX_BYTES).hex()}.tmp")
         tmp.write_bytes(ciphertext)
         tmp.replace(target)
 
@@ -147,7 +155,14 @@ class LocalFilesystemStore:
     def put_manifest(self, sequence_number: int, raw: bytes) -> None:
         self._manifests.mkdir(parents=True, exist_ok=True)
         target = self._manifest_path(sequence_number)
-        tmp = target.with_suffix(".json.tmp")
+        # Per-call random tmp suffix mirrors ``put_blob``: two
+        # concurrent puts of the same sequence_number cannot stomp
+        # each other's tmp file. Sequence collisions should not
+        # happen in practice (push reads ``latest_manifest_sequence``
+        # then increments) but the cost of the suffix is one
+        # random read; the cost of a corrupted manifest mid-rename
+        # is the next pull failing on parse.
+        tmp = target.with_name(f"{target.name}.{os.urandom(_TMP_SUFFIX_BYTES).hex()}.tmp")
         tmp.write_bytes(raw)
         tmp.replace(target)
 
@@ -176,10 +191,22 @@ class LocalFilesystemStore:
             try:
                 yield int(entry.stem)
             except ValueError:
-                # Ignore stray files with non-integer stems —
-                # filesystem-synced backup folders sometimes carry
-                # provider artefacts (.DS_Store, lock files) that
-                # should not break a list operation.
+                # Filesystem-synced backup folders sometimes carry
+                # provider artefacts whose suffix happens to be
+                # ``.json`` but whose stem is not an integer:
+                # Dropbox conflict files (``1 (conflicted copy).json``),
+                # iCloud download placeholders, manual hand-edits.
+                # Skip them rather than crash the list operation,
+                # but emit a warning so the user can investigate
+                # — silently dropping a hand-renamed manifest is
+                # exactly the failure mode that hides a recovery
+                # snapshot from the operator.
+                _logger.warning(
+                    "tessera.sync.storage: ignoring non-sequence "
+                    "manifest file %s; rename to <int>.json or "
+                    "remove if no longer needed",
+                    entry,
+                )
                 continue
 
     def _blob_path(self, blob_id: str) -> Path:

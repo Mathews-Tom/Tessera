@@ -22,8 +22,9 @@ import sqlcipher3
 
 from tessera.sync import envelope
 from tessera.sync import manifest as sync_manifest
+from tessera.sync.manifest import EMPTY_CHAIN_SENTINEL
 from tessera.sync.storage import BlobStore, compute_blob_id
-from tessera.vault.audit_chain import verify_chain
+from tessera.vault.audit_chain import AuditChainBrokenError, verify_chain
 
 
 class PushError(Exception):
@@ -76,12 +77,24 @@ def push(
     """
 
     vault_id, schema_version = _read_meta(conn)
-    chain_outcome = verify_chain(conn)
+    # ``verify_chain`` raises AuditChainBrokenError on any chain
+    # breakage. Wrap it as PushChainBreakError so the sync surface
+    # presents one typed exception family for chain failures
+    # rather than leaking the audit-layer name across the
+    # boundary. ``from exc`` preserves the underlying cause for
+    # operator diagnostics.
+    try:
+        chain_outcome = verify_chain(conn)
+    except AuditChainBrokenError as exc:
+        raise PushChainBreakError(f"source vault audit chain failed verification: {exc}") from exc
     # An empty vault has no audit chain head to bind. Pushing one
     # is technically meaningful (snapshot of a fresh vault) but
-    # the manifest signature still needs a stable value; the
-    # empty-string sentinel is the canonical "no rows" form.
-    chain_head = "" if chain_outcome.head is None else chain_outcome.head.row_hash
+    # the manifest signature still needs a stable value. The
+    # ``EMPTY_CHAIN_SENTINEL`` constant is unmistakable (contains
+    # a colon, 12 chars vs the 64-char hex of a real row hash) so
+    # a future caller cannot accidentally treat it as "skip
+    # verify_chain on restore" via an ``if x:`` truthy check.
+    chain_head = EMPTY_CHAIN_SENTINEL if chain_outcome.head is None else chain_outcome.head.row_hash
 
     plaintext = vault_path.read_bytes()
     dek = envelope.generate_dek()

@@ -395,3 +395,154 @@ def test_signed_manifest_binds_blob_id_to_ciphertext(
 
     with pytest.raises(BlobIntegrityError, match="hash mismatch"):
         pull(store=store, target_path=dst, master_key=master_key_bytes)
+
+
+@pytest.mark.integration
+def test_push_pull_empty_vault_uses_sentinel(
+    tmp_path: Path,
+    passphrase: bytes,
+) -> None:
+    """V0.5-P9 sentinel round-trip: a freshly bootstrapped vault
+    has no audit rows, so ``verify_chain`` returns head=None.
+    Push must emit ``EMPTY_CHAIN_SENTINEL`` into the manifest
+    rather than the empty string. Pull must surface it
+    unchanged. A future caller that does ``if x:`` truthy check
+    on the chain head will see a truthy value and try to verify
+    against it, which is the right behaviour — failing loud is
+    better than the silent-skip the empty-string sentinel
+    would produce.
+    """
+
+    from tessera.sync.manifest import EMPTY_CHAIN_SENTINEL
+
+    src = tmp_path / "src.db"
+    dst = tmp_path / "restored.db"
+    salt = new_salt()
+    key = derive_key(passphrase, salt)
+    bootstrap(src, key)
+    save_salt(dst, salt)
+    store_root = tmp_path / "sync_store"
+    store = LocalFilesystemStore(store_root)
+    store.initialize()
+    master_key_bytes = bytes.fromhex(key.hex())
+
+    # Bootstrap writes a ``vault_init`` audit row at startup so a
+    # freshly-bootstrapped vault always has a real chain head. To
+    # exercise the empty-chain branch in push, truncate the audit
+    # log first — this simulates a vault whose log was hard-
+    # cleared by an external repair operation.
+    with VaultConnection.open(src, key) as vc:
+        vc.connection.execute("DELETE FROM audit_log")
+
+    with VaultConnection.open(src, key) as vc:
+        push_result = push(
+            vault_path=src,
+            conn=vc.connection,
+            store=store,
+            master_key=master_key_bytes,
+        )
+
+    assert push_result.audit_chain_head == EMPTY_CHAIN_SENTINEL
+
+    pull_result = pull(
+        store=store,
+        target_path=dst,
+        master_key=master_key_bytes,
+    )
+    assert pull_result.audit_chain_head == EMPTY_CHAIN_SENTINEL
+
+
+@pytest.mark.integration
+def test_round_trip_byte_identity(
+    populated_vault: tuple[Path, ProtectedKey, bytes],
+    tmp_path: Path,
+) -> None:
+    """The restored file is byte-identical to the source at push
+    time. Anchors the v0.5 exit-gate's 'identical state' wording
+    in the release-spec DoD ('vault → S3-compatible bucket →
+    restore on second machine → identical state')."""
+
+    src, key, salt = populated_vault
+    dst = tmp_path / "restored.db"
+    save_salt(dst, salt)
+    store_root = tmp_path / "sync_store"
+    store = LocalFilesystemStore(store_root)
+    store.initialize()
+    master_key_bytes = bytes.fromhex(key.hex())
+
+    src_bytes_before = src.read_bytes()
+
+    with VaultConnection.open(src, key) as vc:
+        push(vault_path=src, conn=vc.connection, store=store, master_key=master_key_bytes)
+
+    pull(store=store, target_path=dst, master_key=master_key_bytes)
+    assert dst.read_bytes() == src_bytes_before
+
+
+@pytest.mark.security
+def test_pull_failure_preserves_pre_existing_target(
+    populated_vault: tuple[Path, ProtectedKey, bytes],
+    tmp_path: Path,
+) -> None:
+    """Pull writes the target via tmp + rename so a failure
+    after the partial download cannot stomp a pre-existing
+    file. Plant a known-bytes file at the target and prove
+    every failure mode leaves it intact."""
+
+    src, key, salt = populated_vault
+    dst = tmp_path / "restored.db"
+    save_salt(dst, salt)
+    sentinel_bytes = b"DO-NOT-OVERWRITE-PRE-EXISTING-TARGET"
+    dst.write_bytes(sentinel_bytes)
+
+    store_root = tmp_path / "sync_store"
+    store = LocalFilesystemStore(store_root)
+    store.initialize()
+    master_key_bytes = bytes.fromhex(key.hex())
+
+    with VaultConnection.open(src, key) as vc:
+        result = push(vault_path=src, conn=vc.connection, store=store, master_key=master_key_bytes)
+
+    # Tamper the blob to force BlobIntegrityError.
+    blob_path = store_root / "blobs" / result.blob_id
+    data = bytearray(blob_path.read_bytes())
+    data[0] ^= 0xFF
+    blob_path.write_bytes(bytes(data))
+
+    with pytest.raises(BlobIntegrityError):
+        pull(store=store, target_path=dst, master_key=master_key_bytes)
+    assert dst.read_bytes() == sentinel_bytes
+
+
+@pytest.mark.security
+def test_pull_rejects_tampered_blob_nonce(
+    populated_vault: tuple[Path, ProtectedKey, bytes],
+    tmp_path: Path,
+) -> None:
+    """Tampering the manifest's ``blob_nonce_b64`` field
+    invalidates the signature (the nonce is part of the signed
+    payload). The pull side rejects at the signature step
+    before the decrypt path runs — proves the nonce field
+    binding survives the V0.5-P9 part 1 contract."""
+
+    src, key, salt = populated_vault
+    dst = tmp_path / "restored.db"
+    save_salt(dst, salt)
+    store_root = tmp_path / "sync_store"
+    store = LocalFilesystemStore(store_root)
+    store.initialize()
+    master_key_bytes = bytes.fromhex(key.hex())
+
+    with VaultConnection.open(src, key) as vc:
+        push(vault_path=src, conn=vc.connection, store=store, master_key=master_key_bytes)
+
+    manifest_path = store_root / "manifests" / "1.json"
+    payload = json.loads(manifest_path.read_text())
+    import base64
+
+    payload["blob_nonce_b64"] = base64.b64encode(b"\x00" * 12).decode()
+    manifest_path.write_text(json.dumps(payload))
+
+    with pytest.raises(InvalidSignatureError):
+        pull(store=store, target_path=dst, master_key=master_key_bytes)
+    assert not dst.exists()

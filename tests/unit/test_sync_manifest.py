@@ -133,13 +133,36 @@ def test_parse_rejects_unsupported_version() -> None:
 
 
 @pytest.mark.unit
-def test_signature_detects_field_tampering() -> None:
-    """Modifying any signed field invalidates the signature.
+@pytest.mark.parametrize(
+    ("field", "new_value"),
+    [
+        ("vault_id", "01OTHERVAULTIDXXX2345678ZZ"),
+        ("sequence_number", 2),
+        ("schema_version", 5),
+        ("audit_chain_head", "f" * 64),
+        ("blob_id", "9" * 64),
+        ("blob_nonce_b64", base64.b64encode(b"\x00" * 12).decode()),
+        ("wrapped_dek_nonce_b64", base64.b64encode(b"\x11" * 12).decode()),
+        ("wrapped_dek_b64", base64.b64encode(b"\x22" * 48).decode()),
+        ("pushed_at_epoch", 9_999_999_999),
+        ("manifest_version", 1),  # same value but re-canonicalises identically
+    ],
+)
+def test_signature_detects_field_tampering(field: str, new_value: object) -> None:
+    """Modifying ANY signed field invalidates the signature.
 
-    Pulls the manifest as JSON, flips ``audit_chain_head`` to a
-    different value, and re-parses. The signature was computed
-    against the original head and now does not match the
-    recomputation under the same master key.
+    Parametrises across every field the signing payload covers
+    so a future regression that drops a field from
+    ``_signing_payload`` (e.g., refactor that uses an explicit
+    allowlist and forgets ``blob_nonce_b64``) is caught — the
+    test for the dropped field would still pass under the
+    weakened signature, but the OTHER tampered-field tests would
+    keep firing and the new test for the surviving field would
+    fail because the signature still binds it. The
+    ``manifest_version`` case is the regression guard: writing
+    the same value re-canonicalises identically and signature
+    verification must still succeed (proves the test's
+    re-encode round-trip is faithful).
     """
 
     inputs = _canonical_inputs()
@@ -155,11 +178,32 @@ def test_signature_detects_field_tampering() -> None:
         pushed_at_epoch=inputs["pushed_at_epoch"],  # type: ignore[arg-type]
     )
     payload = json.loads(signed.to_json_bytes())
-    payload["audit_chain_head"] = "f" * 64  # plausible-shape replacement
+    original = payload[field]
+    payload[field] = new_value
     tampered_raw = json.dumps(payload).encode()
     parsed = sync_manifest.parse_manifest(tampered_raw)
-    with pytest.raises(sync_manifest.InvalidSignatureError):
+    if new_value == original:
+        # Identical-value rewrite: round-trip must still verify.
         sync_manifest.verify_signature(parsed, master_key=inputs["master_key"])  # type: ignore[arg-type]
+    else:
+        with pytest.raises(sync_manifest.InvalidSignatureError):
+            sync_manifest.verify_signature(parsed, master_key=inputs["master_key"])  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_empty_chain_sentinel_is_distinguished() -> None:
+    """``EMPTY_CHAIN_SENTINEL`` must not collide with any real
+    audit-chain row hash. Real hashes are 64-char lowercase hex;
+    the sentinel contains a colon and is shorter, so a future
+    caller doing ``if x:`` truthy check or ``len(x) == 64``
+    shape check will not mistake it for a hash."""
+
+    sentinel = sync_manifest.EMPTY_CHAIN_SENTINEL
+    assert sentinel != ""
+    assert ":" in sentinel
+    assert len(sentinel) != 64
+    # Cannot be a valid hex string:
+    assert not all(c in "0123456789abcdef" for c in sentinel)
 
 
 @pytest.mark.unit
