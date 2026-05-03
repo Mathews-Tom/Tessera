@@ -30,6 +30,7 @@ No claim in the Tessera docs stands without a corresponding benchmark here.
 | B-RERANK-1  | Cross-encoder reranker latency per platform                                           | Degraded-mode fallback condition                 | p95 < 80 ms on M1/M2/M3 Pro; documented on Linux x86, Windows                                 | Documented in release notes, not a blocker                                  |
 | B-SEC-1     | Encryption-at-rest overhead                                                           | sqlcipher tax on read/write paths                | ≤ 15% overhead on B-RET-2; decrypt-on-open < 500 ms                                           | DoD gate for v0.1                                                           |
 | B-SEC-2     | Outbound-network block test                                                           | No hidden outbound calls                         | Full test suite passes with all outbound blocked except configured adapters                   | DoD gate for v0.1                                                           |
+| B-SYNC-1    | Snapshot sync load at 50K facets                                                      | v0.5 BYO sync dogfood gate                       | Push + pull a 50K-facet encrypted vault, then verify the restored audit chain                 | Dogfood gate for v0.5                                                       |
 
 ## Method — for every benchmark
 
@@ -61,7 +62,8 @@ docs/benchmarks/
 ├── B-REEMBED-1-embedder-swap/
 ├── B-RERANK-1-reranker-latency/
 ├── B-SEC-1-encryption-overhead/
-└── B-SEC-2-outbound-block/
+├── B-SEC-2-outbound-block/
+└── B-SYNC-1-snapshot-load/
 ```
 
 ## What NOT to benchmark

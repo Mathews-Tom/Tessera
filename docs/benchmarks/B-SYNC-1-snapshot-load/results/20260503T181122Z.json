@@ -1,0 +1,42 @@
+{
+  "benchmark_id": "B-SYNC-1",
+  "env": {
+    "arch": "arm64",
+    "os": "macOS-26.4.1-arm64-arm-64bit",
+    "python": "3.12.8",
+    "tessera_sha": "bc024fdca5ef67c4714dcc8a696495b33dde9132"
+  },
+  "inputs": {
+    "backend": "local-filesystem",
+    "facet_type": "project",
+    "facets": 50000
+  },
+  "metrics": {
+    "audit_rows_verified": 50001,
+    "blob_size_bytes": 49188880,
+    "bytes_uploaded": 49188880,
+    "bytes_written": 49188864,
+    "capture": {
+      "max_ms": 68.47683305386454,
+      "mean_ms": 0.48024109860882164,
+      "p50_ms": 0.40841696318238974,
+      "p95_ms": 0.5985419265925884,
+      "p99_ms": 3.0683750519528985
+    },
+    "populate_wall_ms": 24065.496667055413,
+    "pull_wall_ms": 72.23916600923985,
+    "push_wall_ms": 1557.8611659584567,
+    "restored_facets": 50000,
+    "restored_size_bytes": 49188864,
+    "source_size_bytes": 49188864,
+    "total_wall_ms": 26963.316456996836,
+    "verify_wall_ms": 1267.719457973726
+  },
+  "result": {
+    "audit_chain_head_matches": true,
+    "pull_sequence_number": 1,
+    "push_sequence_number": 1,
+    "restored_facet_count_matches": true
+  },
+  "timestamp": "2026-05-03T18:11:22Z"
+}
