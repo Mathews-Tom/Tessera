@@ -41,6 +41,10 @@ PASSPHRASE = b"b-sync-1-bench-passphrase"
 DEFAULT_N_FACETS = 50_000
 
 
+class BenchmarkInvariantError(RuntimeError):
+    """The sync load run completed but violated a restore invariant."""
+
+
 def _env_block() -> dict[str, Any]:
     return {
         "os": platform.platform(),
@@ -72,6 +76,21 @@ def _percentile(samples: list[float], pct: float) -> float:
 
 def _ms_since(start: float) -> float:
     return (time.perf_counter() - start) * 1000.0
+
+
+def _assert_restore_invariants(
+    *,
+    expected_facets: int,
+    restored_facets: int,
+    push_chain_head: str,
+    pull_chain_head: str,
+) -> None:
+    if restored_facets != expected_facets:
+        raise BenchmarkInvariantError(
+            f"restored {restored_facets} facets, expected {expected_facets}"
+        )
+    if push_chain_head != pull_chain_head:
+        raise BenchmarkInvariantError("restored audit chain head does not match manifest")
 
 
 def _seed_vault(vault_path: Path, n_facets: int) -> tuple[bytes, bytes, list[float]]:
@@ -106,6 +125,54 @@ def _seed_vault(vault_path: Path, n_facets: int) -> tuple[bytes, bytes, list[flo
                 samples_ms.append(_ms_since(start))
         master_key_bytes = bytes.fromhex(key.hex())
     return salt, master_key_bytes, samples_ms
+
+
+def _build_payload(
+    *,
+    n_facets: int,
+    capture_samples_ms: list[float],
+    timings_ms: dict[str, float],
+    sizes_bytes: dict[str, int],
+    sync_metrics: dict[str, int | bool],
+) -> dict[str, Any]:
+    capture_metrics = {
+        "p50_ms": statistics.median(capture_samples_ms),
+        "p95_ms": _percentile(capture_samples_ms, 95),
+        "p99_ms": _percentile(capture_samples_ms, 99),
+        "mean_ms": statistics.fmean(capture_samples_ms),
+        "max_ms": max(capture_samples_ms),
+    }
+    return {
+        "benchmark_id": "B-SYNC-1",
+        "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "env": _env_block(),
+        "inputs": {
+            "backend": "local-filesystem",
+            "facets": n_facets,
+            "facet_type": "project",
+        },
+        "metrics": {
+            "capture": capture_metrics,
+            "populate_wall_ms": timings_ms["populate"],
+            "push_wall_ms": timings_ms["push"],
+            "pull_wall_ms": timings_ms["pull"],
+            "verify_wall_ms": timings_ms["verify"],
+            "total_wall_ms": sum(timings_ms.values()),
+            "source_size_bytes": sizes_bytes["source"],
+            "blob_size_bytes": sizes_bytes["blob"],
+            "restored_size_bytes": sizes_bytes["restored"],
+            "bytes_uploaded": sync_metrics["bytes_uploaded"],
+            "bytes_written": sync_metrics["bytes_written"],
+            "restored_facets": sync_metrics["restored_facets"],
+            "audit_rows_verified": sync_metrics["audit_rows_verified"],
+        },
+        "result": {
+            "push_sequence_number": sync_metrics["push_sequence_number"],
+            "pull_sequence_number": sync_metrics["pull_sequence_number"],
+            "audit_chain_head_matches": True,
+            "restored_facet_count_matches": True,
+        },
+    }
 
 
 def _run(*, n_facets: int) -> int:
@@ -153,51 +220,35 @@ def _run(*, n_facets: int) -> int:
         verify_ms = _ms_since(verify_start)
 
         blob_path = store_root / "blobs" / push_result.blob_id
-        source_size_bytes = source_path.stat().st_size
-        blob_size_bytes = blob_path.stat().st_size
-        restored_size_bytes = restored_path.stat().st_size
-
-    total_ms = populate_ms + push_ms + pull_ms + verify_ms
-    capture_metrics = {
-        "p50_ms": statistics.median(capture_samples_ms),
-        "p95_ms": _percentile(capture_samples_ms, 95),
-        "p99_ms": _percentile(capture_samples_ms, 99),
-        "mean_ms": statistics.fmean(capture_samples_ms),
-        "max_ms": max(capture_samples_ms),
-    }
-    payload = {
-        "benchmark_id": "B-SYNC-1",
-        "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "env": _env_block(),
-        "inputs": {
-            "backend": "local-filesystem",
-            "facets": n_facets,
-            "facet_type": "project",
-        },
-        "metrics": {
-            "capture": capture_metrics,
-            "populate_wall_ms": populate_ms,
-            "push_wall_ms": push_ms,
-            "pull_wall_ms": pull_ms,
-            "verify_wall_ms": verify_ms,
-            "total_wall_ms": total_ms,
-            "source_size_bytes": source_size_bytes,
-            "blob_size_bytes": blob_size_bytes,
-            "restored_size_bytes": restored_size_bytes,
-            "bytes_uploaded": push_result.bytes_uploaded,
-            "bytes_written": pull_result.bytes_written,
-            "restored_facets": restored_facets,
-            "audit_rows_verified": verify_result.total_rows,
-        },
-        "result": {
-            "push_sequence_number": push_result.sequence_number,
-            "pull_sequence_number": pull_result.sequence_number,
-            "audit_chain_head_matches": (
-                push_result.audit_chain_head == pull_result.audit_chain_head
-            ),
-            "restored_facet_count_matches": restored_facets == n_facets,
-        },
-    }
+        _assert_restore_invariants(
+            expected_facets=n_facets,
+            restored_facets=restored_facets,
+            push_chain_head=push_result.audit_chain_head,
+            pull_chain_head=pull_result.audit_chain_head,
+        )
+        payload = _build_payload(
+            n_facets=n_facets,
+            capture_samples_ms=capture_samples_ms,
+            timings_ms={
+                "populate": populate_ms,
+                "push": push_ms,
+                "pull": pull_ms,
+                "verify": verify_ms,
+            },
+            sizes_bytes={
+                "source": source_path.stat().st_size,
+                "blob": blob_path.stat().st_size,
+                "restored": restored_path.stat().st_size,
+            },
+            sync_metrics={
+                "bytes_uploaded": push_result.bytes_uploaded,
+                "bytes_written": pull_result.bytes_written,
+                "restored_facets": restored_facets,
+                "audit_rows_verified": verify_result.total_rows,
+                "push_sequence_number": push_result.sequence_number,
+                "pull_sequence_number": pull_result.sequence_number,
+            },
+        )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
