@@ -60,6 +60,20 @@ Each of these facets is about the **horizontal touch of the T-shape**. Query-tim
 
 The `mode` column on `facets` discriminates rows by **production method**, not user choice: v0.1 writes `query_time` for all five facets; v0.5 writes `write_time` for `compiled_notebook` rows produced by the compiler. A per-facet mode toggle on existing facet types is not a v0.5 commitment — if real user signal calls for it after v0.5, it's a later decision.
 
+## Project context as the repo-local layer
+
+There is a second fragmentation problem adjacent to personal AI memory: codebase knowledge. A single `AGENTS.md` or `CLAUDE.md` does not scale once design decisions, test obligations, source references, and project-specific workflows spread across a real repo.
+
+The post-v0.5 direction is an optional project-context layer: a repo can carry linked markdown sections, source-code backlinks, and strict context checks, then sync those sections into Tessera as disk-backed facets. This borrows the strongest workflow idea from markdown codebase-graph tools while preserving Tessera's architecture:
+
+- markdown is the human-reviewable authoring surface
+- facets remain the durable retrieval and auth surface
+- `tessera check context` catches broken links, stale source refs, and disk/vault drift
+- `tessera expand` resolves explicit `[[...]]` handles in prompts
+- opt-in agent hooks run recall and checks during normal coding workflows
+
+This is not a pivot into a notes app. It is the repo-local counterpart to portable personal context: project knowledge that agents can navigate, humans can review, and checks can enforce.
+
 ## Market context
 
 Honest map as of April 2026.
@@ -95,6 +109,14 @@ Honest map as of April 2026.
 | Codex config | Codex CLI | Codex-only |
 | Windsurf rules | Windsurf | Windsurf-only |
 
+### Repo-local knowledge graphs (adjacent category)
+
+| Product | Position | Notes |
+|---|---|---|
+| Markdown codebase graphs | Knowledge graph for codebases | Strong on wiki links, source backlinks, checks, CLI/MCP navigation, and agent hooks. Tessera should learn the workflow, not replace its vault with markdown. |
+| Obsidian-style project wikis | Human-authored project knowledge | Good authoring ergonomics, weak protocol/auth/audit integration for AI tools. |
+| Per-agent generated docs | Tool-specific context | Useful but fragmented; no shared vault or cross-tool capability model. |
+
 ### Knowledge compilation (different category — write-time)
 
 | Approach | Notes |
@@ -125,9 +147,11 @@ This is a **cross-facet** coherence claim, not a full **cross-session** coherenc
 
 **4. Single-binary install.** Every direct competitor ships Docker (OpenMemory, doobidoo), npm (CaviraOSS), cloud accounts (SaaS memory products), or a runtime (Letta Code). A real single-binary install — `brew install tessera`, no Docker, no Postgres, no Qdrant, no account — is a friction asymmetry. Mainstream non-technical users are gated by setup friction; first-mover on zero-friction install matters.
 
-**5. All-local, by absence not by toggle.** fastembed (ONNX Runtime) for both embedding and reranking, fully in-process. No cloud adapters ship; the codebase has no API-key surface to defeat. Most competitors default to OpenAI keys. Aligns structurally with the open-source-LLM movement accelerating in 2026 and removes "cloud is opt-in" from the trust posture in favour of "cloud is absent."
+**5. Repo-local project context as an adapter, not a rewrite.** Markdown codebase-graph tools show that agents work better when project knowledge is linked, source-referenced, and checkable. Tessera can adopt that workflow while keeping the encrypted vault as the retrieval/auth/audit source of truth. That combination is stronger than either flat provider memory or plaintext markdown alone.
 
-**6. Aesthetic and UX discipline.** Linear vs. Jira. Bear vs. Evernote. Most memory products are dev-tools-ugly. An opinionated, prosumer-quality interface (CLI first, no GUI in v0.1) that competes on shape rather than feature-count is a moat that compounds with brand.
+**6. All-local, by absence not by toggle.** fastembed (ONNX Runtime) for both embedding and reranking, fully in-process. No cloud adapters ship; the codebase has no API-key surface to defeat. Most competitors default to OpenAI keys. Aligns structurally with the open-source-LLM movement accelerating in 2026 and removes "cloud is opt-in" from the trust posture in favour of "cloud is absent."
+
+**7. Aesthetic and UX discipline.** Linear vs. Jira. Bear vs. Evernote. Most memory products are dev-tools-ugly. An opinionated, prosumer-quality interface (CLI first, no GUI in v0.1) that competes on shape rather than feature-count is a moat that compounds with brand.
 
 What is *not* a moat: Apache 2.0 license (table stakes), MCP support (everyone has it), local storage (several have it), in-process ONNX inference (commodified by fastembed and similar). Stating these as differentiators would be self-deception.
 
@@ -207,4 +231,5 @@ If a real audience forms, the long-term monetization shape would be optional man
 
 - **System Design** — architecture, schema, retrieval pipeline, MCP surface
 - **Release Spec** — what ships in v0.1, v0.3, v0.5, v1.0, and what never ships
+- **Project Context Layer** — proposed post-v0.5 repo-local markdown adapter, source refs, checks, and hooks
 - **Pitch** — share-with-colleagues version

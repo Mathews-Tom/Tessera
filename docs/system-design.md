@@ -322,6 +322,56 @@ Three slots, wired through a decorator-based registry:
 
 All-local is the only supported mode after ADR-0014. fastembed runs both adapters in-process via ONNX Runtime; there are no cloud adapters to enable, no separate model server to coordinate, no torch dependency. ADR 0008 documents the slot boundaries and swap semantics; ADR 0014 documents the v0.4 simplification that removed every non-fastembed adapter.
 
+## Project context layer (post-v0.5)
+
+The next useful extension above the v0.5 vault is a repo-local project-context adapter. The storage model does not change: the encrypted SQLite vault remains the source of truth for retrieval, capability checks, audit-chain verification, sync, and MCP/REST access. The adapter gives a repository an optional markdown authoring surface whose sections sync into Tessera facets.
+
+```mermaid
+graph TB
+  MD[Repo markdown context<br/>.tessera/context.md/ or tessera.md/]
+  SRC[Source files<br/>@tessera backlinks]
+  CHECK[tessera check context]
+  SYNC[tessera context sync]
+  VAULT[(vault.db<br/>facets + metadata + audit)]
+  MCP[MCP / REST / CLI<br/>recall + show + refs + expand]
+
+  MD --> CHECK
+  SRC --> CHECK
+  MD --> SYNC
+  SYNC --> VAULT
+  VAULT --> MCP
+  CHECK --> MCP
+```
+
+The useful pattern is borrowed from markdown knowledge-graph tools: linked sections, short previews, code backlinks, strict checks, and agent lifecycle hooks. The part Tessera must not borrow is replacing durable storage with plaintext markdown. Markdown is an authoring and review surface; facets remain the canonical data model.
+
+Candidate section-to-facet mapping:
+
+| Markdown section | Facet |
+|---|---|
+| Architecture and design notes | `project` |
+| Coding procedures | `workflow` or `skill` |
+| Test specs and delivery gates | `verification_checklist` |
+| Agent operating notes | `agent_profile` or `project` |
+| Synthesized deep docs | `compiled_notebook` |
+
+Source references are stored as structured metadata, for example:
+
+```json
+{
+  "source_refs": [
+    {
+      "path": "src/tessera/retrieval/pipeline.py",
+      "symbol": "recall",
+      "line": 78,
+      "ref_kind": "implements"
+    }
+  ]
+}
+```
+
+Source scanning is CLI/check-time work. The daemon does not parse arbitrary source files during recall. `tessera check context` validates wiki links, ambiguous references, source backlinks, required code mentions, disk/vault hash drift, stale compiled artifacts, and section summaries. `tessera expand` resolves explicit `[[...]]` handles against facet IDs, skill names, people aliases, disk-backed section IDs, and compiled-artifact IDs. Agent hooks can call those primitives, but Tessera remains the context layer rather than the runtime.
+
 ## Trust & capability tokens
 
 ```mermaid
@@ -533,6 +583,7 @@ Critically: **the v0.1 architecture does not foreclose any of this.** The `mode`
 | Importers (ChatGPT export, Claude export, Obsidian) | Each is a small project; v0.1 ships before any | v0.3 |
 | Write-time compiled notebooks | Vertical-depth mode; needs v0.1 users to shape the compiler | v0.5 |
 | BYO cloud sync (S3, B2, Tigris) | Architecturally simple but adds surface | v0.5 |
+| Repo-local project context graph | Needs v0.5 vault primitives first; valuable as an adapter over facets, not a storage rewrite | v0.6 |
 | Web/desktop UI | Violates "the product disappears" | v1.0 if ever |
 | Multi-user vaults | Permission complexity | post-1.0 |
 | Hosted sync service | Solo-dev cannot run user-facing infrastructure | v1.0 if ever |
@@ -546,13 +597,16 @@ Things that should wait for v0.1 user signal, not be settled now:
 2. **Per-facet reranker selection.** A reranker tuned for code might be wrong for voice samples. v0.1 ships one reranker; v0.3 may need per-facet ones.
 3. **Compiled-artifact invalidation granularity.** When source facets mutate, is `is_stale=1` sufficient, or do we need partial invalidation? v0.5 problem.
 4. **Write-time compilation trigger model.** Cron schedule, on-demand, or mutation-pressure-based? Defer until v0.5 user feedback.
+5. **Project-context section identity.** Should disk-backed section IDs be path-derived, heading-derived, explicit frontmatter IDs, or generated ULIDs? Defer until the adapter design starts; the invariant is fail-loud duplicate detection.
+6. **Source symbol parsing depth.** Comment backlinks are cheap and language-agnostic; symbol validation needs language parsers. Start with comments and paths, then add symbol parsers only where real projects demand it.
 
 ---
 
 ## Reading next
 
-- **Release Spec** — what ships in v0.1, v0.1.x, v0.3, v0.5, v1.0 with definition of done
+- **Release Spec** — what ships in v0.1, v0.1.x, v0.3, v0.5, v0.6, v1.0 with definition of done
 - **System Overview** — strategic context, market, moat
+- **Project Context Layer** — proposed post-v0.5 repo-local markdown adapter, source refs, checks, and hooks
 - **Pitch** — the shareable version
 - `docs/swcr-spec.md` — the algorithm behind SWCR
 - `docs/threat-model.md` — security model
