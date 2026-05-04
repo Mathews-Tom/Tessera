@@ -283,8 +283,9 @@ If a real audience forms, the long-term shape is optional managed sync (BYO stor
 - [`docs/pitch.md`](pitch.md) — the deeper colleague-pitch with framing, market context, and what to push back on.
 - [`docs/system-overview.md`](system-overview.md) — category claim, moat analysis, T-shape framing.
 - [`docs/system-design.md`](system-design.md) — architecture, schema, retrieval pipeline, encryption.
+- [`docs/project-context-layer.md`](project-context-layer.md) — proposed post-v0.5 repo-local markdown adapter, source refs, checks, and hooks.
 - [`docs/swcr-spec.md`](swcr-spec.md) — the cross-facet retrieval algorithm.
-- [`docs/release-spec.md`](release-spec.md) — what ships in v0.1 / v0.3 / v0.5 / v1.0.
+- [`docs/release-spec.md`](release-spec.md) — what ships in v0.1 / v0.3 / v0.5 / v0.6 / v1.0.
 - [`docs/troubleshooting.md`](troubleshooting.md) — symptom-indexed install and first-run fixes.
 
 ---

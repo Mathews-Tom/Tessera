@@ -27,6 +27,7 @@ Non-goals come in three categories:
 | `compiled_notebook` facet + write-time compilation      | v0.1 / v0.3       | v0.5            | Vertical-depth synthesis; needs v0.1 users to shape the compiler                                                                           |
 | BYO cloud sync                                          | v0.1 / v0.3       | v0.5            | Architecturally simple; adds surface area                                                                                                  |
 | Per-facet mode toggle (Framing Y) on existing types     | v0.1 through v0.5 | post-v0.5       | `compiled_notebook` carries write-time; existing types stay `query_time`. A user-visible per-facet mode toggle ships only if post-v0.5 signal calls for it |
+| Repo-local project-context graph                        | v0.1 through v0.5 | v0.6 candidate  | Useful as a markdown authoring/checking adapter over facets after v0.5; not a replacement for the encrypted vault                         |
 | Multi-user vaults / shared namespaces                   | v0.1 through v0.5 | v1.0 or later   | Requires mature permission model                                                                                                           |
 | Optional desktop GUI                                    | v0.1 through v0.5 | v1.0 (optional) | CLI remains primary; GUI is opt-in, feature-parity for read operations only                                                                |
 | Optional hosted sync                                    | v0.1 through v0.5 | v1.0 (optional) | Solo-dev cannot operate user-facing infrastructure pre-v1.0; BYO S3 always free                                                            |
@@ -52,6 +53,7 @@ These are not engineering deferrals. They are product commitments. Breaking one 
 | Last-writer-wins conflict resolution for facets                                   | Silently drops learnings. Category-inconsistent with a portable-context layer. Append-on-conflict is the correct default.              |
 | Plaintext vault at rest                                                           | Contradicts the user-owned-context framing. Encryption-at-rest is v0.1 mandatory.                                                      |
 | URL-embedded token transport as a recommended configuration                       | Antipattern. ChatGPT Dev Mode connects via an exchange endpoint; URL tokens are deprecated on arrival.                                 |
+| Markdown files as the canonical memory store                                      | Repo-local markdown may become an authoring/review adapter, but the vault remains canonical for auth, audit, retrieval, and sync.      |
 
 ## Out of product scope
 
@@ -61,6 +63,7 @@ These are different products. Tessera does not try to be them and does not compe
 | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent runtime (Letta, Claude Code, Cline)                                              | Tessera is the portable-context layer, not the execution layer. Any runtime or AI tool can consume Tessera.                                  |
 | Note-taking app (Obsidian, Notion, Bear)                                               | Tessera is read/written by AI tools via MCP, not by humans composing notes. An Obsidian importer is a v0.3 feature; an Obsidian competitor is not a goal. |
+| Markdown codebase graph tools                                                          | Tessera can learn from linked sections, source backlinks, and checks, but those remain adapter/workflow features over facets rather than a separate product. |
 | Provider-native memory (ChatGPT Memory, Gemini Personal Intelligence, Claude Projects) | Those are single-provider lock-ins. Tessera is the inverse — portable across every MCP-speaking tool.                                        |
 | Observability platform (Datadog, Honeycomb)                                            | Tessera is not monitoring AI tools. It is the user context they read and write.                                                              |
 | Vector database (Pinecone, Weaviate, Qdrant)                                           | Tessera uses sqlite-vec internally. It is not a vector-database product.                                                                     |

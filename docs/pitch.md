@@ -43,15 +43,19 @@ Tessera is **query-time by default, for the horizontal touch of the T-shape.** P
 
 For the **vertical depth of the T-shape** — your long-running research, your deep work, your evolving thinking — write-time compilation is the right tool. v0.5 ships it as a new facet type (`compiled_notebook`): you tag a project or skill as vertical-depth, and a compilation agent writes a synthesized artifact from those source facets. The v0.1 schema reserves the facet type and the `compiled_artifacts` table, so the transition is additive, not a rewrite. v0.1 is honest about scope: horizontal touch only. If your deep vertical needs wiki-style compilation today, Karpathy's prompt does it well; nothing in Tessera conflicts with running that alongside.
 
+There is also a repo-local layer Tessera should grow into after v0.5: project context that lives near code, is reviewable as markdown, and is mechanically tied to implementation through source backlinks and checks. Markdown codebase-graph tools prove that linked sections plus strict validation are useful for agents. Tessera's version should sync those sections into facets, not replace the encrypted vault with plaintext files.
+
 ## What makes it technically real
 
-Three architectural commitments that aren't marketing copy:
+Four architectural commitments that aren't marketing copy:
 
 1. **Single file, not a service.** The vault is a SQLite database at `~/.tessera/vault.db`. You can `cp` it. Email it. Inspect it with any SQLite browser. No Docker. No Postgres. No Qdrant. No account. The file is the product.
 
 2. **SWCR-based cross-facet retrieval.** When you ask ChatGPT to "draft a LinkedIn post about my anneal project," you don't want nearest-neighbor facts — you want your LinkedIn writing voice, your project context, your 5-act workflow, your preferences, *together*, coherent in that one recall bundle. That's what SWCR (Sequential Weighted Context Recall) delivers. It's topology-aware cross-facet coherence weighting done at query time, not a cosine search dressed up as retrieval.
 
 3. **All-local by default.** fastembed (ONNX Runtime) for both embedding and reranking, fully in-process inside the daemon. No model server, no cloud, no torch. The stack runs on a plane. The DX-pain movement away from hosted model providers is accelerating; Tessera aligns with it structurally, not as a toggle.
+
+4. **Project context can become checkable.** The next layer is repo-local markdown context synced into facets, with `@tessera` source backlinks, `tessera check context`, explicit `[[...]]` expansion, and opt-in agent hooks. That makes project knowledge enforceable without turning Tessera into a notes app or agent runtime.
 
 ## Posture
 

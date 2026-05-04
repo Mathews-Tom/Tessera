@@ -23,13 +23,15 @@ graph LR
   V01x[v0.1.x<br/>Stabilization<br/>+ brew tap<br/>+ stdio MCP bridge]
   V03[v0.3<br/>People + Skills<br/>+ Importers]
   V05[v0.5<br/>Write-time mode<br/>+ Compiled notebooks<br/>+ BYO sync]
+  V06[v0.6<br/>Project context layer<br/>+ Source refs<br/>+ Context checks]
   V10[v1.0<br/>Multi-user<br/>+ Optional GUI<br/>+ Optional hosted sync]
 
-  V01 --> V01x --> V03 --> V05 --> V10
+  V01 --> V01x --> V03 --> V05 --> V06 --> V10
 
   style V01 fill:#1f3a5f,color:#fff
   style V03 fill:#2d5a3d,color:#fff
   style V05 fill:#2d5a3d,color:#fff
+  style V06 fill:#2d5a3d,color:#fff
   style V10 fill:#7a1f2b,color:#fff
 ```
 
@@ -41,6 +43,7 @@ Timeline estimates, paced by solo-dev evening and weekend velocity:
 | v0.1.x | 4 weeks of stabilization | 5+ real users (not Tom) successfully complete the demo without live help |
 | v0.3 | 3 months after v0.1 | People + Skills facets in real use; two importers shipped |
 | v0.5 | 6 months after v0.3 | Write-time compilation is useful for a real vertical-depth topic |
+| v0.6 | After v0.5 GA unless row-merge/temporal triggers fire first | Repo-local project context is reviewable, source-linked, and checkable |
 | v1.0 | When v0.5 has 100+ active vaults in the wild | Multi-user works; optional GUI if demanded |
 
 The windows above are estimates, not commitments. A version ships when its Definition of Done is green, not when the calendar says so. The discipline is shipping a tight v0.1 that nails the T-shape demo, not hitting a date. Definition-of-Done items in each release section below are hard gates: every checkbox must be green before the version ships.
@@ -299,6 +302,58 @@ Per-item status is annotated below. Implementation lands in the v0.3 commit seri
 - [x] **`recall` transparently surfaces compiled artifacts and marks stale ones (V0.5-P7, ADR 0019 §Retrieval surface).** Every recall match carries `mode` (the row's production method — `query_time` or `write_time`) and `is_stale` (V0.5-P6 staleness flag for `compiled_notebook` rows; always `False` for other facet types). Hydration runs as a single `LEFT JOIN compiled_artifacts ON external_id` SQL pass against the K survivors so cost is proportional to response size. No privileged slice — the bundle's token budget envelope treats compiled artifacts as one more facet type per ADR 0019 §Retrieval surface. New `tests/unit/test_recall_stale_surface.py` (8 tests) covers hydration shape and end-to-end propagation; integration `test_recall_match_view_carries_mode_and_is_stale` and `test_recall_match_view_surfaces_is_stale_after_mutation` pin the round-trip through the MCP boundary.
 - [ ] 1+ user reports running multi-machine sync continuously for 30+ days (tracking protocol: `docs/dogfood/sync-dogfood.md`; pending real multi-machine evidence)
 - [ ] Tom has dogfooded write-time compilation for his actual research for 60+ days (tracking protocol: `docs/dogfood/compiled-notebook-dogfood.md`; pending real compiled-notebook evidence)
+
+---
+
+## v0.6 — Project context layer
+
+**The bar.** Tessera becomes useful inside a codebase as a source-linked project context layer. A repo can carry inspectable markdown context, sync it into Tessera facets, validate that links and code backlinks are not stale, and expose that graph through CLI/MCP without replacing the encrypted vault.
+
+This release is explicitly inspired by the useful workflow shape of markdown knowledge-graph tools: linked sections, source-code backlinks, strict checks, section navigation, and agent hook reminders. Tessera adopts those as a facet adapter and validation loop, not as a new storage foundation.
+
+### Scope
+
+**Repo-local context adapter**
+
+- Optional repo directory such as `.tessera/context.md/` or `tessera.md/`.
+- Markdown sections sync into disk-backed facets.
+- Section metadata records file path, section ID, content hash, sync timestamp, and source references.
+- Existing skill disk sync remains supported; the adapter generalizes the reusable disk-backed-facet mechanics without breaking `tessera skills sync-*`.
+
+**Source-reference index**
+
+- Markdown sections can point to source paths and symbols.
+- Source files can backlink with comments such as `# @tessera: [[project#Retrieval Pipeline]]` or `// @tessera: [[skill#Release Checklist]]`.
+- Source scanning runs at CLI/check time, not in the daemon recall hot path.
+
+**Context integrity checks**
+
+- `tessera check context` validates broken links, ambiguous short refs, source backlinks, required code mentions, disk/vault drift, stale compiled artifacts, and missing leading summaries.
+- Human-readable markdown and machine-readable JSON outputs are both supported.
+
+**Explicit context expansion**
+
+- `tessera expand <text>` resolves `[[...]]` references against facet IDs, skill names, people aliases, disk-backed section IDs, and compiled-artifact IDs.
+- The matching MCP/REST surface returns a bounded context block with resolved IDs, summaries, source locations, and warnings.
+- Ambiguous and unresolved refs fail loudly.
+
+**Agent hook scaffolding**
+
+- `tessera connect <client> --hooks` wires supported clients into prompt-start and stop/end hooks.
+- Prompt-start hooks expand explicit refs and inject bounded recall context.
+- Stop/end hooks run `tessera check context` and report drift.
+- Tessera preserves non-Tessera hooks and remains the context layer, not the runtime.
+
+### Definition of Done for v0.6
+
+- [ ] A sample repo can sync markdown sections into `project`, `workflow`, `skill`, and `verification_checklist` facets.
+- [ ] `tessera context sync-from-disk` and `sync-to-disk` are idempotent and fail on duplicate section IDs.
+- [ ] `tessera context refs` shows source backlinks and section/facet references with snippets.
+- [ ] `tessera check context` fails on broken links, ambiguous refs, missing required code mentions, stale disk-backed facets, and stale compiled artifacts.
+- [ ] `tessera expand` resolves explicit refs through CLI and MCP/REST, including permission-denied cases.
+- [ ] Supported agent hook scaffolding preserves existing hooks and runs context checks without fabricating fixes.
+- [ ] No daemon hot-path source parsing is introduced.
+- [ ] The encrypted SQLite vault remains the retrieval/auth/audit/sync source of truth; markdown remains optional.
 
 ---
 
