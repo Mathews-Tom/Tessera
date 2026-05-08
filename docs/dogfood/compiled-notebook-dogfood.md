@@ -103,7 +103,7 @@ Auto-generated from `~/.tessera/dogfood/compiled.jsonl`. Run `tessera dogfood re
 <!-- BEGIN tessera-dogfood evidence-log -->
 | Date (UTC) | Machine | Kind | External ID | Compiler version | Elapsed (ms) | Exit / Useful | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| _no records yet_ |   |   |   |   |   |   |   |
+| _no records yet_ | | | | | | | |
 <!-- END tessera-dogfood evidence-log -->
 
 ## Acceptance summary

@@ -87,7 +87,7 @@ Auto-generated from `~/.tessera/dogfood/sync.jsonl`. Run `tessera dogfood render
 <!-- BEGIN tessera-dogfood evidence-log -->
 | Date (UTC) | Machine | Kind | Command | Seq Δ | Elapsed (ms) | Exit | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| _no records yet_ |   |   |   |   |   |   |   |
+| _no records yet_ | | | | | | | |
 <!-- END tessera-dogfood evidence-log -->
 
 ## Acceptance summary
@@ -100,8 +100,8 @@ Auto-generated from the same ledger; the gate clears when every row reads `Met`.
 | 30 consecutive days completed | Pending | no gate_initialized row |
 | Two-machine workflow used | Pending | — |
 | Push and pull both exercised | Pending | push=False, pull=False |
-| Audit verification passed after pull | Pending | — |
-| Sync failures documented | Pending | 0 sync_op failures, 0 note rows |
+| Audit verification passed after pull | Pending | machines without passing audit_verify: — |
+| Sync failures documented | Pending | no gate_initialized row |
 | Data-loss or sync-integrity blockers closed | Pending | manual sign-off required (record via `tessera dogfood record sync --kind note`) |
 <!-- END tessera-dogfood acceptance-summary -->
 

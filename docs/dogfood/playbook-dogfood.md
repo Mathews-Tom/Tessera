@@ -147,7 +147,7 @@ Auto-generated from `~/.tessera/dogfood/playbook.jsonl`. Run `tessera dogfood re
 <!-- BEGIN tessera-dogfood evidence-log -->
 | Date (UTC) | Machine | Kind | Target | External ID | Compiler version | Exit | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| _no records yet_ |   |   |   |   |   |   |   |
+| _no records yet_ | | | | | | | |
 <!-- END tessera-dogfood evidence-log -->
 
 ## Failure cases
@@ -188,11 +188,11 @@ Auto-generated from the ledger; the gate clears when every row reads `Met`. The 
 | Check | Status | Evidence |
 | --- | --- | --- |
 | Two or more Phase 9 targets registered | Pending | — |
-| Compile and recompile both driven through the shipped CLI | Pending | compile=False, recompile=False |
+| Register and recompile both driven through the shipped CLI | Pending | register=False, recompile=False |
 | Source mutation triggered staleness through `mark_stale_for_source` | Pending | — |
 | Recompile produced fresh artifact preserving `target` | Pending | — |
 | `tessera audit verify` passed at every checkpoint | Pending | audit_verify with non-zero exit or no rows |
-| Failure-case log populated for every class | Pending | classes logged: |
+| Failure-case log populated for every class | Pending | classes logged:  |
 | Ranking-penalty decision recorded | Pending | — |
 | Integrity blockers closed | Pending | manual sign-off required (record via `tessera dogfood record playbook --kind note`) |
 <!-- END tessera-dogfood acceptance-summary -->
