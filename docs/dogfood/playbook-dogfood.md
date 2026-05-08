@@ -31,8 +31,11 @@ The gate is complete only when all of the following are true:
   the run; `tessera playbook stale --json` lists the affected `external_id`
   and the cascade cause is recorded in the evidence log.
 - The stale artifact is recompiled through the same recipe; the new artifact
-  preserves its `target` and clears `is_stale`; the previous artifact remains
-  inspectable while marked stale until it is replaced.
+  carries the same `metadata.target` value, ships with `is_stale=false`, and
+  becomes the most-recent-fresh candidate for `[[playbook:<target>]]` and
+  target-keyed lookups. The previous artifact stays in storage with
+  `is_stale=true` and remains inspectable through `tessera playbook inspect
+  <ulid>` until it is explicitly forgotten or compacted.
 - `tessera audit verify` returns exit 0 on the vault before the run, after the
   first `register`, after the staleness flip, and after the recompile.
 - Failure cases are captured verbatim under the `## Failure cases` log, even
@@ -111,7 +114,7 @@ Each staleness loop captures:
 | Recompile elapsed | Wall-clock time from `stale` detection to the new artifact's `register` exit. |
 | Recompile diff | One-paragraph note on what changed in the artifact body and whether the eval summary moved. |
 | `tessera audit verify` | Exit code after the staleness flip and after the recompile. |
-| Old-artifact tombstone | Pre-existing artifact remains inspectable while stale until the new artifact replaces it; record the moment the old `external_id` falls out of `recall`. |
+| Old-artifact disposition | The stale artifact stays in storage with `is_stale=true` after the recompile and continues to surface in `recall` with the V0.5-P7 stale annotation; record whether the operator explicitly forgets or compacts it, when that happens, and any audit-chain row produced by the disposition. The new fresh artifact becomes the most-recent-fresh candidate for `[[playbook:<target>]]` and target-keyed lookups regardless of the old artifact's disposition. |
 
 ## Evidence log
 
