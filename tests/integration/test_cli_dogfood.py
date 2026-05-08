@@ -1,8 +1,8 @@
-"""End-to-end ``tessera dogfood`` exercise.
+"""End-to-end ``tessera dogfood`` exercise plus auto-emission hooks.
 
 Round-trips the four subcommands (init/record/render/status) against
-a per-test ledger directory and proves the doc-rewrite contract for
-the marker-block renderer.
+a per-test ledger directory and proves that ``tessera audit verify``
+auto-emits an ``audit_verify`` row to every active gate.
 """
 
 from __future__ import annotations
@@ -19,6 +19,10 @@ from tessera.dogfood.render import (
     SUMMARY_END_MARKER,
     SUMMARY_START_MARKER,
 )
+from tessera.migration import bootstrap
+from tessera.vault.encryption import derive_key, new_salt
+
+_PASSPHRASE = b"correct horse battery staple"
 
 
 @pytest.fixture
@@ -28,6 +32,15 @@ def ledger_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("TESSERA_DOGFOOD_DIR", str(tmp_path / "dogfood"))
     monkeypatch.delenv("TESSERA_DOGFOOD_DISABLE", raising=False)
     return tmp_path / "dogfood"
+
+
+def _bootstrap_vault(path: Path) -> None:
+    salt = new_salt()
+    salt_path = path.with_suffix(".db.salt")
+    salt_path.write_bytes(salt)
+    k = derive_key(bytearray(_PASSPHRASE), salt)
+    bootstrap(path, k)
+    k.wipe()
 
 
 @pytest.mark.integration
@@ -364,3 +377,101 @@ def test_dogfood_init_blocked_when_disabled(
         ]
     )
     assert rc == 1
+
+
+# ---- audit verify auto-emission ----------------------------------------
+
+
+@pytest.mark.integration
+def test_audit_verify_auto_emits_to_active_gate(
+    ledger_home: Path, tmp_path: Path
+) -> None:
+    """``tessera audit verify`` writes an audit_verify row to every active gate."""
+
+    cli_main(
+        [
+            "dogfood",
+            "init",
+            "sync",
+            "--operator",
+            "Tom",
+            "--start-date",
+            "2026-05-09",
+        ]
+    )
+    vault_path = tmp_path / "vault.db"
+    _bootstrap_vault(vault_path)
+    rc = cli_main(
+        [
+            "audit",
+            "verify",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+        ]
+    )
+    assert rc == 0
+    rows = list(Ledger("sync", base_dir=ledger_home).iter_records())
+    audit_rows = [r for r in rows if r.kind == "audit_verify"]
+    assert len(audit_rows) == 1
+    assert audit_rows[0].payload["exit_code"] == 0
+    assert audit_rows[0].payload["outcome"] in {"intact", "empty_chain"}
+
+
+@pytest.mark.integration
+def test_audit_verify_does_not_emit_when_no_gate_active(
+    ledger_home: Path, tmp_path: Path
+) -> None:
+    """No active gate → no auto-emission, even with the env-var unset."""
+
+    vault_path = tmp_path / "vault.db"
+    _bootstrap_vault(vault_path)
+    rc = cli_main(
+        [
+            "audit",
+            "verify",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+        ]
+    )
+    assert rc == 0
+    sync_path = ledger_home / "sync.jsonl"
+    assert not sync_path.exists()
+
+
+@pytest.mark.integration
+def test_audit_verify_skips_emission_when_disabled(
+    ledger_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``TESSERA_DOGFOOD_DISABLE=1`` suppresses emission even on an active gate."""
+
+    cli_main(
+        [
+            "dogfood",
+            "init",
+            "sync",
+            "--operator",
+            "Tom",
+            "--start-date",
+            "2026-05-09",
+        ]
+    )
+    monkeypatch.setenv("TESSERA_DOGFOOD_DISABLE", "1")
+    vault_path = tmp_path / "vault.db"
+    _bootstrap_vault(vault_path)
+    rc = cli_main(
+        [
+            "audit",
+            "verify",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+        ]
+    )
+    assert rc == 0
+    rows = list(Ledger("sync", base_dir=ledger_home).iter_records())
+    assert all(r.kind != "audit_verify" for r in rows)
