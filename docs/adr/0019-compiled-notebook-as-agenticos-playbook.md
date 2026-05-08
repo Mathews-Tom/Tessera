@@ -57,6 +57,38 @@ Optional source metadata keys are:
 
 Duplicate target descriptors are invalid at check time, not daemon write time. The daemon persists ordinary facets and keeps `list_compile_sources(target=...)` limited to the `compile_into` array; a later context-checking surface can scan descriptors, reject duplicate `target` values, and report targets with no sources without putting descriptor validation on the recall hot path.
 
+### Eval-set contract
+
+Every serious Playbook target can carry an eval set: representative task questions, expected claims, optional required source refs, and a severity for each question. The eval set is ordinary metadata associated with the target descriptor or a verification facet; it is not a new daemon table.
+
+Eval entries require:
+
+| Key | Meaning |
+| --- | --- |
+| `id` | Stable identifier unique within the target. |
+| `question` | Representative question the compiled artifact must answer. |
+| `expected_claims` | Claims the caller expects a correct answer to preserve. |
+| `severity` | One of `must`, `should`, or `exploratory`. |
+
+`required_source_refs` is optional and reuses the same compact `{path, section, symbol, line, ref_kind}` convention as source metadata. Matching expected claims and required refs is caller-side responsibility. Tessera stores the eval set and artifact metadata; it does not run LLM-as-judge, compute a hidden quality score, or reject artifacts based on eval results.
+
+Compiler output metadata can include:
+
+```json
+{
+  "eval_summary": {
+    "target": "swcr_design_brief",
+    "compiler": "claude-code-playbook-compiler",
+    "passed": 7,
+    "failed": 1,
+    "skipped": 0,
+    "must_failures": []
+  }
+}
+```
+
+Failed eval detail belongs under `metadata.caller_metadata.failed_evals` on the registered artifact. This keeps failed checks visible through artifact inspection without turning the retrieval path into an acceptance gate.
+
 ### Compilation pipeline
 
 ```
