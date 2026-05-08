@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -74,7 +75,10 @@ _COMPILED_CHECKS: Final[Sequence[tuple[str, str]]] = (
 
 _PLAYBOOK_CHECKS: Final[Sequence[tuple[str, str]]] = (
     ("two_targets_registered", "Two or more Phase 9 targets registered"),
-    ("compile_and_recompile_via_cli", "Compile and recompile both driven through the shipped CLI"),
+    (
+        "register_and_recompile_via_cli",
+        "Register and recompile both driven through the shipped CLI",
+    ),
     ("stale_event_observed", "Source mutation triggered staleness through `mark_stale_for_source`"),
     ("recompile_preserves_target", "Recompile produced fresh artifact preserving `target`"),
     ("audit_verified", "`tessera audit verify` passed at every checkpoint"),
@@ -113,7 +117,14 @@ def render_evidence_log(records: Iterable[Record], *, gate: str) -> str:
         rendered_rows.append(_format_row(gate, record))
     header = _table_header(gate)
     if not rendered_rows:
-        body = "| _no records yet_ |" + "  |" * (header.count("|") - 2)
+        # The header is a 2-line markdown table (column row + alignment row);
+        # only the first line determines column count. Pipes on the column
+        # row = columns + 1, so column-count = first_line.count("|") - 1
+        # and the placeholder row needs (column-count - 1) trailing empty
+        # cells after the "_no records yet_" cell.
+        first_line = header.split("\n", 1)[0]
+        empty_cells = first_line.count("|") - 2
+        body = "| _no records yet_ |" + " |" * empty_cells
         return _join_table(header, [body])
     return _join_table(header, rendered_rows)
 
@@ -278,7 +289,11 @@ def _payload_summary(record: Record) -> str:
     if record.kind == "gate_completed":
         return _escape_cell(str(payload.get("end_date", "")))
     if record.kind == "audit_verify":
-        return _escape_cell(str(payload.get("notes", "—")))
+        outcome = str(payload.get("outcome", "—"))
+        exit_code = payload.get("exit_code")
+        if exit_code is not None and int(exit_code) != 0:
+            return _escape_cell(f"{outcome} (exit={exit_code})")
+        return _escape_cell(outcome)
     error_class = payload.get("error_class")
     if error_class:
         return _escape_cell(f"err: {error_class}")
@@ -316,9 +331,22 @@ def _evaluate_sync_checks(
     sync_ops = [r for r in records if r.kind == "sync_op"]
     push_seen = any(r.payload.get("command") == "push" for r in sync_ops)
     pull_seen = any(r.payload.get("command") == "pull" for r in sync_ops)
-    audit_pass = any(r.kind == "audit_verify" and r.payload.get("exit_code") == 0 for r in records)
+    # The DoD bullet says "succeeds on each machine", not "succeeds anywhere".
+    # The predicate must therefore require at least one passing audit_verify
+    # row per distinct machine_id present in the ledger.
+    machines_with_audit_pass = {
+        r.machine_id
+        for r in records
+        if r.kind == "audit_verify" and r.payload.get("exit_code") == 0
+    }
+    audit_pass = bool(machines) and machines.issubset(machines_with_audit_pass)
     failures = [r for r in sync_ops if int(r.payload.get("exit_code", 0)) != 0]
     notes = [r for r in records if r.kind == "note"]
+    # Require the gate to be initialized AND either no failures or every
+    # failure paired with at least one explanatory note. An uninitialized
+    # empty ledger has zero failures, but reporting "Met" on a run that
+    # has not started would be misleading.
+    failures_documented = init_record is not None and (not failures or len(notes) > 0)
     return {
         "days_30_plus": (days_met, days_evidence),
         "two_machines": (
@@ -331,11 +359,18 @@ def _evaluate_sync_checks(
         ),
         "audit_verified": (
             audit_pass,
-            "audit_verify exit=0 row present" if audit_pass else "—",
+            (
+                f"audit_verify exit=0 on every machine ({len(machines_with_audit_pass)}/{len(machines)})"
+                if audit_pass
+                else f"machines without passing audit_verify: "
+                f"{', '.join(sorted(machines - machines_with_audit_pass)) or '—'}"
+            ),
         ),
         "failures_documented": (
-            not failures or len(notes) > 0,
-            f"{len(failures)} sync_op failures, {len(notes)} note rows",
+            failures_documented,
+            f"{len(failures)} sync_op failures, {len(notes)} note rows"
+            if init_record is not None
+            else "no gate_initialized row",
         ),
         "blockers_closed": (
             False,
@@ -356,7 +391,17 @@ def _evaluate_compiled_checks(
         if topic:
             real_topic = True
             topic_evidence = f"topic: {topic}"
-    register_seen = any(r.kind == "register" for r in records)
+    # A failed register attempt does not store an artifact; the DoD bullet
+    # requires the artifact to be stored "through the shipped compiled-
+    # artifact registration path", so the predicate must filter on
+    # exit_code == 0 (equivalently, non-empty external_id). The auto-hook
+    # in playbook_cmd._emit_register deliberately writes failed-attempt
+    # rows so the evidence log captures the attempt; predicates must not
+    # treat those rows as success evidence.
+    successful_registers = [
+        r for r in records if r.kind == "register" and r.payload.get("exit_code") == 0
+    ]
+    register_seen = bool(successful_registers)
     stale_seen = any(r.kind == "stale_event" for r in records)
     audit_pass = any(r.kind == "audit_verify" and r.payload.get("exit_code") == 0 for r in records)
     review_useful = any(
@@ -369,7 +414,7 @@ def _evaluate_compiled_checks(
         "real_topic": (real_topic, topic_evidence or "—"),
         "registered_through_path": (
             register_seen,
-            "register row present" if register_seen else "—",
+            f"{len(successful_registers)} successful register row(s)" if register_seen else "—",
         ),
         "stale_event_observed": (
             stale_seen,
@@ -393,11 +438,24 @@ def _evaluate_compiled_checks(
 def _evaluate_playbook_checks(
     records: list[Record],
 ) -> dict[str, tuple[bool, str]]:
+    # Only successful register rows count as "registered targets".
+    # A failed register (exit_code=1, external_id="") still appears in
+    # the evidence log as an attempt, but it did not store an artifact
+    # so it is not Phase 9 acceptance evidence.
+    successful_registers = [
+        r for r in records if r.kind == "register" and r.payload.get("exit_code") == 0
+    ]
     register_targets = {
-        r.payload.get("target") for r in records if r.kind == "register" and r.payload.get("target")
+        r.payload.get("target") for r in successful_registers if r.payload.get("target")
     }
     recompile_records = [r for r in records if r.kind == "recompile"]
-    cli_compile_seen = any(r.kind == "compile" for r in records)
+    # The shipped CLI does not emit ``kind == "compile"`` automatically
+    # (per ADR 0019 §Boundary statement Tessera does not compile). The
+    # operator-driven evidence that a compile loop completed through
+    # the shipped CLI is the auto-emitted ``register`` row. Use that as
+    # the predicate's left-hand side so the gate clears on real CLI
+    # use rather than requiring a manual ``--kind compile`` record.
+    register_via_cli_seen = bool(successful_registers)
     cli_recompile_seen = bool(recompile_records)
     stale_seen = any(r.kind == "stale_event" for r in records)
     audit_records = [r for r in records if r.kind == "audit_verify"]
@@ -418,9 +476,9 @@ def _evaluate_playbook_checks(
             if register_targets
             else "—",
         ),
-        "compile_and_recompile_via_cli": (
-            cli_compile_seen and cli_recompile_seen,
-            f"compile={cli_compile_seen}, recompile={cli_recompile_seen}",
+        "register_and_recompile_via_cli": (
+            register_via_cli_seen and cli_recompile_seen,
+            f"register={register_via_cli_seen}, recompile={cli_recompile_seen}",
         ),
         "stale_event_observed": (
             stale_seen,
@@ -485,8 +543,6 @@ def _iso_days_between(start_ts: str, end_ts: str) -> int:
     stable. Negative results clamp to 0 — a ledger whose last row
     predates ``gate_initialized`` is not a 30-day proof.
     """
-
-    from datetime import datetime  # local import to avoid top-of-file shuffle
 
     fmt_with_us = "%Y-%m-%dT%H:%M:%S.%fZ"
     fmt_no_us = "%Y-%m-%dT%H:%M:%SZ"
