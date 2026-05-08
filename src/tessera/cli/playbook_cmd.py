@@ -512,7 +512,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         except CliError as exc:
             return fail(str(exc))
     else:
-        field_views = []
+        field_views = ()
     artifact_view = _ArtifactView(
         artifact=artifact,
         resolved_target=resolved_target,
@@ -810,12 +810,20 @@ class _FieldView:
 
 @dataclass(frozen=True, slots=True)
 class _ArtifactView:
-    """Aggregated inspect result feeding the JSON / TTY renderers."""
+    """Aggregated inspect result feeding the JSON / TTY renderers.
+
+    ``include_artifact_provenance`` is the derived flag that says "render
+    the full ``metadata.field_provenance`` map alongside the artifact
+    summary". It is true only when the user passed ``--provenance`` *and*
+    no ``--field`` selectors — combining the two narrows provenance to
+    the requested fields, while ``--provenance`` alone widens it to the
+    artifact-level summary view.
+    """
 
     artifact: vault_compiled.CompiledArtifact
     resolved_target: str | None
     stale_cause: tuple[str | None, str | None] | None
-    field_views: list[_FieldView]
+    field_views: tuple[_FieldView, ...]
     include_artifact_provenance: bool
     artifact_provenance: dict[str, dict[str, Any]]
     max_snippet: int
@@ -901,22 +909,19 @@ def _resolve_artifact(
             "tag at least one source facet's metadata.compile_into=[target] or "
             "pass a compiled-artifact ULID directly"
         )
-    candidates = vault_compiled.list_for_agent(conn, agent_id=agent_id, limit=200)
-    fresh_match: vault_compiled.CompiledArtifact | None = None
-    stale_match: vault_compiled.CompiledArtifact | None = None
-    for candidate in candidates:
-        if not candidate.source_facets:
-            continue
-        if not set(candidate.source_facets).issubset(eligible):
-            continue
-        if candidate.is_stale:
-            if stale_match is None:
-                stale_match = candidate
-        else:
-            fresh_match = candidate
-            break
+    # Subset filter runs in SQL: a Python-side walk would need either an
+    # unbounded `list_for_agent` or a magic limit, both of which silently
+    # mask the case where the matching artifact sits behind newer
+    # artifacts of unrelated targets. Two LIMIT 1 queries (latest fresh,
+    # latest stale fallback) keep the cost proportional to the answer.
+    fresh_match = _select_subset_artifact(
+        conn, agent_id=agent_id, eligible=eligible, want_stale=False
+    )
     if fresh_match is not None:
         return fresh_match, target
+    stale_match = _select_subset_artifact(
+        conn, agent_id=agent_id, eligible=eligible, want_stale=True
+    )
     if stale_match is not None:
         if require_fresh:
             raise CliError(
@@ -929,6 +934,88 @@ def _resolve_artifact(
         f"target {target!r} has no compiled artifact whose source_facets are a "
         "subset of the target's compile_into sources; "
         "register one with `tessera playbook register` or check the source tags"
+    )
+
+
+def _select_subset_artifact(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    eligible: set[str],
+    want_stale: bool,
+) -> vault_compiled.CompiledArtifact | None:
+    """Return the most recent artifact whose ``source_facets`` ⊆ ``eligible``.
+
+    The SQL `NOT EXISTS` walks the artifact's stored
+    ``json_each(source_facets)`` and rejects any row containing a ULID
+    outside the eligible set. ``json_array_length > 0`` excludes the
+    empty-source-list case so a malformed write cannot accidentally
+    satisfy the predicate. ``LIMIT 1`` against the
+    ``compiled_at DESC, id DESC`` ordering returns the latest match
+    (fresh or stale, controlled by ``want_stale``) without bounding the
+    candidate walk.
+    """
+
+    placeholders = ",".join("?" for _ in eligible)
+    is_stale_value = 1 if want_stale else 0
+    row = conn.execute(
+        f"""
+        SELECT a.external_id, a.agent_id, a.source_facets, a.artifact_type,
+               a.content, a.compiled_at, a.compiler_version, a.is_stale,
+               a.metadata
+        FROM compiled_artifacts AS a
+        JOIN facets AS f ON f.external_id = a.external_id
+        WHERE a.agent_id = ?
+              AND a.is_stale = ?
+              AND f.is_deleted = 0
+              AND json_array_length(a.source_facets) > 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM json_each(a.source_facets) AS j
+                  WHERE j.value NOT IN ({placeholders})
+              )
+        ORDER BY a.compiled_at DESC, a.id DESC
+        LIMIT 1
+        """,
+        (agent_id, is_stale_value, *sorted(eligible)),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_compiled_artifact(row)
+
+
+def _row_to_compiled_artifact(row: tuple[Any, ...]) -> vault_compiled.CompiledArtifact:
+    """Mirror of :func:`vault_compiled._row_to_artifact` for inspect SQL.
+
+    The storage helper lives in the vault module and is private. Inspect
+    runs the same column order so we re-mint the dataclass here without
+    importing the private helper. Matches V0.5-P4 row layout.
+    """
+
+    sources_raw = str(row[2]) if row[2] is not None else "[]"
+    try:
+        sources_list = json.loads(sources_raw)
+    except json.JSONDecodeError:
+        sources_list = []
+    if not isinstance(sources_list, list):
+        sources_list = []
+    metadata_raw = str(row[8]) if row[8] is not None else "{}"
+    try:
+        metadata = json.loads(metadata_raw)
+    except json.JSONDecodeError:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return vault_compiled.CompiledArtifact(
+        external_id=str(row[0]),
+        agent_id=int(row[1]),
+        artifact_type=str(row[3]),
+        content=str(row[4]),
+        source_facets=tuple(str(s) for s in sources_list if isinstance(s, str)),
+        compiled_at=int(row[5]),
+        compiler_version=str(row[6]),
+        is_stale=bool(row[7]),
+        metadata=metadata,
     )
 
 
@@ -1071,7 +1158,7 @@ def _build_field_views(
     field_provenance: dict[str, dict[str, Any]],
     include_provenance: bool,
     max_snippet: int,
-) -> list[_FieldView]:
+) -> tuple[_FieldView, ...]:
     """Materialize one ``_FieldView`` per requested field.
 
     Raises :class:`CliError` listing every missing field at once so the
@@ -1124,7 +1211,7 @@ def _build_field_views(
             + ", ".join(missing)
             + f"; available sections: {suggestions}; available provenance keys: {prov_list}"
         )
-    return views
+    return tuple(views)
 
 
 def _inspect_to_json(view: _ArtifactView, *, query: str) -> str:

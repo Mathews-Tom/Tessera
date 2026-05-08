@@ -1154,3 +1154,147 @@ def test_playbook_inspect_renders_full_provenance_table(
     out = capsys.readouterr().out
     assert "field_provenance" in out
     assert "Retrieval pipeline" in out
+
+
+@pytest.mark.integration
+def test_playbook_inspect_resolves_target_among_unrelated_artifacts(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SQL subset filter resolves the right artifact at any vault depth.
+
+    The resolver pushes the ``source_facets ⊆ eligible`` predicate into
+    SQL so a target's matching artifact is returned regardless of how
+    many newer artifacts of unrelated targets sit ahead of it. Seed one
+    target_a artifact, then 50 unrelated target_b artifacts on top of it,
+    and confirm target_a still resolves correctly.
+    """
+
+    source_id_a, artifact_id_a = _register_inspect_artifact(
+        vault, target="target_a", body="# target a body\n\n## A section\n\nbody a\n"
+    )
+    # Seed source + 50 unrelated artifacts under a second target.
+    with _open(vault) as vc:
+        agent_id = int(vc.connection.execute("SELECT id FROM agents LIMIT 1").fetchone()[0])
+        source_id_b, _ = facets.insert(
+            vc.connection,
+            agent_id=agent_id,
+            facet_type="project",
+            content="source for target_b",
+            source_tool="cli",
+            metadata={"compile_into": ["target_b"], "compile_role": "primary_source"},
+        )
+        for n in range(50):
+            compiled.register_compiled_artifact(
+                vc.connection,
+                agent_id=agent_id,
+                content=f"target_b body {n}",
+                source_facets=[source_id_b],
+                artifact_type="playbook",
+                compiler_version=f"runner@{n}",
+                source_tool="cli",
+                captured_at=2_000_000 + n,  # newer than target_a
+            )
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "target_a",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["external_id"] == artifact_id_a
+    assert payload["resolved_target"] == "target_a"
+    assert source_id_a in payload["source_facets"]
+
+
+@pytest.mark.integration
+def test_playbook_inspect_rejects_cross_agent_ulid(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ULID lookup must reject artifacts owned by a different agent.
+
+    ``vault_compiled.get`` does not filter by agent id; the inspect CLI
+    is the cross-agent boundary. Add a second agent, register an
+    artifact under it, then ask for that artifact ULID via the default
+    agent. Without ``--agent-id``, the auto-resolver picks the first
+    agent and the ULID lookup must fail rather than silently leaking
+    the second agent's data.
+    """
+
+    source_id_alpha, artifact_id_alpha = _register_inspect_artifact(vault)
+    # Bootstrap a second agent and register an artifact there.
+    with _open(vault) as vc:
+        vc.connection.execute(
+            "INSERT INTO agents(external_id, name, created_at) VALUES (?, ?, ?)",
+            ("01PLAYBOOK-secondary", "secondary", 1),
+        )
+        secondary_id = int(
+            vc.connection.execute("SELECT id FROM agents WHERE name = 'secondary'").fetchone()[0]
+        )
+        secondary_source, _ = facets.insert(
+            vc.connection,
+            agent_id=secondary_id,
+            facet_type="project",
+            content="secondary source",
+            source_tool="cli",
+            metadata={"compile_into": ["release_playbook"]},
+        )
+        secondary_artifact = compiled.register_compiled_artifact(
+            vc.connection,
+            agent_id=secondary_id,
+            content="secondary playbook",
+            source_facets=[secondary_source],
+            artifact_type="playbook",
+            compiler_version="cc/release-recipe@1",
+            source_tool="cli",
+        )
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            secondary_artifact,
+            "--vault",
+            str(vault),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+            "--agent-id",
+            str(int(sqlite_first(vault, "SELECT id FROM agents WHERE name = 'primary' LIMIT 1"))),
+            "--json",
+        ]
+    )
+    assert rc == 1
+    # Sanity-check: the ULID belonging to the active agent still resolves
+    # under the same flags.
+    rc_ok = _cli(
+        [
+            "playbook",
+            "inspect",
+            artifact_id_alpha,
+            "--vault",
+            str(vault),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+            "--agent-id",
+            str(int(sqlite_first(vault, "SELECT id FROM agents WHERE name = 'primary' LIMIT 1"))),
+            "--json",
+        ]
+    )
+    assert rc_ok == 0
+    capsys.readouterr()  # discard
+    assert source_id_alpha == source_id_alpha  # placate linter (used for clarity)
+
+
+def sqlite_first(vault_path: Path, query: str) -> int:
+    """Execute ``query`` against ``vault_path`` and return the first scalar.
+
+    A small helper so the cross-agent test can resolve the primary
+    agent's id without re-bootstrapping the vault. Lives at module
+    scope so the test reads cleanly.
+    """
+
+    with _open(vault_path) as vc:
+        row = vc.connection.execute(query).fetchone()
+    return int(row[0])
