@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import sqlcipher3
 
@@ -42,7 +43,12 @@ from tessera.cli._common import (
     resolve_passphrase,
     resolve_vault_path,
 )
-from tessera.cli._ui import info, success, warn
+from tessera.cli._ui import EMOJI, info, success, warn
+from tessera.dogfood.ledger import (
+    DogfoodEmissionError,
+    auto_record,
+    is_disabled,
+)
 from tessera.sync import config as sync_config
 from tessera.sync.pull import PullError, pull
 from tessera.sync.push import PushChainBreakError, PushError, push
@@ -314,6 +320,7 @@ def _cmd_push(args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         return fail(str(exc))
 
+    started = time.monotonic()
     try:
         with derive_key(passphrase, salt) as key, VaultConnection.open(vault_path, key) as vc:
             stored = _load_or_complain(vc.connection)
@@ -343,8 +350,22 @@ def _cmd_push(args: argparse.Namespace) -> int:
                         master_key=master_key_bytes,
                     )
                 except PushChainBreakError as exc:
+                    _emit_sync_op(
+                        command="push",
+                        exit_code=1,
+                        elapsed_ms=_elapsed_ms(started),
+                        error_class="PushChainBreakError",
+                        error_message=str(exc),
+                    )
                     return fail(f"audit chain broken; refusing push: {exc}")
                 except (PushError, S3BlobStoreError) as exc:
+                    _emit_sync_op(
+                        command="push",
+                        exit_code=1,
+                        elapsed_ms=_elapsed_ms(started),
+                        error_class=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     return fail(f"push failed: {exc}")
     except CliError as exc:
         return fail(str(exc))
@@ -352,6 +373,14 @@ def _cmd_push(args: argparse.Namespace) -> int:
     success(
         f"pushed sequence {result.sequence_number} ({result.bytes_uploaded} bytes); "
         f"audit_chain_head={result.audit_chain_head[:16]}…"
+    )
+    _emit_sync_op(
+        command="push",
+        exit_code=0,
+        elapsed_ms=_elapsed_ms(started),
+        manifest_seq_after=result.sequence_number,
+        bytes_uploaded=result.bytes_uploaded,
+        audit_chain_head=result.audit_chain_head,
     )
     return 0
 
@@ -374,6 +403,7 @@ def _cmd_pull(args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         return fail(str(exc))
 
+    started = time.monotonic()
     try:
         with derive_key(passphrase, salt) as key, VaultConnection.open(vault_path, key) as vc:
             stored = _load_or_complain(vc.connection)
@@ -412,6 +442,14 @@ def _cmd_pull(args: argparse.Namespace) -> int:
                         last_restored_sequence=watermark,
                     )
                 except (PullError, S3BlobStoreError) as exc:
+                    _emit_sync_op(
+                        command="pull",
+                        exit_code=1,
+                        elapsed_ms=_elapsed_ms(started),
+                        manifest_seq_before=watermark,
+                        error_class=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     return fail(f"pull failed: {exc}")
             # Decide whether the watermark applies to this pull.
             # A --target restore-to-different-location flow is a
@@ -451,7 +489,52 @@ def _cmd_pull(args: argparse.Namespace) -> int:
     success(
         f"pulled sequence {result.sequence_number} ({result.bytes_written} bytes) to {target_path}"
     )
+    _emit_sync_op(
+        command="pull",
+        exit_code=0,
+        elapsed_ms=_elapsed_ms(started),
+        manifest_seq_before=watermark,
+        manifest_seq_after=result.sequence_number,
+        bytes_written=result.bytes_written,
+        target_path=str(target_path),
+        same_target=same_target,
+    )
     return 0
+
+
+def _elapsed_ms(started: float) -> int:
+    """Wall-clock milliseconds since ``started`` (from ``time.monotonic()``)."""
+
+    return int((time.monotonic() - started) * 1000)
+
+
+def _emit_sync_op(*, command: str, exit_code: int, elapsed_ms: int, **extras: Any) -> None:
+    """Auto-emit a ``sync_op`` row to the active ``sync`` gate ledger.
+
+    Only the sync gate admits ``sync_op``; the audit + playbook ledgers
+    are unaffected. Best-effort: failures surface as a warning without
+    affecting the command's exit code.
+    """
+
+    if is_disabled():
+        return
+    payload: dict[str, Any] = {
+        "command": command,
+        "exit_code": exit_code,
+        "elapsed_ms": elapsed_ms,
+    }
+    payload.update({key: value for key, value in extras.items() if value is not None})
+    try:
+        recorded = auto_record(kind="sync_op", payload=payload, gates=["sync"])
+    except DogfoodEmissionError as exc:
+        warn(f"dogfood sidecar failed: {exc}")
+        return
+    if recorded:
+        info(
+            f"dogfood: recorded sync_op ({command}, exit={exit_code}) to "
+            f"{', '.join(recorded)} ledger",
+            emoji=EMOJI.get("info", ""),
+        )
 
 
 def _load_or_complain(conn: sqlcipher3.Connection) -> sync_config.StoredConfig | None:
