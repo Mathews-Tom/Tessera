@@ -829,6 +829,24 @@ class _ArtifactView:
     max_snippet: int
 
 
+def _apply_snippet_cap(content: str, max_snippet: int) -> tuple[str, bool]:
+    """Return ``(snippet, truncated)`` for ``content`` honoring ``max_snippet``.
+
+    The cap is shared by three call sites (the field view builder, the
+    JSON renderer's no-field branch, and the TTY renderer's no-field
+    branch). ``max_snippet=0`` and ``content`` shorter than the cap both
+    return the verbatim content with ``truncated=False``; longer content
+    returns the prefix with ``truncated=True``. Centralising the rule
+    keeps the three branches in lock-step so a future tweak (ellipsis
+    placement, soft boundary at a sentence break, etc.) lands in one
+    place.
+    """
+
+    if max_snippet == 0 or len(content) <= max_snippet:
+        return content, False
+    return content[:max_snippet], True
+
+
 def _normalize_fields(raw_fields: list[str] | None) -> list[str]:
     """Strip empties and preserve order while deduplicating field names.
 
@@ -1182,11 +1200,7 @@ def _build_field_views(
         heading: str | None = None
         if section is not None:
             heading, body = section
-            if max_snippet == 0 or len(body) <= max_snippet:
-                snippet = body
-            else:
-                snippet = body[:max_snippet]
-                truncated = True
+            snippet, truncated = _apply_snippet_cap(body, max_snippet)
         else:
             snippet = None
         prov_entry = (
@@ -1251,12 +1265,9 @@ def _inspect_to_json(view: _ArtifactView, *, query: str) -> str:
             "source_op": source_op,
         }
     if not view.field_views:
-        if view.max_snippet == 0 or len(artifact.content) <= view.max_snippet:
-            payload["content"] = artifact.content
-            payload["content_truncated"] = False
-        else:
-            payload["content"] = artifact.content[: view.max_snippet]
-            payload["content_truncated"] = True
+        snippet, truncated = _apply_snippet_cap(artifact.content, view.max_snippet)
+        payload["content"] = snippet
+        payload["content_truncated"] = truncated
     if view.include_artifact_provenance:
         payload["field_provenance"] = view.artifact_provenance
     return json.dumps(payload, indent=2, sort_keys=True)
@@ -1308,10 +1319,9 @@ def _render_inspect_table(view: _ArtifactView, *, query: str) -> None:
                 provenance_repr,
             )
         console.print(fields_table)
-    elif view.max_snippet == 0 or len(artifact.content) <= view.max_snippet:
-        console.print(artifact.content)
     else:
-        console.print(artifact.content[: view.max_snippet] + " …")
+        full_snippet, full_truncated = _apply_snippet_cap(artifact.content, view.max_snippet)
+        console.print(full_snippet + (" …" if full_truncated else ""))
     if view.include_artifact_provenance and view.artifact_provenance:
         prov_table = report_table(
             "field_provenance",
