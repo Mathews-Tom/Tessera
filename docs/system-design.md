@@ -530,18 +530,19 @@ sequenceDiagram
   Note over Tool: Tool composes a draft using<br/>coherent cross-facet context:<br/>LinkedIn voice + 5-act structure +<br/>anneal project details +<br/>no-emoji preference
 ```
 
-## What v0.5 adds — write-time compilation for vertical depth
+## What v0.5 adds — task-shaped write-time compilation
 
-v0.5 introduces `compiled_notebook` as a new facet type and activates the reserved `compiled_artifacts` table. The user tags a `project` or `skill` as vertical-depth (e.g., their dissertation thread, a multi-week research topic), and a compilation agent produces a synthesized Karpathy-style artifact from those source facets.
+v0.5 introduces `compiled_notebook` as a new facet type and activates the reserved `compiled_artifacts` table. User-facing docs call the artifact a Playbook: a task-ready compiled artifact for a recurring task family, not a generic summary of nearby facts. The user tags allowed source facets for a compile target, and an out-of-process compiler produces a synthesized artifact from those sources. Vertical-depth research is one valid target when the task is "answer questions about this topic"; release prep, retrieval-design answers, and agent operating manuals are equally valid when their task and source set are explicit.
 
 ```mermaid
 graph TB
   subgraph Write["Write-time compilation (v0.5+)"]
-    ING[User tags source facet as compilable<br/>source facet_type=project or skill<br/>mode=query_time]
-    TRIGGER[Compilation trigger<br/>schedule or on-demand]
+    ING[User tags source facet for a compile target<br/>source facet mode=query_time]
+    TRIGGER[Caller-owned compile trigger<br/>manual or staleness-driven]
     COMPILE[Compilation agent<br/>reads source facets,<br/>synthesizes narrative]
     ARTIFACT[compiled_notebook facet written<br/>facet_type=compiled_notebook, mode=write_time<br/>content stored in compiled_artifacts]
     STALE[Source facet mutations<br/>mark artifact is_stale=1]
+    OBSERVE[Caller observes stale artifact<br/>and decides whether to recompile]
   end
 
   subgraph Query["Query-time retrieval (v0.1+)"]
@@ -553,14 +554,15 @@ graph TB
   TRIGGER --> COMPILE
   COMPILE --> ARTIFACT
   ING -.mutates sources.-> STALE
-  STALE -.triggers.-> COMPILE
+  STALE -.visible to.-> OBSERVE
+  OBSERVE -.may invoke.-> TRIGGER
   ASK --> BUNDLE
   ARTIFACT -.surfaced via.-> BUNDLE
 ```
 
-The source `project` and `skill` facets keep `mode=query_time`. The compilation agent produces a new `compiled_notebook` facet with `mode=write_time`. The `mode` column records the production method; it is not a user-facing per-facet toggle. v0.5 does not ship a mechanism to switch an existing `project` facet's mode from `query_time` to `write_time` — compilation is the only path by which `write_time` rows enter the vault.
+Source facets keep `mode=query_time`. The compilation agent produces a new `compiled_notebook` facet with `mode=write_time`. The `mode` column records the production method; it is not a user-facing per-facet toggle. v0.5 does not ship a mechanism to switch an existing source facet's mode from `query_time` to `write_time` — registration of compiled artifacts is the only path by which `write_time` rows enter the vault.
 
-Critically: **the v0.1 architecture does not foreclose any of this.** The `mode` column exists. The `compiled_notebook` facet type is reserved in the CHECK constraint. The `compiled_artifacts` table exists. The retrieval pipeline already handles multi-source candidates. v0.5 adds a compiler and a scheduler. The schema is ready.
+Critically: **the v0.1 architecture does not foreclose any of this.** The `mode` column exists. The `compiled_notebook` facet type is reserved in the CHECK constraint. The `compiled_artifacts` table exists. The retrieval pipeline already handles multi-source candidates. v0.5 adds storage and retrieval semantics for caller-compiled Playbooks; it does not put a compiler, scheduler, or LLM runtime inside the daemon. The schema is ready.
 
 ## Deployment model
 
