@@ -443,7 +443,7 @@ tessera playbook inspect release_playbook \
     --provenance --require-fresh --json
 ```
 
-There is intentionally no `tessera playbook compile`. Compilation lives outside the daemon per ADR 0019 §Boundary statement; the CLI scaffolds and registers, the runner compiles.
+There is intentionally no `tessera playbook compile`. Compilation lives outside the daemon per ADR 0019 §Boundary statement; the CLI scaffolds and registers, the runner compiles. Documented runner workflows — Claude Code, local LLM, and no-LLM manual authoring — live in `docs/playbook-compiler-recipes.md` along with the compiler-version naming convention and the seven minimum artifact sections every recipe in the pack writes.
 
 ## Recipes
 
