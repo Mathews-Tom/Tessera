@@ -265,6 +265,8 @@ Per-item status is annotated below. Implementation lands in the v0.3 commit seri
 
 - **Eval-backed Playbook contract.** Serious compile targets carry caller-owned eval metadata: stable eval IDs, representative questions, expected claims, optional required source refs, and severity values `must`, `should`, or `exploratory`. The compiler records `metadata.eval_summary` on the registered artifact and puts failed eval detail under `metadata.caller_metadata.failed_evals`. Tessera persists and exposes that metadata; it does not execute evals, run LLM-as-judge, reject artifacts, or hide quality scores inside retrieval ranking.
 
+- **Field-level Playbook provenance.** Compiled artifacts can optionally carry `metadata.field_provenance`, a caller-named map from field/section keys to `{source_facets, source_refs, confidence, notes}`. Each entry's `source_facets` must be a subset of the artifact's `compiled_artifacts.source_facets`; `source_refs` reuse the compact `{path, section, symbol, line, ref_kind}` convention. Provenance is optional per artifact and per field; field names are caller-defined. The daemon persists the metadata but does not parse source files, fetch repo content, or enforce subset semantics at write time — path resolution and validation are deferred to the later `tessera check context` surface (v0.6 scope) so the daemon hot path stays storage-only.
+
 **Write-time compilation**
 - Compilation agent reads source facets, synthesizes narrative artifact
 - Scheduled or on-demand
