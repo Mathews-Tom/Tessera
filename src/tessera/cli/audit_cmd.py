@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from tessera.cli._common import (
     CliError,
@@ -35,6 +36,11 @@ from tessera.cli._common import (
     resolve_vault_path,
 )
 from tessera.cli._ui import EMOJI, info, success, warn
+from tessera.dogfood.ledger import (
+    DogfoodEmissionError,
+    auto_record,
+    is_disabled,
+)
 from tessera.vault.audit_chain import AuditChainBrokenError, verify_chain
 
 _HELP_DESCRIPTION = (
@@ -125,6 +131,12 @@ def _cmd_verify(args: argparse.Namespace) -> int:
                     f"  stored   row_hash: {exc.actual_row_hash}",
                     emoji=doctor_emoji,
                 )
+                _emit_audit_verify(
+                    exit_code=1,
+                    outcome="broken_row",
+                    row_id=exc.row_id,
+                    op=exc.op,
+                )
                 return 1
     except FileNotFoundError as exc:
         warn(str(exc))
@@ -135,9 +147,11 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         # mismatch surfacing as an OperationalError. Surface the
         # message verbatim and return the schema-error exit code.
         warn(f"audit verify failed: {exc}")
+        _emit_audit_verify(exit_code=2, outcome="schema_error", error=str(exc))
         return 2
     if outcome.total_rows == 0:
         success("audit chain empty (no rows; chain is trivially intact)")
+        _emit_audit_verify(exit_code=0, outcome="empty_chain", total_rows=0)
         return 0
     head = outcome.head
     success(
@@ -145,7 +159,39 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         f"genesis id={outcome.genesis_row_id} at={outcome.genesis_at}; "
         f"head id={head.row_id if head is not None else 'n/a'}"
     )
+    _emit_audit_verify(
+        exit_code=0,
+        outcome="intact",
+        total_rows=outcome.total_rows,
+        head_row_id=head.row_id if head is not None else None,
+    )
     return 0
+
+
+def _emit_audit_verify(*, exit_code: int, **extras: Any) -> None:
+    """Auto-emit an ``audit_verify`` row to every active dogfood gate.
+
+    The audit-chain ship-gate sits at the centre of all three v0.5
+    dogfood gates, so a successful verify is evidence for every
+    active ledger. Best-effort: failures surface as a warning without
+    affecting the verifier's exit code, since auto-emission is
+    instrumentation, not the primary action.
+    """
+
+    if is_disabled():
+        return
+    payload: dict[str, Any] = {"exit_code": exit_code}
+    payload.update({key: value for key, value in extras.items() if value is not None})
+    try:
+        recorded = auto_record(kind="audit_verify", payload=payload)
+    except DogfoodEmissionError as exc:
+        warn(f"dogfood sidecar failed: {exc}")
+        return
+    if recorded:
+        info(
+            f"dogfood: recorded audit_verify to {', '.join(recorded)} ledger(s)",
+            emoji=EMOJI.get("info", ""),
+        )
 
 
 __all__ = ["register"]
