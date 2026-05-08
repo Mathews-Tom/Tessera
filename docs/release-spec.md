@@ -333,11 +333,19 @@ This release is explicitly inspired by the useful workflow shape of markdown kno
 **Context integrity checks**
 
 - `tessera check context` validates broken links, ambiguous short refs, source backlinks, required code mentions, disk/vault drift, stale compiled artifacts, and missing leading summaries.
-- Human-readable markdown and machine-readable JSON outputs are both supported.
+- Playbook-specific failure modes (per the V0.5 compiled-Playbooks plan, Phase 6): unresolved `metadata.source_refs[].path` / `field_provenance.source_refs[].path`, duplicate compile target descriptors across vault and disk-backed sections, compile target descriptors with no `metadata.compile_into` sources, `field_provenance.<field>.source_facets` ULIDs that escape the parent `compiled_artifacts.source_facets` list, and orphan `compiled_notebook` rows whose `metadata.target` does not match any registered descriptor.
+- Human-readable markdown and machine-readable JSON outputs are both supported. The JSON shape distinguishes per-artifact failures (`compiled_artifact_external_id`, `target`, `field`) so an agent loop can repair one Playbook without re-checking the whole vault.
+
+**Playbook integration**
+
+- Disk-backed project-context sections become first-class Playbook sources. A section that opts into a compile target tags its frontmatter metadata exactly the way a vault-only `agent_profile`, `project`, `skill`, or `verification_checklist` facet does (`compile_into`, `compile_role`, `compile_priority`, `source_refs`).
+- Compile target descriptors (`workflow` or `skill` facets carrying `target` / `task` / `artifact_type` / `quality_bar`) may also live as project-context sections; duplicate-target detection is owned by `tessera check context`, not by the daemon write path.
+- The existing `tessera playbook sources <target>`, `scaffold`, and `register` commands treat disk-backed sections identically to vault facets after sync — there is no parallel ingestion path.
 
 **Explicit context expansion**
 
-- `tessera expand <text>` resolves `[[...]]` references against facet IDs, skill names, people aliases, disk-backed section IDs, and compiled-artifact IDs.
+- `tessera expand <text>` resolves `[[...]]` references against facet IDs, skill names, people aliases, disk-backed section IDs, compiled-artifact ULIDs, and compile target identifiers.
+- Two explicit Playbook handle shapes ship: `[[compiled:<target_or_ulid>]]` and `[[playbook:<target>]]`. Target lookups resolve to the most recent fresh artifact; stale-only candidates fail loudly with the artifact's `external_id` and the V0.5-P7 `compiled_artifact_stale` warning rather than silently falling back to raw recall.
 - The matching MCP/REST surface returns a bounded context block with resolved IDs, summaries, source locations, and warnings.
 - Ambiguous and unresolved refs fail loudly.
 
@@ -354,7 +362,10 @@ This release is explicitly inspired by the useful workflow shape of markdown kno
 - [ ] `tessera context sync-from-disk` and `sync-to-disk` are idempotent and fail on duplicate section IDs.
 - [ ] `tessera context refs` shows source backlinks and section/facet references with snippets.
 - [ ] `tessera check context` fails on broken links, ambiguous refs, missing required code mentions, stale disk-backed facets, and stale compiled artifacts.
+- [ ] `tessera check context` fails on Playbook-specific drift: unresolved source-ref paths, duplicate compile target descriptors, compile targets with no sources, `field_provenance.source_facets` outside the parent artifact source list, and orphan compiled_notebook rows.
 - [ ] `tessera expand` resolves explicit refs through CLI and MCP/REST, including permission-denied cases.
+- [ ] `tessera expand` resolves `[[compiled:<target_or_ulid>]]` and `[[playbook:<target>]]` handles, fails loudly when only stale candidates exist for a target lookup, and surfaces `is_stale=true` on the bounded context block when an explicit ULID resolves to a stale artifact.
+- [ ] Disk-backed project-context sections feed the existing `tessera playbook sources`, `scaffold`, and `register` commands by tagging `metadata.compile_into` — no parallel ingestion path is introduced.
 - [ ] Supported agent hook scaffolding preserves existing hooks and runs context checks without fabricating fixes.
 - [ ] No daemon hot-path source parsing is introduced.
 - [ ] The encrypted SQLite vault remains the retrieval/auth/audit/sync source of truth; markdown remains optional.

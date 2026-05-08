@@ -87,6 +87,32 @@ Source comments provide backlinks:
 
 Scanning belongs in CLI/check-time workflows. The daemon should store indexed references but must not parse arbitrary source files during the recall hot path.
 
+## Playbook integration
+
+Disk-backed project-context sections are first-class Playbook sources. A section that opts into a compile target tags its frontmatter metadata exactly the way a vault-only `agent_profile`, `project`, `skill`, or `verification_checklist` facet does (see `docs/system-design.md §Compile target metadata contract`):
+
+```json
+{
+  "compile_into": ["swcr_design_brief"],
+  "compile_role": "primary_source",
+  "compile_priority": 80,
+  "source_refs": [
+    {
+      "path": "src/tessera/retrieval/pipeline.py",
+      "symbol": "recall",
+      "line": 78,
+      "ref_kind": "implements"
+    }
+  ]
+}
+```
+
+The disk-sync writes the section into the vault as an ordinary disk-backed facet; from then on the existing `tessera playbook sources <target>` enumeration, `tessera playbook scaffold` brief, and `register_compiled_artifact` write path treat the section like any other tagged source. A repo can therefore stage Playbook inputs in reviewable Markdown, sync them once, and compile through the same V0.5 CLI without a parallel ingestion path.
+
+Compile target descriptors (`workflow` or `skill` facets carrying `target` / `task` / `artifact_type` / `quality_bar`) may also live as project-context sections. When two repos sync into the same vault and both define a descriptor for the same `target`, the duplicate is caught by `tessera check context`, not by the daemon write path — duplicate-target detection is a context-check concern per the V0.5 plan.
+
+`source_refs` on project-context sections follow the same compact `{path, section, symbol, line, ref_kind}` convention as Playbook source refs and `metadata.field_provenance.source_refs`. Validation that the path resolves and the section/symbol exists runs at check time, so the daemon never reads arbitrary source files during recall.
+
 ## Integrity Checks
 
 `tessera check context` should fail on drift and ambiguity:
@@ -98,10 +124,17 @@ Scanning belongs in CLI/check-time workflows. The daemon should store indexed re
 | Source backlinks | `@tessera` comment points at no known section/facet |
 | Required code mention | checklist/spec section has no source backlink |
 | Disk-backed facet hash | file content and vault metadata diverge |
-| Compiled artifact sources | source facet changed and artifact is stale |
+| Unresolved source refs | `metadata.source_refs[].path` (or `field_provenance.source_refs[].path`) does not resolve to a tracked file, or the named `section`/`symbol` is missing |
+| Stale compiled artifacts | `compiled_artifacts.is_stale = 1` for any artifact whose target the repo claims, with the cascade cause from `compiled_artifact_marked_stale` audit rows |
+| Duplicate compile targets | two `workflow`/`skill` descriptors (vault or disk-backed) carry the same `target` |
+| Compile target with no sources | a registered descriptor exists but `list_compile_sources(target)` is empty |
+| Field provenance subset | `metadata.field_provenance.<field>.source_facets` references a ULID not present in the parent `compiled_artifacts.source_facets` list |
+| Compiled artifact target match | `compiled_notebook.metadata.target` does not match a known descriptor (orphan artifact) |
 | Leading summary | section lacks a short first paragraph for previews |
 
-Checks should provide markdown output for humans and JSON output for hooks.
+The Playbook-specific rows (unresolved source refs, stale artifacts, duplicate targets, empty source lists, field-provenance subset, orphan artifact) are the v0.6 extension of the V0.5 storage-only contract. The daemon stores everything; the check command is where path resolution, duplicate detection, and provenance subset validation finally run, because only at check time can the CLI walk both the vault metadata and the on-disk repo together.
+
+Checks should provide markdown output for humans and JSON output for hooks. The JSON shape distinguishes per-artifact failures (`compiled_artifact_external_id`, `target`, `field`) so an agent loop can repair a single offending Playbook without re-checking the whole vault.
 
 ## Explicit Expansion
 
@@ -114,6 +147,21 @@ Semantic recall is useful when the user does not know the exact handle. Explicit
 - people aliases
 - disk-backed project-context section IDs
 - compiled-artifact IDs
+- compile target identifiers (the `target` key on a descriptor)
+
+Compiled artifacts and Playbook targets get explicit `compiled:` and `playbook:` prefixes so the rewrite is unambiguous when a target name happens to look like a skill slug or section ID:
+
+```text
+[[compiled:01J0ABCD…]]         # exact compiled-artifact ULID
+[[compiled:swcr_design_brief]] # latest fresh artifact for that target
+[[playbook:release]]           # alias for the same lookup, target-first reading
+```
+
+The two prefixes resolve identically; `playbook:` reads naturally in user-facing prompts ("expand `[[playbook:release]]` before drafting"), while `compiled:` reads naturally when piping a specific ULID. Resolution rules:
+
+- A `[[compiled:<target>]]` or `[[playbook:<target>]]` handle resolves to the most recent non-stale artifact for that target. If the only candidate is stale, expansion fails loudly with the artifact's `external_id` and the bundle-level `compiled_artifact_stale` warning from V0.5-P7; it does not silently fall back to raw recall.
+- A `[[compiled:<external_id>]]` handle resolves to that exact artifact regardless of staleness. If the artifact is stale, expansion still succeeds but the bounded context block carries `is_stale=true` so the caller cannot accidentally trust it.
+- Unknown targets and unknown ULIDs fail with the same exit code as any other unresolved handle. Ambiguity is impossible for ULIDs (unique by construction) and impossible for targets after the duplicate-target check passes.
 
 Unresolved or ambiguous references should fail loudly. The result should include the rewritten prompt plus a bounded context block with resolved IDs, summaries, source locations, and warnings.
 
