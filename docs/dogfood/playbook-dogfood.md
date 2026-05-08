@@ -53,7 +53,7 @@ do not satisfy this gate. Implementation behavior is covered by the
 compiled-artifact, staleness, recall-surface, and audit-chain test suites; this
 document tracks the longitudinal product evidence those tests cannot supply.
 
-## Dogfood targets
+## Dogfood Targets
 
 The four Phase 9 targets, each tied to one recurring task. The gate clears at
 two registered targets; the remaining two stay queued for follow-on dogfood.
@@ -69,7 +69,7 @@ Recipe identifiers follow the runner-name / recipe-name / version convention
 from `docs/playbook-compiler-recipes.md §Compiler version naming`. The dates
 above are placeholders; the operator stamps the active date on each compile.
 
-## Run protocol
+## Run Protocol
 
 Record the following before the run starts:
 
@@ -116,13 +116,13 @@ Each staleness loop captures:
 | `tessera audit verify` | Exit code after the staleness flip and after the recompile. |
 | Old-artifact disposition | The stale artifact stays in storage with `is_stale=true` after the recompile and continues to surface in `recall` with the V0.5-P7 stale annotation; record whether the operator explicitly forgets or compacts it, when that happens, and any audit-chain row produced by the disposition. The new fresh artifact becomes the most-recent-fresh candidate for `[[playbook:<target>]]` and target-keyed lookups regardless of the old artifact's disposition. |
 
-## Evidence log
+## Evidence Log
 
 | Date | Target | Compiler version | Sources | Audit verify | Recall result | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 
-## Failure cases
+## Failure Cases
 
 Failure entries are mandatory. The Phase 9 task list calls out four classes
 the gate must surface explicitly; an entry stating "not observed" is
@@ -140,7 +140,7 @@ produced the failure, the recipe `compiler-version`, the corrective action
 (retire target, recompile with new sources, expand brief, etc.), and any
 upstream change required in the recipe pack or CLI.
 
-## Ranking-penalty decision
+## Ranking-Penalty Decision
 
 `.docs/compiled-playbooks-enhancement-plan.md §Phase 4` left the stale-artifact
 ranking-penalty as an open decision. The default is **no penalty, loud
@@ -168,7 +168,7 @@ not edit the Phase 4 plan section until this gate surfaces enough evidence.
 | Cases supporting recommendation | Pending |
 | Linked retrieval patch (if any) | Pending |
 
-## Acceptance summary
+## Acceptance Summary
 
 | Check | Status |
 | --- | --- |
@@ -182,7 +182,7 @@ not edit the Phase 4 plan section until this gate surfaces enough evidence.
 | Ranking-penalty decision recorded | Pending |
 | Integrity blockers closed | Pending |
 
-## Follow-up decision
+## Follow-Up Decision
 
 If this run produces repeated cases of stale artifacts being trusted despite
 the loud-metadata default, document them under `## Ranking-penalty decision`
