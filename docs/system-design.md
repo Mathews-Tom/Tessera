@@ -657,6 +657,59 @@ Compiler output metadata records the eval run summary on the registered artifact
 
 `eval_summary` is summary metadata, not a daemon contract. Tessera persists it with `register_compiled_artifact` metadata and later exposes it through artifact metadata surfaces; the caller owns prompt execution, claim matching, source-ref checks, and acceptance decisions. Failed eval detail belongs under `metadata.caller_metadata.failed_evals` so failures remain inspectable without turning retrieval ranking into an implicit judge.
 
+### Playbook field-level provenance
+
+Field-level provenance is the optional metadata convention that ties individual claims, fields, or sections inside a compiled artifact back to the source facets and source refs that support them. It extends the artifact-level `compiled_artifacts.source_facets` list with a per-field map so a caller can answer "which source backs this claim?" without reading the full artifact or re-running the compiler.
+
+Provenance metadata lives under `metadata.field_provenance` on the registered artifact. The shape is a flat map of caller-named field keys to provenance entries:
+
+```json
+{
+  "field_provenance": {
+    "retrieval_pipeline": {
+      "source_facets": ["01HZX...", "01J0A..."],
+      "source_refs": [
+        {
+          "path": "docs/swcr-spec.md",
+          "section": "Pipeline placement",
+          "ref_kind": "supports"
+        }
+      ],
+      "confidence": "high",
+      "notes": "claim is paraphrased from the SWCR spec; ranking-stage wording matches the cross-encoder note."
+    },
+    "staleness_policy": {
+      "source_facets": ["01J0B..."],
+      "source_refs": [
+        {
+          "path": "src/tessera/vault/compiled.py",
+          "symbol": "mark_stale_for_source",
+          "ref_kind": "implements"
+        }
+      ]
+    }
+  }
+}
+```
+
+Provenance entry keys:
+
+| Key | Required | Meaning |
+|---|---:|---|
+| `source_facets` | yes | Subset of the artifact's `compiled_artifacts.source_facets` list. Each value is a source facet ID that backs the field. |
+| `source_refs` | no | Compact pointers reusing the same `{path, section, symbol, line, ref_kind}` convention as source metadata. |
+| `confidence` | no | Caller-side confidence label such as `high`, `medium`, or `low`. Stored verbatim; Tessera does not grade or weight it. |
+| `notes` | no | Short caller note that explains the binding. Long quoted source passages do not belong in metadata. |
+
+Field names under `field_provenance` are caller-defined. They typically match a heading, claim, or section name in the rendered artifact. Provenance is optional per artifact; small Playbooks and degenerate single-source compilations do not need it.
+
+The convention places these constraints on the daemon and on later validators:
+
+- The `source_facets` listed under any field must be a subset of `compiled_artifacts.source_facets`. Field provenance never introduces new sources that bypass the artifact's source list.
+- The daemon does not parse source files, fetch repo content, or follow `source_refs.path` at write time. Path resolution and ref-kind semantics belong to the later `tessera check context` surface (v0.6 scope), where it can scan disk and vault metadata together.
+- Validation lands as documentation first. The daemon may enforce subset semantics at `register_compiled_artifact` time once the convention stabilizes through dogfood; until then, it persists artifact metadata without judging it.
+- Field provenance complements but does not replace the artifact-level `source_facets` list, the eval-set contract, or the `is_stale` flag. It sits alongside them so callers can trace claims without re-running the compiler or reading the full artifact.
+
 Concrete target shapes:
 
 | Target | Descriptor facet | Task | Typical sources |
