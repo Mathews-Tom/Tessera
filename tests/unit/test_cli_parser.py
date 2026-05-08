@@ -28,6 +28,7 @@ def test_parser_registers_every_subcommand() -> None:
         "vault",
         "stdio",
         "audit",
+        "playbook",
     }
     assert expected <= set(choices)
 
