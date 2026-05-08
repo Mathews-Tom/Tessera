@@ -97,6 +97,45 @@ class CompileSource:
     metadata: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class CompileTarget:
+    """A target descriptor enumerated by :func:`list_targets`.
+
+    Per the V0.5 compile-target contract documented in
+    ``docs/system-design.md §Compile target metadata contract`` the
+    descriptor lives as ordinary metadata on a ``workflow`` or
+    ``skill`` facet. The descriptor is *named context*, not a
+    membership table — sources still join a target only through
+    their own ``metadata.compile_into`` array.
+    """
+
+    target: str
+    task: str
+    artifact_type: str
+    quality_bar: str
+    expected_refresh: str | None
+    descriptor_external_id: str
+    descriptor_facet_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class StaleArtifactRecord:
+    """A stale ``compiled_artifacts`` row with its last cascade cause.
+
+    ``last_source_external_id`` and ``last_source_op`` come from the
+    most recent ``compiled_artifact_marked_stale`` audit row that
+    flipped the artifact (idempotent flip — only one row per genuine
+    0→1 transition per ADR 0021 §S4 / threat-model row 80). ``None``
+    when the cascade row is unavailable, e.g. on a vault upgraded
+    from a pre-V0.5-P6 schema where the cascade was not chained.
+    """
+
+    artifact: CompiledArtifact
+    last_source_external_id: str | None
+    last_source_op: str | None
+    last_marked_at: int | None
+
+
 def register_compiled_artifact(
     conn: sqlcipher3.Connection,
     *,
@@ -352,6 +391,181 @@ def list_for_compilation(
     return [_row_to_source(row) for row in rows]
 
 
+def list_targets(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+) -> list[CompileTarget]:
+    """Enumerate compile target descriptors owned by ``agent_id``.
+
+    Per ``docs/system-design.md §Compile target metadata contract``,
+    a target descriptor is an ordinary ``workflow`` or ``skill``
+    facet whose metadata carries the four required keys ``target``,
+    ``task``, ``artifact_type``, and ``quality_bar``. This helper
+    returns the well-formed descriptors only — facets missing any of
+    the four required keys are filtered out so a CLI listing never
+    invents data the user did not type. Duplicate ``target`` values
+    are not deduplicated here; the V0.6 ``tessera check context``
+    surface owns duplicate-target validation per the contract's
+    "invalid at check time, not daemon write time" rule.
+
+    Ordered by ``captured_at DESC, id DESC`` so the freshest
+    descriptor lands first when a user has revised the contract for
+    the same target name.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT external_id, facet_type, metadata
+        FROM facets
+        WHERE agent_id = ?
+              AND is_deleted = 0
+              AND facet_type IN ('workflow', 'skill')
+              AND json_extract(metadata, '$.target') IS NOT NULL
+              AND json_extract(metadata, '$.task') IS NOT NULL
+              AND json_extract(metadata, '$.artifact_type') IS NOT NULL
+              AND json_extract(metadata, '$.quality_bar') IS NOT NULL
+        ORDER BY captured_at DESC, id DESC
+        """,
+        (agent_id,),
+    ).fetchall()
+    targets: list[CompileTarget] = []
+    for row in rows:
+        metadata = _decode_metadata(row[2])
+        target = metadata.get("target")
+        task = metadata.get("task")
+        artifact_type = metadata.get("artifact_type")
+        quality_bar = metadata.get("quality_bar")
+        if not (
+            isinstance(target, str)
+            and isinstance(task, str)
+            and isinstance(artifact_type, str)
+            and isinstance(quality_bar, str)
+            and target
+            and task
+            and artifact_type
+            and quality_bar
+        ):
+            # json_extract returned a non-string or empty payload.
+            # The required-keys SQL filter only checks presence, so a
+            # string-shape filter belongs in Python.
+            continue
+        expected_refresh = metadata.get("expected_refresh")
+        if expected_refresh is not None and not isinstance(expected_refresh, str):
+            expected_refresh = None
+        targets.append(
+            CompileTarget(
+                target=target,
+                task=task,
+                artifact_type=artifact_type,
+                quality_bar=quality_bar,
+                expected_refresh=expected_refresh,
+                descriptor_external_id=str(row[0]),
+                descriptor_facet_type=str(row[1]),
+            )
+        )
+    return targets
+
+
+def get_target(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    target: str,
+) -> CompileTarget | None:
+    """Return the freshest descriptor for ``target`` or ``None``.
+
+    Reuses :func:`list_targets` so the descriptor-shape contract
+    lives in one place. Returns the first match because
+    :func:`list_targets` orders by ``captured_at DESC`` — duplicate
+    descriptors flag as a context-check failure separately, not here.
+    """
+
+    for descriptor in list_targets(conn, agent_id=agent_id):
+        if descriptor.target == target:
+            return descriptor
+    return None
+
+
+def list_stale_artifacts(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    limit: int = 100,
+) -> list[StaleArtifactRecord]:
+    """Return artifacts with ``is_stale = 1`` plus the last cascade cause.
+
+    Joins ``compiled_artifacts`` to its paired live
+    ``compiled_notebook`` facet (so tombstoned artifacts are
+    excluded — single source of truth on the facet's
+    ``is_deleted`` per V0.5-P6 / PR #61 review M1). For each stale
+    row, looks up the most recent ``compiled_artifact_marked_stale``
+    audit entry to surface ``source_external_id`` + ``source_op``
+    so the CLI can answer "which mutation invalidated this Playbook"
+    without a second query per row.
+
+    Ordered by ``compiled_at DESC, id DESC`` so the most recently
+    compiled stale artifact lands first.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT a.external_id, a.agent_id, a.source_facets, a.artifact_type,
+               a.content, a.compiled_at, a.compiler_version, a.is_stale,
+               a.metadata
+        FROM compiled_artifacts AS a
+        JOIN facets AS f ON f.external_id = a.external_id
+        WHERE a.agent_id = ?
+              AND a.is_stale = 1
+              AND f.is_deleted = 0
+        ORDER BY a.compiled_at DESC, a.id DESC
+        LIMIT ?
+        """,
+        (agent_id, limit),
+    ).fetchall()
+    records: list[StaleArtifactRecord] = []
+    for row in rows:
+        artifact = _row_to_artifact(row)
+        cause_row = conn.execute(
+            """
+            SELECT payload, at
+            FROM audit_log
+            WHERE op = 'compiled_artifact_marked_stale'
+                  AND target_external_id = ?
+                  AND agent_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (artifact.external_id, agent_id),
+        ).fetchone()
+        last_source_external_id: str | None = None
+        last_source_op: str | None = None
+        last_marked_at: int | None = None
+        if cause_row is not None:
+            payload_raw = str(cause_row[0]) if cause_row[0] is not None else "{}"
+            try:
+                payload = json.loads(payload_raw)
+            except json.JSONDecodeError:
+                payload = {}
+            if isinstance(payload, dict):
+                source_id = payload.get("source_external_id")
+                source_op = payload.get("source_op")
+                if isinstance(source_id, str):
+                    last_source_external_id = source_id
+                if isinstance(source_op, str):
+                    last_source_op = source_op
+            last_marked_at = int(cause_row[1])
+        records.append(
+            StaleArtifactRecord(
+                artifact=artifact,
+                last_source_external_id=last_source_external_id,
+                last_source_op=last_source_op,
+                last_marked_at=last_marked_at,
+            )
+        )
+    return records
+
+
 def mark_stale_for_source(
     conn: sqlcipher3.Connection,
     *,
@@ -562,13 +776,18 @@ def _now_epoch() -> int:
 
 __all__ = [
     "CompileSource",
+    "CompileTarget",
     "CompiledArtifact",
     "CompiledArtifactError",
     "DuplicateCompiledArtifactError",
     "InvalidCompiledArtifactError",
+    "StaleArtifactRecord",
     "get",
+    "get_target",
     "list_for_agent",
     "list_for_compilation",
+    "list_stale_artifacts",
+    "list_targets",
     "mark_stale_for_source",
     "register_compiled_artifact",
 ]
