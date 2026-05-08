@@ -190,6 +190,8 @@ Each step is idempotent — a resume re-runs every step whose marker is absent, 
 
 Forward, idempotent, and rollback tests live in `tests/unit/test_volatility.py::test_v3_to_v4_*` and `tests/unit/test_migration_runner.py::test_v3_to_v4_*` (P1 surfaces), `tests/unit/test_migration_runner.py::test_v3_to_v4_migration_extends_check_and_adds_agents_link` and `test_v3_to_v4_migration_is_idempotent_under_resume` (P2 surfaces), plus `test_v3_to_v4_migration_backfills_audit_chain` (P8 surface).
 
+The task-shaped Playbook conventions added on top of V0.5-P4 — compile target descriptors (`target` / `task` / `artifact_type` / `quality_bar`), source-side `compile_into` / `compile_role` / `compile_priority` / `source_refs`, eval-set metadata, and field-level `field_provenance` — are **metadata-only**. They live inside existing `facets.metadata` and `compiled_artifacts.metadata` JSON columns, introduce no new tables, columns, indexes, or CHECK constraints, and require no migration step beyond the V0.5-P4 row-add already covered by the v3 → v4 sequence. Validation contracts that the daemon does not enforce at write time (path resolution for `source_refs`, `field_provenance.<field>.source_facets` subset against the parent `compiled_artifacts.source_facets` list, duplicate compile target descriptors across vault and disk-backed sections) land with `tessera check context` in v0.6 per `docs/release-spec.md §v0.6` and the compiled-Playbooks plan §Phase 6.
+
 ## DoD for every migration
 
 A migration ships only when:
