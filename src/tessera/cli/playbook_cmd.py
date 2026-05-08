@@ -43,6 +43,7 @@ import argparse
 import contextlib
 import json
 import sys
+import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -60,6 +61,11 @@ from tessera.cli._common import (
     resolve_vault_path,
 )
 from tessera.cli._ui import EMOJI, console, info, raw, report_table, success, warn
+from tessera.dogfood.ledger import (
+    DogfoodEmissionError,
+    auto_record,
+    is_disabled,
+)
 from tessera.vault import compiled as vault_compiled
 
 _HELP_DESCRIPTION: Final[str] = (
@@ -410,6 +416,7 @@ def _cmd_register(args: argparse.Namespace) -> int:
         return fail(f"failed to read {content_path}: {exc}")
     if not content.strip():
         return fail(f"content file {content_path} is empty")
+    started = time.monotonic()
     try:
         with _vault_session(args) as (conn, agent_id):
             descriptor = vault_compiled.get_target(conn, agent_id=agent_id, target=args.target)
@@ -432,16 +439,52 @@ def _cmd_register(args: argparse.Namespace) -> int:
                 source_tool=args.source_tool,
             )
     except CliError as exc:
+        _emit_register(
+            target=args.target,
+            external_id="",
+            compiler_version=args.compiler_version,
+            exit_code=1,
+            elapsed_ms=_elapsed_ms(started),
+            error_class=type(exc).__name__,
+            error_message=str(exc),
+        )
         return fail(str(exc))
     except vault_compiled.InvalidCompiledArtifactError as exc:
+        _emit_register(
+            target=args.target,
+            external_id="",
+            compiler_version=args.compiler_version,
+            exit_code=1,
+            elapsed_ms=_elapsed_ms(started),
+            error_class="InvalidCompiledArtifactError",
+            error_message=str(exc),
+        )
         return fail(str(exc))
     except vault_compiled.DuplicateCompiledArtifactError as exc:
+        _emit_register(
+            target=args.target,
+            external_id="",
+            compiler_version=args.compiler_version,
+            exit_code=1,
+            elapsed_ms=_elapsed_ms(started),
+            error_class="DuplicateCompiledArtifactError",
+            error_message=str(exc),
+        )
         return fail(str(exc))
     success(
         f"registered compiled artifact {external_id} for target {args.target!r} "
         f"(artifact_type={artifact_type}, sources={len(source_ids)}, "
         f"compiler_version={args.compiler_version})",
         emoji=EMOJI["repair"],
+    )
+    _emit_register(
+        target=args.target,
+        external_id=external_id,
+        compiler_version=args.compiler_version,
+        exit_code=0,
+        elapsed_ms=_elapsed_ms(started),
+        artifact_type=artifact_type,
+        source_count=len(source_ids),
     )
     return 0
 
@@ -452,6 +495,7 @@ def _cmd_stale(args: argparse.Namespace) -> int:
             records = vault_compiled.list_stale_artifacts(conn, agent_id=agent_id, limit=args.limit)
     except CliError as exc:
         return fail(str(exc))
+    _emit_stale_observation(records)
     if args.json or not console.is_terminal:
         raw(_stale_to_json(records))
         return 0
@@ -473,6 +517,97 @@ def _cmd_stale(args: argparse.Namespace) -> int:
         )
     console.print(table)
     return 0
+
+
+def _elapsed_ms(started: float) -> int:
+    """Wall-clock milliseconds since ``started`` (from ``time.monotonic()``)."""
+
+    return int((time.monotonic() - started) * 1000)
+
+
+def _emit_register(
+    *,
+    target: str,
+    external_id: str,
+    compiler_version: str,
+    exit_code: int,
+    elapsed_ms: int,
+    **extras: Any,
+) -> None:
+    """Auto-emit a ``register`` row to every active gate that admits it.
+
+    Both the compiled-notebook gate and the playbook gate admit
+    ``register``; ``auto_record`` dispatches to whichever is active.
+    Best-effort: failures surface as a warning without affecting the
+    command's exit code.
+
+    The compiled-gate's required keys are ``external_id`` +
+    ``compiler_version``; the playbook-gate's are ``target`` +
+    ``external_id`` + ``compiler_version``. Sending all three to both
+    is fine — extra keys are tolerated. On a failed register we still
+    emit so the gate's evidence log captures the attempt with
+    ``exit_code=1`` and the error class.
+    """
+
+    if is_disabled():
+        return
+    payload: dict[str, Any] = {
+        "target": target,
+        "external_id": external_id,
+        "compiler_version": compiler_version,
+        "exit_code": exit_code,
+        "elapsed_ms": elapsed_ms,
+    }
+    payload.update({key: value for key, value in extras.items() if value is not None})
+    try:
+        recorded = auto_record(kind="register", payload=payload)
+    except DogfoodEmissionError as exc:
+        warn(f"dogfood sidecar failed: {exc}")
+        return
+    if recorded:
+        info(
+            f"dogfood: recorded register (target={target}, exit={exit_code}) to "
+            f"{', '.join(recorded)} ledger(s)",
+            emoji=EMOJI.get("info", ""),
+        )
+
+
+def _emit_stale_observation(
+    records: list[vault_compiled.StaleArtifactRecord],
+) -> None:
+    """Auto-emit a ``stale_event`` row when ``tessera playbook stale`` finds drift.
+
+    The dogfood predicate "stale event observed" requires evidence
+    that the operator observed and acknowledged a stale artifact. An
+    empty listing means there is nothing to observe — no row is
+    emitted, so the ledger does not accumulate "no-op observation"
+    rows that confuse the predicate.
+
+    The most recent cascade cause (per the audit-derived
+    ``last_source_op`` / ``last_source_external_id``) is captured so
+    the evidence log identifies which mutation triggered the run.
+    """
+
+    if is_disabled() or not records:
+        return
+    most_recent = records[0]
+    payload: dict[str, Any] = {
+        "source_external_id": most_recent.last_source_external_id or "",
+        "source_op": most_recent.last_source_op or "unknown",
+        "stale_count_after": len(records),
+        "observed_artifact_external_id": most_recent.artifact.external_id,
+    }
+    try:
+        recorded = auto_record(kind="stale_event", payload=payload)
+    except DogfoodEmissionError as exc:
+        warn(f"dogfood sidecar failed: {exc}")
+        return
+    if recorded:
+        info(
+            f"dogfood: recorded stale_event ({len(records)} stale artifact(s)) to "
+            f"{', '.join(recorded)} ledger(s)",
+            emoji=EMOJI.get("info", ""),
+        )
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
