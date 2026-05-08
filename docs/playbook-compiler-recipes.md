@@ -118,14 +118,14 @@ This recipe is the air-gapped equivalent of Recipe 1. The brief and source facet
    tessera playbook scaffold swcr_design_brief --out .scratch/swcr.brief.md
    ```
 
-2. **Pull every source facet body.** A small wrapper script reads the brief's source-facet table and fetches every source through the REST surface. `tessera curl show <ulid>` wraps `GET /api/v1/facets/<ulid>` and returns the full facet body, not the 200-character snippet that `tessera playbook sources --json` carries.
+2. **Pull every source facet body.** A small wrapper script reads the brief's source-facet table and fetches every source through the REST surface. `tessera curl show <ulid>` wraps `GET /api/v1/facets/<ulid>` and returns the full facet body, not the 200-character snippet that `tessera playbook sources --json` carries. The output is a concatenation of per-source JSON objects (newline-separated), not a single JSON document — name the file accordingly so a `jq`-style consumer does not assume valid JSON.
 
    ```bash
    tessera playbook sources swcr_design_brief --json \
        | jq -r '.sources[].external_id' \
        | while read ulid; do
              tessera curl show "$ulid"
-         done > .scratch/swcr.sources.json
+         done > .scratch/swcr.sources.ndjson
    ```
 
 3. **Compose the prompt.** The prompt is the scaffold brief verbatim plus the source bundle plus a fixed instruction block: "Produce a Markdown document with the seven `## ` headings listed in §Required output sections. Cite source ULIDs from the source-facet table. Do not invent source IDs." Local recipes pick a single instruction block per recipe version and keep it under source control alongside `docs/playbook-compiler-recipes.md`.
@@ -133,7 +133,7 @@ This recipe is the air-gapped equivalent of Recipe 1. The brief and source facet
 
    ```bash
    ollama run llama3.1:70b "$(cat .scratch/swcr.brief.md \
-       .scratch/swcr.sources.json \
+       .scratch/swcr.sources.ndjson \
        prompts/swcr-recipe-2026-05-09.txt)" \
        > .scratch/swcr.playbook.md
    ```
@@ -190,6 +190,8 @@ This recipe exists for high-stakes Playbooks where the user does not trust eithe
 ## Recording field-level provenance and eval metadata
 
 The CLI register path stores `eval_summary` and `field_provenance` only inside the artifact body for V0.5. Recipes that need machine-readable metadata on `compiled_artifacts.metadata` register through the Python API:
+
+> **Internal-API caveat.** The example below imports `open_vault` and `resolve_agent_id` from `tessera.cli._common`. The leading underscore is intentional: that module is the CLI's helper layer and is not a stable public surface. Recipes that bind to it should pin the Tessera version and treat the import as a sharp edge until a `tessera playbook register --metadata <json>` flag (or an equivalent public Python API) lands. The flow is documented here because metadata-bearing registration is otherwise unreachable through the V0.5 CLI.
 
 ```python
 from tessera.cli._common import open_vault, resolve_agent_id
