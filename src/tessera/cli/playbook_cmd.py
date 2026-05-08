@@ -360,7 +360,6 @@ def _cmd_register(args: argparse.Namespace) -> int:
                 compiler_version=args.compiler_version,
                 source_tool=args.source_tool,
             )
-            conn.commit()
     except CliError as exc:
         return fail(str(exc))
     except vault_compiled.InvalidCompiledArtifactError as exc:
