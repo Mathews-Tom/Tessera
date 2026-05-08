@@ -42,10 +42,12 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import sys
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import sqlcipher3
 
@@ -65,8 +67,12 @@ _HELP_DESCRIPTION: Final[str] = (
     "These commands wrap the storage-only API in tessera.vault.compiled.\n"
     "They do not call an LLM; the caller compiles with whatever runner\n"
     "they choose and registers the result through `playbook register`.\n\n"
-    "Subcommands: targets | sources | scaffold | register | stale"
+    "Subcommands: targets | sources | scaffold | register | stale | inspect"
 )
+
+_DEFAULT_SNIPPET_CHARS: Final[int] = 400
+_ULID_LENGTH: Final[int] = 26
+_ULID_ALPHABET: Final[frozenset[str]] = frozenset("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -188,6 +194,71 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         help="emit JSON instead of the table layout",
     )
     stale_p.set_defaults(handler=_cmd_stale)
+
+    inspect_p = sub.add_parser(
+        "inspect",
+        help="read a single artifact, optionally narrowed to one or more fields",
+        description=(
+            "Look up a compiled artifact by target name or ULID and emit a "
+            "bounded view of its content and provenance.\n\n"
+            "Target lookup picks the most recent fresh artifact whose "
+            "source_facets are a non-empty subset of "
+            "list_compile_sources(target). ULID lookup resolves directly and "
+            "may return a stale artifact unless --require-fresh is set.\n\n"
+            "Field selectors match a Markdown heading (## or ### Name, "
+            "case-insensitive) inside the artifact body or a key under "
+            "metadata.field_provenance. Pass --field repeatedly for multiple "
+            "fields. Without --field, the command emits the full artifact "
+            "summary."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    inspect_p.add_argument(
+        "target_or_ulid",
+        help=(
+            "compile target identifier (resolves to the latest fresh artifact) "
+            "or a compiled-artifact ULID"
+        ),
+    )
+    inspect_p.add_argument(
+        "--field",
+        dest="fields",
+        action="append",
+        default=None,
+        help=(
+            "field name; matches a Markdown heading or metadata.field_provenance key. "
+            "Pass --field repeatedly to request multiple fields."
+        ),
+    )
+    inspect_p.add_argument(
+        "--provenance",
+        action="store_true",
+        help=(
+            "include metadata.field_provenance entries for the requested fields "
+            "(or for the artifact-level summary when no --field is given)"
+        ),
+    )
+    inspect_p.add_argument(
+        "--require-fresh",
+        action="store_true",
+        help="fail loudly when the resolved artifact carries is_stale=1",
+    )
+    inspect_p.add_argument(
+        "--max-snippet",
+        type=int,
+        default=_DEFAULT_SNIPPET_CHARS,
+        help=(
+            "snippet character cap per field/section (default: "
+            f"{_DEFAULT_SNIPPET_CHARS}; pass 0 for the full content)"
+        ),
+    )
+    inspect_p.add_argument(
+        "--json",
+        action="store_true",
+        help="emit JSON instead of the formatted layout",
+    )
+    _add_vault_args(inspect_p)
+    inspect_p.set_defaults(handler=_cmd_inspect)
 
     parser.set_defaults(handler=_print_help_when_no_subcommand(parser))
 
@@ -401,6 +472,70 @@ def _cmd_stale(args: argparse.Namespace) -> int:
             record.last_source_external_id or "",
         )
     console.print(table)
+    return 0
+
+
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    try:
+        requested_fields = _normalize_fields(args.fields)
+    except CliError as exc:
+        return fail(str(exc))
+    max_snippet = args.max_snippet
+    if max_snippet < 0:
+        return fail("--max-snippet must be >= 0 (0 means no truncation)")
+    try:
+        with _vault_session(args) as (conn, agent_id):
+            artifact, resolved_target = _resolve_artifact(
+                conn,
+                agent_id=agent_id,
+                target_or_ulid=args.target_or_ulid,
+                require_fresh=args.require_fresh,
+            )
+            stale_cause = (
+                _lookup_stale_cause(conn, agent_id=agent_id, external_id=artifact.external_id)
+                if artifact.is_stale
+                else None
+            )
+    except CliError as exc:
+        return fail(str(exc))
+    sections = _extract_sections(artifact.content)
+    field_provenance = _extract_field_provenance(artifact.metadata)
+    if requested_fields:
+        try:
+            field_views = _build_field_views(
+                requested_fields,
+                sections=sections,
+                field_provenance=field_provenance,
+                include_provenance=args.provenance,
+                max_snippet=max_snippet,
+            )
+        except CliError as exc:
+            return fail(str(exc))
+    else:
+        field_views = ()
+    artifact_view = _ArtifactView(
+        artifact=artifact,
+        resolved_target=resolved_target,
+        stale_cause=stale_cause,
+        field_views=field_views,
+        include_artifact_provenance=args.provenance and not requested_fields,
+        artifact_provenance=field_provenance,
+        max_snippet=max_snippet,
+    )
+    if args.json or not console.is_terminal:
+        # Bypass Rich for JSON output: artifact bodies routinely exceed
+        # the console's 80-column wrap budget, and Rich's word-wrap turns
+        # one valid JSON document into several lines with embedded raw
+        # newlines that ``json.loads`` rejects.
+        sys.stdout.write(_inspect_to_json(artifact_view, query=args.target_or_ulid))
+        sys.stdout.write("\n")
+        return 0
+    _render_inspect_table(artifact_view, query=args.target_or_ulid)
+    if artifact.is_stale:
+        warn(
+            "artifact is stale; treat content as non-authoritative",
+            emoji=EMOJI["warn"],
+        )
     return 0
 
 
@@ -650,6 +785,559 @@ def _truncate(value: str, width: int) -> str:
     if len(value) <= width:
         return value
     return value[: max(0, width - 1)] + "…"
+
+
+# ---- inspect helpers ----------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _FieldView:
+    """One requested field's resolved view.
+
+    Either the field matched a Markdown heading in the artifact body
+    (``section_heading`` set, ``snippet`` populated) or only its
+    ``field_provenance`` entry exists (``snippet`` is ``None``). The
+    ``provenance`` slot is set when ``--provenance`` was requested and a
+    matching ``metadata.field_provenance.<name>`` entry exists.
+    """
+
+    name: str
+    section_heading: str | None
+    snippet: str | None
+    snippet_truncated: bool
+    provenance: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ArtifactView:
+    """Aggregated inspect result feeding the JSON / TTY renderers.
+
+    ``include_artifact_provenance`` is the derived flag that says "render
+    the full ``metadata.field_provenance`` map alongside the artifact
+    summary". It is true only when the user passed ``--provenance`` *and*
+    no ``--field`` selectors — combining the two narrows provenance to
+    the requested fields, while ``--provenance`` alone widens it to the
+    artifact-level summary view.
+    """
+
+    artifact: vault_compiled.CompiledArtifact
+    resolved_target: str | None
+    stale_cause: tuple[str | None, str | None] | None
+    field_views: tuple[_FieldView, ...]
+    include_artifact_provenance: bool
+    artifact_provenance: dict[str, dict[str, Any]]
+    max_snippet: int
+
+
+def _apply_snippet_cap(content: str, max_snippet: int) -> tuple[str, bool]:
+    """Return ``(snippet, truncated)`` for ``content`` honoring ``max_snippet``.
+
+    The cap is shared by three call sites (the field view builder, the
+    JSON renderer's no-field branch, and the TTY renderer's no-field
+    branch). ``max_snippet=0`` and ``content`` shorter than the cap both
+    return the verbatim content with ``truncated=False``; longer content
+    returns the prefix with ``truncated=True``. Centralising the rule
+    keeps the three branches in lock-step so a future tweak (ellipsis
+    placement, soft boundary at a sentence break, etc.) lands in one
+    place.
+    """
+
+    if max_snippet == 0 or len(content) <= max_snippet:
+        return content, False
+    return content[:max_snippet], True
+
+
+def _normalize_fields(raw_fields: list[str] | None) -> list[str]:
+    """Strip empties and preserve order while deduplicating field names.
+
+    ``argparse`` collects ``--field foo --field bar`` into a list. The
+    inspect contract treats whitespace-only entries as user errors but
+    silently drops the duplicate of an already-requested name so
+    ``--field retrieval --field retrieval`` does not double-render.
+    """
+
+    if not raw_fields:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in raw_fields:
+        cleaned = entry.strip()
+        if not cleaned:
+            raise CliError("--field value must be non-empty")
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+    return out
+
+
+def _looks_like_ulid(value: str) -> bool:
+    """True when ``value`` is shaped like a Crockford-base32 ULID.
+
+    Used as the disambiguation switch in :func:`_resolve_artifact`.
+    Matches the ULID written by :class:`ulid.ULID` (uppercase, 26 chars,
+    no padding). A close-but-wrong string falls through to target
+    resolution where the user gets a clear "no artifact found" error
+    with the candidate target list.
+    """
+
+    if len(value) != _ULID_LENGTH:
+        return False
+    return all(ch in _ULID_ALPHABET for ch in value)
+
+
+def _resolve_artifact(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    target_or_ulid: str,
+    require_fresh: bool,
+) -> tuple[vault_compiled.CompiledArtifact, str | None]:
+    """Resolve the inspect query to one artifact + the matched target.
+
+    ULID lookup goes through :func:`vault_compiled.get`, then re-checks
+    ``artifact.agent_id`` because the storage helper does not filter by
+    agent id (per ADR 0019, cross-agent isolation belongs to the calling
+    boundary). Target lookup picks the most recent fresh
+    ``compiled_notebook`` whose ``source_facets`` form a non-empty
+    subset of ``list_compile_sources(target)`` — the smallest
+    well-defined "this artifact serves target T" predicate that fits the
+    existing storage shape without inventing a new column.
+
+    ``require_fresh`` runs after resolution so callers get an artifact-
+    specific error message when a found artifact is stale rather than a
+    blanket "not found".
+    """
+
+    if _looks_like_ulid(target_or_ulid):
+        artifact = vault_compiled.get(conn, external_id=target_or_ulid)
+        if artifact is None or artifact.agent_id != agent_id:
+            raise CliError(f"no compiled artifact with external_id {target_or_ulid!r}")
+        if require_fresh and artifact.is_stale:
+            raise CliError(
+                f"compiled artifact {artifact.external_id} is stale; "
+                "drop --require-fresh to inspect anyway or recompile first"
+            )
+        return artifact, None
+    target = target_or_ulid
+    eligible = _eligible_source_ulids(conn, agent_id=agent_id, target=target)
+    if not eligible:
+        raise CliError(
+            f"target {target!r} has no compile_into sources; "
+            "tag at least one source facet's metadata.compile_into=[target] or "
+            "pass a compiled-artifact ULID directly"
+        )
+    # Subset filter runs in SQL: a Python-side walk would need either an
+    # unbounded `list_for_agent` or a magic limit, both of which silently
+    # mask the case where the matching artifact sits behind newer
+    # artifacts of unrelated targets. Two LIMIT 1 queries (latest fresh,
+    # latest stale fallback) keep the cost proportional to the answer.
+    fresh_match = _select_subset_artifact(
+        conn, agent_id=agent_id, eligible=eligible, want_stale=False
+    )
+    if fresh_match is not None:
+        return fresh_match, target
+    stale_match = _select_subset_artifact(
+        conn, agent_id=agent_id, eligible=eligible, want_stale=True
+    )
+    if stale_match is not None:
+        if require_fresh:
+            raise CliError(
+                f"target {target!r} has no fresh artifact; only stale candidate "
+                f"{stale_match.external_id} matches "
+                "(drop --require-fresh to inspect the stale artifact)"
+            )
+        return stale_match, target
+    raise CliError(
+        f"target {target!r} has no compiled artifact whose source_facets are a "
+        "subset of the target's compile_into sources; "
+        "register one with `tessera playbook register` or check the source tags"
+    )
+
+
+def _select_subset_artifact(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    eligible: set[str],
+    want_stale: bool,
+) -> vault_compiled.CompiledArtifact | None:
+    """Return the most recent artifact whose ``source_facets`` ⊆ ``eligible``.
+
+    The SQL `NOT EXISTS` walks the artifact's stored
+    ``json_each(source_facets)`` and rejects any row containing a ULID
+    outside the eligible set. ``json_array_length > 0`` excludes the
+    empty-source-list case so a malformed write cannot accidentally
+    satisfy the predicate. ``LIMIT 1`` against the
+    ``compiled_at DESC, id DESC`` ordering returns the latest match
+    (fresh or stale, controlled by ``want_stale``) without bounding the
+    candidate walk.
+    """
+
+    placeholders = ",".join("?" for _ in eligible)
+    is_stale_value = 1 if want_stale else 0
+    row = conn.execute(
+        f"""
+        SELECT a.external_id, a.agent_id, a.source_facets, a.artifact_type,
+               a.content, a.compiled_at, a.compiler_version, a.is_stale,
+               a.metadata
+        FROM compiled_artifacts AS a
+        JOIN facets AS f ON f.external_id = a.external_id
+        WHERE a.agent_id = ?
+              AND a.is_stale = ?
+              AND f.is_deleted = 0
+              AND json_array_length(a.source_facets) > 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM json_each(a.source_facets) AS j
+                  WHERE j.value NOT IN ({placeholders})
+              )
+        ORDER BY a.compiled_at DESC, a.id DESC
+        LIMIT 1
+        """,
+        (agent_id, is_stale_value, *sorted(eligible)),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_compiled_artifact(row)
+
+
+def _row_to_compiled_artifact(row: tuple[Any, ...]) -> vault_compiled.CompiledArtifact:
+    """Mirror of :func:`vault_compiled._row_to_artifact` for inspect SQL.
+
+    The storage helper lives in the vault module and is private. Inspect
+    runs the same column order so we re-mint the dataclass here without
+    importing the private helper. Matches V0.5-P4 row layout.
+    """
+
+    sources_raw = str(row[2]) if row[2] is not None else "[]"
+    try:
+        sources_list = json.loads(sources_raw)
+    except json.JSONDecodeError:
+        sources_list = []
+    if not isinstance(sources_list, list):
+        sources_list = []
+    metadata_raw = str(row[8]) if row[8] is not None else "{}"
+    try:
+        metadata = json.loads(metadata_raw)
+    except json.JSONDecodeError:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return vault_compiled.CompiledArtifact(
+        external_id=str(row[0]),
+        agent_id=int(row[1]),
+        artifact_type=str(row[3]),
+        content=str(row[4]),
+        source_facets=tuple(str(s) for s in sources_list if isinstance(s, str)),
+        compiled_at=int(row[5]),
+        compiler_version=str(row[6]),
+        is_stale=bool(row[7]),
+        metadata=metadata,
+    )
+
+
+def _eligible_source_ulids(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    target: str,
+) -> set[str]:
+    """Return every source ULID tagged ``compile_into=[target]`` for the agent.
+
+    Diverges from :func:`vault_compiled.list_for_compilation` on one
+    point: includes soft-deleted facets. The inspect surface needs to
+    resolve a stale artifact whose source got soft-deleted, and the
+    artifact's stored ``source_facets`` ULIDs preserve the link even
+    after the facet is tombstoned. The metadata column survives the
+    ``is_deleted=1`` flip so the ``compile_into`` membership remains
+    queryable for resolution.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT external_id
+        FROM facets
+        WHERE agent_id = ?
+              AND facet_type IN ('agent_profile', 'project', 'skill', 'verification_checklist')
+              AND EXISTS (
+                  SELECT 1
+                  FROM json_each(json_extract(metadata, '$.compile_into'))
+                  WHERE json_each.value = ?
+              )
+        """,
+        (agent_id, target),
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _lookup_stale_cause(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    external_id: str,
+) -> tuple[str | None, str | None]:
+    """Read the most recent staleness audit row for an artifact.
+
+    Mirrors the ``compiled_artifact_marked_stale`` lookup in
+    :func:`vault_compiled.list_stale_artifacts` but for one artifact at
+    a time so the inspect render can echo "stale because <op> on
+    <source>" without listing every stale artifact in the vault.
+    """
+
+    row = conn.execute(
+        """
+        SELECT payload
+        FROM audit_log
+        WHERE op = 'compiled_artifact_marked_stale'
+              AND target_external_id = ?
+              AND agent_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (external_id, agent_id),
+    ).fetchone()
+    if row is None:
+        return None, None
+    try:
+        payload = json.loads(str(row[0]) if row[0] is not None else "{}")
+    except json.JSONDecodeError:
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    source_id = payload.get("source_external_id")
+    source_op = payload.get("source_op")
+    return (
+        source_id if isinstance(source_id, str) else None,
+        source_op if isinstance(source_op, str) else None,
+    )
+
+
+def _extract_sections(content: str) -> dict[str, tuple[str, str]]:
+    """Index Markdown ``##``/``###`` headings to their body.
+
+    Returns a map ``normalized_name -> (raw_heading, body)``. The body
+    is everything between the heading and the next heading at the same
+    or higher level, with surrounding whitespace stripped. The
+    normalized name is lower-cased and trimmed so a ``--field`` value
+    matches headings case-insensitively. Duplicate headings keep the
+    first occurrence — Phase 7 deliberately rejects "find me every
+    section called X" semantics until dogfood proves it useful.
+    """
+
+    sections: dict[str, tuple[str, str]] = {}
+    lines = content.splitlines()
+    current_name: str | None = None
+    current_heading: str = ""
+    current_body: list[str] = []
+
+    def _flush() -> None:
+        if current_name is not None and current_name not in sections:
+            sections[current_name] = (current_heading, "\n".join(current_body).strip())
+
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            _flush()
+            heading_text = stripped.lstrip("#").strip()
+            current_name = heading_text.casefold()
+            current_heading = heading_text
+            current_body = []
+            continue
+        if current_name is not None:
+            current_body.append(line)
+    _flush()
+    return sections
+
+
+def _extract_field_provenance(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Pull ``metadata.field_provenance`` while keeping only dict entries.
+
+    The Phase 3 contract permits caller-defined field names but expects
+    the value to be a dict of ``source_facets`` / ``source_refs`` /
+    ``confidence`` / ``notes``. Anything else is filtered out so a
+    malformed entry cannot crash the renderer.
+    """
+
+    raw = metadata.get("field_provenance")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and isinstance(value, dict):
+            out[key] = value
+    return out
+
+
+def _build_field_views(
+    requested: list[str],
+    *,
+    sections: dict[str, tuple[str, str]],
+    field_provenance: dict[str, dict[str, Any]],
+    include_provenance: bool,
+    max_snippet: int,
+) -> tuple[_FieldView, ...]:
+    """Materialize one ``_FieldView`` per requested field.
+
+    Raises :class:`CliError` listing every missing field at once so the
+    user fixes a typo in one shot rather than discovering them one by
+    one. Per Phase 7 design constraints, a missing field is a hard
+    error — no fallback content, no inferred match.
+    """
+
+    views: list[_FieldView] = []
+    missing: list[str] = []
+    provenance_keys_lower = {k.casefold(): k for k in field_provenance}
+    for name in requested:
+        normalized = name.casefold()
+        section = sections.get(normalized)
+        prov_key = provenance_keys_lower.get(normalized)
+        if section is None and prov_key is None:
+            missing.append(name)
+            continue
+        snippet: str | None
+        truncated = False
+        heading: str | None = None
+        if section is not None:
+            heading, body = section
+            snippet, truncated = _apply_snippet_cap(body, max_snippet)
+        else:
+            snippet = None
+        prov_entry = (
+            field_provenance[prov_key] if include_provenance and prov_key is not None else None
+        )
+        views.append(
+            _FieldView(
+                name=name,
+                section_heading=heading,
+                snippet=snippet,
+                snippet_truncated=truncated,
+                provenance=prov_entry,
+            )
+        )
+    if missing:
+        available_sections = sorted({h for h, _ in sections.values()})
+        available_provenance = sorted(field_provenance.keys())
+        suggestions = ", ".join(available_sections) or "(no Markdown headings)"
+        prov_list = ", ".join(available_provenance) or "(no field_provenance entries)"
+        raise CliError(
+            "field(s) not found in artifact: "
+            + ", ".join(missing)
+            + f"; available sections: {suggestions}; available provenance keys: {prov_list}"
+        )
+    return tuple(views)
+
+
+def _inspect_to_json(view: _ArtifactView, *, query: str) -> str:
+    """Render the inspect result as deterministic JSON.
+
+    The shape stays narrow on purpose (Phase 7 design constraints): one
+    artifact summary, one entry per requested field, one optional
+    provenance map. Sorting keys keeps the output diff-stable for tests
+    and downstream tooling.
+    """
+
+    artifact = view.artifact
+    payload: dict[str, Any] = {
+        "query": query,
+        "external_id": artifact.external_id,
+        "artifact_type": artifact.artifact_type,
+        "compiled_at": _format_epoch(artifact.compiled_at),
+        "compiler_version": artifact.compiler_version,
+        "is_stale": artifact.is_stale,
+        "source_facets": list(artifact.source_facets),
+        "resolved_target": view.resolved_target,
+        "fields": [
+            {
+                "name": fv.name,
+                "section_heading": fv.section_heading,
+                "snippet": fv.snippet,
+                "snippet_truncated": fv.snippet_truncated,
+                "provenance": fv.provenance,
+            }
+            for fv in view.field_views
+        ],
+    }
+    if view.stale_cause is not None:
+        source_id, source_op = view.stale_cause
+        payload["stale_cause"] = {
+            "source_external_id": source_id,
+            "source_op": source_op,
+        }
+    if not view.field_views:
+        snippet, truncated = _apply_snippet_cap(artifact.content, view.max_snippet)
+        payload["content"] = snippet
+        payload["content_truncated"] = truncated
+    if view.include_artifact_provenance:
+        payload["field_provenance"] = view.artifact_provenance
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _render_inspect_table(view: _ArtifactView, *, query: str) -> None:
+    """Render the inspect result for the TTY branch.
+
+    Two-table layout: a ``kv`` block for the artifact header (so the
+    user always sees ``is_stale`` and ``compiled_at``) and a row per
+    requested field with section heading, snippet, and provenance
+    indicator. Long snippets render verbatim; truncation is signalled
+    in the cell text so a piped paste downstream still says it was cut.
+    """
+
+    artifact = view.artifact
+    header = f"playbook inspect: {query}"
+    table = report_table(
+        header,
+        ["field", "value"],
+        emoji=EMOJI["recall"],
+    )
+    table.add_row("external_id", artifact.external_id)
+    table.add_row("artifact_type", artifact.artifact_type)
+    table.add_row("resolved_target", view.resolved_target or "(by ULID)")
+    table.add_row("compiled_at", _format_epoch(artifact.compiled_at))
+    table.add_row("compiler_version", artifact.compiler_version)
+    table.add_row("is_stale", "yes" if artifact.is_stale else "no")
+    table.add_row("source_facets", ", ".join(artifact.source_facets) or "(none)")
+    if view.stale_cause is not None:
+        cause_id, cause_op = view.stale_cause
+        table.add_row("stale_cause", f"{cause_op or '?'} on {cause_id or '?'}")
+    console.print(table)
+    if view.field_views:
+        fields_table = report_table(
+            "fields",
+            ["name", "section_heading", "snippet", "provenance"],
+            emoji=EMOJI["recall"],
+        )
+        for fv in view.field_views:
+            snippet = fv.snippet or "(metadata-only)"
+            if fv.snippet_truncated:
+                snippet = snippet + " …"
+            provenance_repr = "yes" if fv.provenance is not None else "no"
+            fields_table.add_row(
+                fv.name,
+                fv.section_heading or "(no heading)",
+                snippet,
+                provenance_repr,
+            )
+        console.print(fields_table)
+    else:
+        full_snippet, full_truncated = _apply_snippet_cap(artifact.content, view.max_snippet)
+        console.print(full_snippet + (" …" if full_truncated else ""))
+    if view.include_artifact_provenance and view.artifact_provenance:
+        prov_table = report_table(
+            "field_provenance",
+            ["field", "source_facets", "source_refs"],
+            emoji=EMOJI["recall"],
+        )
+        for key in sorted(view.artifact_provenance):
+            entry = view.artifact_provenance[key]
+            facets_list = entry.get("source_facets")
+            refs_list = entry.get("source_refs")
+            facets_repr = (
+                ", ".join(str(f) for f in facets_list) if isinstance(facets_list, list) else ""
+            )
+            refs_repr = json.dumps(refs_list, sort_keys=True) if isinstance(refs_list, list) else ""
+            prov_table.add_row(key, facets_repr, refs_repr)
+        console.print(prov_table)
 
 
 __all__ = ["register"]

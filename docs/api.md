@@ -412,6 +412,7 @@ Each subcommand opens the vault directly (`--vault` / `--passphrase` / `$TESSERA
 | `tessera playbook scaffold <target> --out <path>` | Write a deterministic Markdown brief covering target, task, source-facet table, required output sections, and provenance expectations. The compiler reads this brief; it never decides for the compiler. Pass `--force` to overwrite an existing file. |
 | `tessera playbook register <target> --content <path> --compiler-version <version>` | Pair-write a compiled artifact via `register_compiled_artifact`. Source membership defaults to the `list_for_compilation` enumeration; pass `--source-id <ulid>` (repeatable) to claim explicit sources. `--artifact-type` overrides the descriptor's value when present. |
 | `tessera playbook stale` | List artifacts where `is_stale = 1` plus the most recent `compiled_artifact_marked_stale` audit row's `source_external_id` and `source_op` so the user can trace the triggering mutation. |
+| `tessera playbook inspect <target_or_ulid> [--field NAME ...] [--provenance] [--require-fresh] [--max-snippet N] [--json]` | Read one artifact, optionally narrowed to one or more fields. Target lookup picks the most recent fresh artifact whose `source_facets` are a non-empty subset of `metadata.compile_into = [<target>]`-tagged facets (including soft-deleted facets so a stale artifact whose source was forgotten still resolves). ULID lookup resolves directly. `--field NAME` matches a Markdown `##`/`###` heading inside the artifact body or a key under `metadata.field_provenance`; missing fields fail loudly with the available section and provenance keys listed once. `--provenance` attaches the matching `field_provenance` entry to each field, or surfaces the full map when no `--field` is given. `--require-fresh` rejects stale artifacts. `--max-snippet` caps each section's snippet (default 400, `0` disables). |
 
 ### Example workflow
 
@@ -435,6 +436,11 @@ tessera playbook register release_playbook \
 
 # 6. After source mutations, list the stale artifacts and re-run step 4.
 tessera playbook stale --json
+
+# 7. Read one section of the registered Playbook without loading the full body.
+tessera playbook inspect release_playbook \
+    --field "Retrieval pipeline" \
+    --provenance --require-fresh --json
 ```
 
 There is intentionally no `tessera playbook compile`. Compilation lives outside the daemon per ADR 0019 §Boundary statement; the CLI scaffolds and registers, the runner compiles.

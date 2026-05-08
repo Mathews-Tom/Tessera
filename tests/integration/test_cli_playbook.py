@@ -575,3 +575,726 @@ def test_playbook_scaffold_no_descriptor_with_sources_warns(vault: Path, tmp_pat
     body = out_path.read_text(encoding="utf-8")
     assert "TODO: describe the recurring task" in body
     assert "TODO: describe the caller's acceptance criterion" in body
+
+
+# ---- inspect ------------------------------------------------------------
+#
+# Phase 7 of the V0.5 compiled-Playbooks plan: a narrow read surface for
+# already-registered artifacts. The fixtures below cover the four
+# resolution paths (target → fresh, target → stale fallback, ULID, missing)
+# and the three field-shape behaviours (no --field, single --field,
+# missing --field) plus the --require-fresh and --provenance flags.
+
+
+_ARTIFACT_BODY = (
+    "# release playbook\n"
+    "\n"
+    "## Retrieval pipeline\n"
+    "\n"
+    "Recall hydrates each match with mode and is_stale via a single LEFT JOIN.\n"
+    "\n"
+    "## Staleness policy\n"
+    "\n"
+    "Stale artifacts surface but never authoritative; recompile or route to raw.\n"
+    "\n"
+    "### Edge cases\n"
+    "\n"
+    "Cross-agent membership cannot cascade.\n"
+)
+
+_ARTIFACT_PROVENANCE: dict[str, dict[str, Any]] = {
+    "Retrieval pipeline": {
+        "source_facets": [],
+        "source_refs": [{"path": "docs/swcr-spec.md", "ref_kind": "supports"}],
+        "confidence": "high",
+    }
+}
+
+
+def _register_inspect_artifact(
+    vault_path: Path,
+    *,
+    target: str = "release_playbook",
+    body: str = _ARTIFACT_BODY,
+    field_provenance: dict[str, dict[str, Any]] | None = None,
+    compiler_version: str = "claude-code/release-recipe@2026-05-09",
+) -> tuple[str, str]:
+    """Seed a descriptor + source + registered artifact and return ids.
+
+    Returns ``(source_external_id, artifact_external_id)``. Mirrors the
+    existing scaffold/register-test seed pattern but registers through
+    the storage layer directly so the inspect tests read from a
+    populated artifact without depending on the register subcommand's
+    side effects.
+    """
+
+    source_id = _seed_descriptor_and_source(vault_path, target=target)
+    metadata: dict[str, Any] = {}
+    if field_provenance is not None:
+        metadata["field_provenance"] = field_provenance
+    with _open(vault_path) as vc:
+        agent_id = int(vc.connection.execute("SELECT id FROM agents LIMIT 1").fetchone()[0])
+        artifact_id = compiled.register_compiled_artifact(
+            vc.connection,
+            agent_id=agent_id,
+            content=body,
+            source_facets=[source_id],
+            artifact_type="playbook",
+            compiler_version=compiler_version,
+            source_tool="cli",
+            metadata=metadata or None,
+        )
+    return source_id, artifact_id
+
+
+@pytest.mark.integration
+def test_playbook_inspect_resolves_target_to_latest_fresh(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, artifact_id = _register_inspect_artifact(vault, field_provenance=_ARTIFACT_PROVENANCE)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["external_id"] == artifact_id
+    assert payload["resolved_target"] == "release_playbook"
+    assert payload["is_stale"] is False
+    # Without --field the inspect emits the artifact summary plus the
+    # bounded full-content snippet so a piped reader still sees the
+    # body without exploding the field tree.
+    assert payload["fields"] == []
+    assert "release playbook" in payload["content"]
+
+
+@pytest.mark.integration
+def test_playbook_inspect_resolves_ulid_lookup(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, artifact_id = _register_inspect_artifact(vault)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            artifact_id,
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["external_id"] == artifact_id
+    # ULID lookup does not infer a target name — Phase 7 keeps the
+    # inspect surface honest about what it knows.
+    assert payload["resolved_target"] is None
+
+
+@pytest.mark.integration
+def test_playbook_inspect_unknown_target_fails(vault: Path) -> None:
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "nonexistent_target",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 1
+
+
+@pytest.mark.integration
+def test_playbook_inspect_unknown_ulid_fails(vault: Path) -> None:
+    # 26 chars in the ULID alphabet but unallocated.
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "01ABCDEFGHJKMNPQRSTVWXYZ00",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 1
+
+
+@pytest.mark.integration
+def test_playbook_inspect_field_returns_section_snippet(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_inspect_artifact(vault, field_provenance=_ARTIFACT_PROVENANCE)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--field",
+            "Retrieval pipeline",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    fields: list[dict[str, Any]] = payload["fields"]
+    assert len(fields) == 1
+    assert fields[0]["name"] == "Retrieval pipeline"
+    assert fields[0]["section_heading"] == "Retrieval pipeline"
+    assert "LEFT JOIN" in fields[0]["snippet"]
+    assert fields[0]["provenance"] is None
+    # No --provenance flag so the artifact-level provenance map stays
+    # off the response shape.
+    assert "field_provenance" not in payload
+
+
+@pytest.mark.integration
+def test_playbook_inspect_field_with_provenance_attaches_entry(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_inspect_artifact(vault, field_provenance=_ARTIFACT_PROVENANCE)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--field",
+            "retrieval pipeline",  # case-insensitive match
+            "--provenance",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    fields: list[dict[str, Any]] = json.loads(capsys.readouterr().out)["fields"]
+    assert fields[0]["provenance"] is not None
+    assert fields[0]["provenance"]["confidence"] == "high"
+
+
+@pytest.mark.integration
+def test_playbook_inspect_multiple_fields(vault: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _register_inspect_artifact(vault)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--field",
+            "Retrieval pipeline",
+            "--field",
+            "Staleness policy",
+            "--field",
+            "Edge cases",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    fields: list[dict[str, Any]] = json.loads(capsys.readouterr().out)["fields"]
+    names = [fv["name"] for fv in fields]
+    assert names == ["Retrieval pipeline", "Staleness policy", "Edge cases"]
+    # ### headings still index into _extract_sections.
+    edge = next(fv for fv in fields if fv["name"] == "Edge cases")
+    assert "cross-agent" in edge["snippet"].lower()
+
+
+@pytest.mark.integration
+def test_playbook_inspect_missing_field_fails_loudly(vault: Path) -> None:
+    _register_inspect_artifact(vault)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--field",
+            "Definitely not a section",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 1
+
+
+@pytest.mark.integration
+def test_playbook_inspect_provenance_only_field(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A field that exists only in field_provenance must still resolve.
+
+    Phase 7's contract treats markdown headings and provenance keys as
+    co-equal field surfaces; the user does not need to know whether a
+    given key is keyed off prose or metadata.
+    """
+
+    extra_prov: dict[str, dict[str, Any]] = {
+        "Caller-side eval summary": {
+            "source_facets": [],
+            "notes": "metadata-only entry",
+        }
+    }
+    _register_inspect_artifact(vault, field_provenance=extra_prov)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--field",
+            "Caller-side eval summary",
+            "--provenance",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    fields: list[dict[str, Any]] = json.loads(capsys.readouterr().out)["fields"]
+    assert fields[0]["section_heading"] is None
+    assert fields[0]["snippet"] is None
+    assert fields[0]["provenance"]["notes"] == "metadata-only entry"
+
+
+@pytest.mark.integration
+def test_playbook_inspect_require_fresh_fails_on_stale(vault: Path) -> None:
+    source_id, _ = _register_inspect_artifact(vault)
+    # Soft-delete the source so the artifact flips to is_stale=1.
+    with _open(vault) as vc:
+        assert facets.soft_delete(vc.connection, source_id) is True
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--require-fresh",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 1
+
+
+@pytest.mark.integration
+def test_playbook_inspect_stale_target_falls_back_when_fresh_missing(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without --require-fresh, a stale-only target still resolves.
+
+    The inspect surface keeps stale artifacts visible per the V0.5-P7
+    retrieval contract; it just refuses to call them fresh and emits
+    the cascade cause so the caller can decide whether to recompile.
+    """
+
+    source_id, artifact_id = _register_inspect_artifact(vault)
+    with _open(vault) as vc:
+        facets.soft_delete(vc.connection, source_id)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["external_id"] == artifact_id
+    assert payload["is_stale"] is True
+    assert payload["stale_cause"]["source_op"] == "facet_soft_deleted"
+
+
+@pytest.mark.integration
+def test_playbook_inspect_max_snippet_truncates(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_inspect_artifact(vault)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--field",
+            "Retrieval pipeline",
+            "--max-snippet",
+            "20",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    fields: list[dict[str, Any]] = json.loads(capsys.readouterr().out)["fields"]
+    assert fields[0]["snippet_truncated"] is True
+    assert len(fields[0]["snippet"]) == 20
+
+
+@pytest.mark.integration
+def test_playbook_inspect_max_snippet_zero_returns_full_content(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_inspect_artifact(vault)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--max-snippet",
+            "0",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["content_truncated"] is False
+    assert payload["content"] == _ARTIFACT_BODY
+
+
+@pytest.mark.integration
+def test_playbook_inspect_max_snippet_negative_fails(vault: Path) -> None:
+    _register_inspect_artifact(vault)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--max-snippet",
+            "-1",
+            *_passphrase_args(vault),
+        ]
+    )
+    assert rc == 1
+
+
+@pytest.mark.integration
+def test_playbook_inspect_target_without_sources_fails(vault: Path) -> None:
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "no_such_target",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 1
+
+
+@pytest.mark.integration
+def test_playbook_inspect_target_with_sources_no_artifact_fails(vault: Path) -> None:
+    """Target has tagged sources but no compiled artifact yet.
+
+    The inspect surface refuses rather than fabricating an empty view —
+    Phase 7's no-fallback constraint treats "the target exists but
+    nothing was compiled" as a hard miss.
+    """
+
+    _seed_descriptor_and_source(vault, target="unbuilt_target")
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "unbuilt_target",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 1
+
+
+@pytest.mark.integration
+def test_playbook_inspect_provenance_summary_without_field(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--provenance without --field returns the full field_provenance map."""
+
+    _register_inspect_artifact(vault, field_provenance=_ARTIFACT_PROVENANCE)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--provenance",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "Retrieval pipeline" in payload["field_provenance"]
+
+
+@pytest.mark.integration
+def test_playbook_inspect_renders_table_branch(
+    vault: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _register_inspect_artifact(vault)
+    _force_tty(monkeypatch)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--field",
+            "Retrieval pipeline",
+            *_passphrase_args(vault),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Retrieval pipeline" in out
+    assert "LEFT JOIN" in out
+
+
+@pytest.mark.integration
+def test_playbook_inspect_renders_table_with_full_content(
+    vault: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _register_inspect_artifact(vault)
+    _force_tty(monkeypatch)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            *_passphrase_args(vault),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "release playbook" in out
+
+
+@pytest.mark.integration
+def test_playbook_inspect_renders_stale_warning(
+    vault: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_id, _ = _register_inspect_artifact(vault)
+    with _open(vault) as vc:
+        facets.soft_delete(vc.connection, source_id)
+    _force_tty(monkeypatch)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            *_passphrase_args(vault),
+        ]
+    )
+    assert rc == 0
+    combined = capsys.readouterr()
+    assert "stale" in (combined.out + combined.err).lower()
+
+
+@pytest.mark.integration
+def test_playbook_inspect_empty_field_value_fails(vault: Path) -> None:
+    _register_inspect_artifact(vault)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--field",
+            "   ",
+            *_passphrase_args(vault),
+        ]
+    )
+    assert rc == 1
+
+
+@pytest.mark.integration
+def test_playbook_inspect_duplicate_field_dedupes(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _register_inspect_artifact(vault)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--field",
+            "Retrieval pipeline",
+            "--field",
+            "Retrieval pipeline",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    fields: list[dict[str, Any]] = json.loads(capsys.readouterr().out)["fields"]
+    assert len(fields) == 1
+
+
+@pytest.mark.integration
+def test_playbook_inspect_renders_full_provenance_table(
+    vault: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _register_inspect_artifact(vault, field_provenance=_ARTIFACT_PROVENANCE)
+    _force_tty(monkeypatch)
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "release_playbook",
+            "--provenance",
+            *_passphrase_args(vault),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "field_provenance" in out
+    assert "Retrieval pipeline" in out
+
+
+@pytest.mark.integration
+def test_playbook_inspect_resolves_target_among_unrelated_artifacts(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SQL subset filter resolves the right artifact at any vault depth.
+
+    The resolver pushes the ``source_facets ⊆ eligible`` predicate into
+    SQL so a target's matching artifact is returned regardless of how
+    many newer artifacts of unrelated targets sit ahead of it. Seed one
+    target_a artifact, then 50 unrelated target_b artifacts on top of it,
+    and confirm target_a still resolves correctly.
+    """
+
+    source_id_a, artifact_id_a = _register_inspect_artifact(
+        vault, target="target_a", body="# target a body\n\n## A section\n\nbody a\n"
+    )
+    # Seed source + 50 unrelated artifacts under a second target.
+    with _open(vault) as vc:
+        agent_id = int(vc.connection.execute("SELECT id FROM agents LIMIT 1").fetchone()[0])
+        source_id_b, _ = facets.insert(
+            vc.connection,
+            agent_id=agent_id,
+            facet_type="project",
+            content="source for target_b",
+            source_tool="cli",
+            metadata={"compile_into": ["target_b"], "compile_role": "primary_source"},
+        )
+        for n in range(50):
+            compiled.register_compiled_artifact(
+                vc.connection,
+                agent_id=agent_id,
+                content=f"target_b body {n}",
+                source_facets=[source_id_b],
+                artifact_type="playbook",
+                compiler_version=f"runner@{n}",
+                source_tool="cli",
+                captured_at=2_000_000 + n,  # newer than target_a
+            )
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            "target_a",
+            *_passphrase_args(vault),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["external_id"] == artifact_id_a
+    assert payload["resolved_target"] == "target_a"
+    assert source_id_a in payload["source_facets"]
+
+
+@pytest.mark.integration
+def test_playbook_inspect_rejects_cross_agent_ulid(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ULID lookup must reject artifacts owned by a different agent.
+
+    ``vault_compiled.get`` does not filter by agent id; the inspect CLI
+    is the cross-agent boundary. Add a second agent, register an
+    artifact under it, then ask for that artifact ULID via the default
+    agent. Without ``--agent-id``, the auto-resolver picks the first
+    agent and the ULID lookup must fail rather than silently leaking
+    the second agent's data.
+    """
+
+    source_id_alpha, artifact_id_alpha = _register_inspect_artifact(vault)
+    # Bootstrap a second agent and register an artifact there.
+    with _open(vault) as vc:
+        vc.connection.execute(
+            "INSERT INTO agents(external_id, name, created_at) VALUES (?, ?, ?)",
+            ("01PLAYBOOK-secondary", "secondary", 1),
+        )
+        secondary_id = int(
+            vc.connection.execute("SELECT id FROM agents WHERE name = 'secondary'").fetchone()[0]
+        )
+        secondary_source, _ = facets.insert(
+            vc.connection,
+            agent_id=secondary_id,
+            facet_type="project",
+            content="secondary source",
+            source_tool="cli",
+            metadata={"compile_into": ["release_playbook"]},
+        )
+        secondary_artifact = compiled.register_compiled_artifact(
+            vc.connection,
+            agent_id=secondary_id,
+            content="secondary playbook",
+            source_facets=[secondary_source],
+            artifact_type="playbook",
+            compiler_version="cc/release-recipe@1",
+            source_tool="cli",
+        )
+    rc = _cli(
+        [
+            "playbook",
+            "inspect",
+            secondary_artifact,
+            "--vault",
+            str(vault),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+            "--agent-id",
+            str(int(sqlite_first(vault, "SELECT id FROM agents WHERE name = 'primary' LIMIT 1"))),
+            "--json",
+        ]
+    )
+    assert rc == 1
+    # Sanity-check: the ULID belonging to the active agent still resolves
+    # under the same flags.
+    rc_ok = _cli(
+        [
+            "playbook",
+            "inspect",
+            artifact_id_alpha,
+            "--vault",
+            str(vault),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+            "--agent-id",
+            str(int(sqlite_first(vault, "SELECT id FROM agents WHERE name = 'primary' LIMIT 1"))),
+            "--json",
+        ]
+    )
+    assert rc_ok == 0
+    capsys.readouterr()  # discard
+    assert source_id_alpha == source_id_alpha  # placate linter (used for clarity)
+
+
+def sqlite_first(vault_path: Path, query: str) -> int:
+    """Execute ``query`` against ``vault_path`` and return the first scalar.
+
+    A small helper so the cross-agent test can resolve the primary
+    agent's id without re-bootstrapping the vault. Lives at module
+    scope so the test reads cleanly.
+    """
+
+    with _open(vault_path) as vc:
+        row = vc.connection.execute(query).fetchone()
+    return int(row[0])

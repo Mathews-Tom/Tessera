@@ -782,6 +782,26 @@ graph TB
 
 Source facets keep `mode=query_time`. The compilation agent produces a new `compiled_notebook` facet with `mode=write_time`. The `mode` column records the production method; it is not a user-facing per-facet toggle. v0.5 does not ship a mechanism to switch an existing source facet's mode from `query_time` to `write_time` — registration of compiled artifacts is the only path by which `write_time` rows enter the vault.
 
+### Playbook artifact inspection surface
+
+`tessera playbook inspect` is the narrow read surface for a single registered artifact. It is deliberately not a query language: there are no joins, no filters across artifacts, no schema discovery, and no field spelling that the agent has to memorize through hidden prompts. The contract is "fetch one artifact, slice one or more fields, with optional provenance and freshness gates."
+
+Argument shape: `tessera playbook inspect <target_or_ulid> [--field NAME ...] [--provenance] [--require-fresh] [--max-snippet N] [--json]`.
+
+Resolution:
+
+- **Target lookup.** If the input is not a Crockford-base32 ULID (26 chars), it is treated as a target name. The CLI walks every `agent_profile`, `project`, `skill`, or `verification_checklist` facet for the active agent whose `metadata.compile_into` array contains the target — including soft-deleted facets, because a stale artifact whose source was forgotten still needs to resolve. The selected artifact is the most recent live `compiled_notebook` whose `source_facets` set is a non-empty subset of those eligible source ULIDs. If no fresh artifact matches, the resolver falls back to the latest stale candidate so users can still inspect stale work; `--require-fresh` rejects that fallback with the candidate's `external_id` echoed in the error.
+- **ULID lookup.** If the input is a 26-char Crockford-base32 string, the CLI calls `compiled.get(external_id=...)` and re-checks `artifact.agent_id` against the resolved agent. The storage helper does not filter by agent id (per ADR 0019, cross-agent isolation belongs to the calling boundary), so the CLI is the gate.
+
+Field surface:
+
+- `--field NAME` matches a Markdown `## ` or `### ` heading in the artifact body (case-insensitive, leading/trailing whitespace stripped) or a key under `metadata.field_provenance`. Pass the flag multiple times to request several fields; duplicate names are silently deduplicated. Missing fields fail loudly with the available section names and provenance keys listed once so the user fixes a typo in one shot.
+- `--provenance` attaches the matching `metadata.field_provenance.<key>` entry to each requested field view; with no `--field`, it surfaces the full `field_provenance` map alongside the artifact summary.
+- `--max-snippet N` caps each section snippet to `N` characters (default 400; pass `0` to return the full body). Truncation is signalled both in the JSON `snippet_truncated` flag and on the TTY trailing ellipsis.
+- Without `--field`, the inspect view emits the artifact summary plus a bounded snippet of the full content. JSON mode bypasses the Rich console because artifact bodies routinely exceed 80 columns and Rich's word-wrap would corrupt the output.
+
+Design constraints inherited from the V0.5 plan §Phase 7 are non-negotiable: no joins, no filters, no schema discovery, no field-spelling prompts, no fallback to raw recall on a missing field. A user with one Markdown artifact and an optional provenance map gets a useful read; a user with neither gets a clear error.
+
 Critically: **the v0.1 architecture does not foreclose any of this.** The `mode` column exists. The `compiled_notebook` facet type is reserved in the CHECK constraint. The `compiled_artifacts` table exists. The retrieval pipeline already handles multi-source candidates. v0.5 adds storage and retrieval semantics for caller-compiled Playbooks; it does not put a compiler, scheduler, or LLM runtime inside the daemon. The schema is ready.
 
 ## Deployment model
