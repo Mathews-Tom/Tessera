@@ -88,6 +88,12 @@ Response: `{matches: [...], warnings: [...], degraded_reason: string|null, seed:
 - `empty_vault` — the requested readable facet set contains no live facets.
 - `no_signal_above_floor` — live facets exist, but every candidate scored at or below the recall relevance floor, so no context is returned.
 
+Stable `warnings` entries (a non-exhaustive list — callers should treat the array as an open enum):
+
+- `reranker_degraded: falling back to RRF order` — cross-encoder reranker failed health check; bundle reverted to RRF order.
+- `token_budget_truncated` — snippet budget cut the bundle short of `k`.
+- `compiled_artifact_stale: <n> match(es) are stale` — at least one `compiled_notebook` row in the response carries `is_stale=true`. Per the Playbook retrieval and staleness contract, stale Playbooks remain inspectable but never authoritative; the caller decides whether to recompile or to route the answer through raw recall instead. There is no silent fallback. See `docs/system-design.md §Playbook retrieval and staleness contract`.
+
 Required scope: `read` on each requested `facet_type`.
 
 ### `GET /api/v1/stats`
