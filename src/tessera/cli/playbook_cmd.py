@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import sys
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -475,7 +476,10 @@ def _cmd_stale(args: argparse.Namespace) -> int:
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
-    requested_fields = _normalize_fields(args.fields)
+    try:
+        requested_fields = _normalize_fields(args.fields)
+    except CliError as exc:
+        return fail(str(exc))
     max_snippet = args.max_snippet
     if max_snippet < 0:
         return fail("--max-snippet must be >= 0 (0 means no truncation)")
@@ -519,7 +523,12 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         max_snippet=max_snippet,
     )
     if args.json or not console.is_terminal:
-        raw(_inspect_to_json(artifact_view, query=args.target_or_ulid))
+        # Bypass Rich for JSON output: artifact bodies routinely exceed
+        # the console's 80-column wrap budget, and Rich's word-wrap turns
+        # one valid JSON document into several lines with embedded raw
+        # newlines that ``json.loads`` rejects.
+        sys.stdout.write(_inspect_to_json(artifact_view, query=args.target_or_ulid))
+        sys.stdout.write("\n")
         return 0
     _render_inspect_table(artifact_view, query=args.target_or_ulid)
     if artifact.is_stale:
@@ -885,14 +894,13 @@ def _resolve_artifact(
             )
         return artifact, None
     target = target_or_ulid
-    sources = vault_compiled.list_for_compilation(conn, agent_id=agent_id, target=target)
-    if not sources:
+    eligible = _eligible_source_ulids(conn, agent_id=agent_id, target=target)
+    if not eligible:
         raise CliError(
             f"target {target!r} has no compile_into sources; "
             "tag at least one source facet's metadata.compile_into=[target] or "
             "pass a compiled-artifact ULID directly"
         )
-    eligible = {src.external_id for src in sources}
     candidates = vault_compiled.list_for_agent(conn, agent_id=agent_id, limit=200)
     fresh_match: vault_compiled.CompiledArtifact | None = None
     stale_match: vault_compiled.CompiledArtifact | None = None
@@ -922,6 +930,40 @@ def _resolve_artifact(
         "subset of the target's compile_into sources; "
         "register one with `tessera playbook register` or check the source tags"
     )
+
+
+def _eligible_source_ulids(
+    conn: sqlcipher3.Connection,
+    *,
+    agent_id: int,
+    target: str,
+) -> set[str]:
+    """Return every source ULID tagged ``compile_into=[target]`` for the agent.
+
+    Diverges from :func:`vault_compiled.list_for_compilation` on one
+    point: includes soft-deleted facets. The inspect surface needs to
+    resolve a stale artifact whose source got soft-deleted, and the
+    artifact's stored ``source_facets`` ULIDs preserve the link even
+    after the facet is tombstoned. The metadata column survives the
+    ``is_deleted=1`` flip so the ``compile_into`` membership remains
+    queryable for resolution.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT external_id
+        FROM facets
+        WHERE agent_id = ?
+              AND facet_type IN ('agent_profile', 'project', 'skill', 'verification_checklist')
+              AND EXISTS (
+                  SELECT 1
+                  FROM json_each(json_extract(metadata, '$.compile_into'))
+                  WHERE json_each.value = ?
+              )
+        """,
+        (agent_id, target),
+    ).fetchall()
+    return {str(row[0]) for row in rows}
 
 
 def _lookup_stale_cause(
