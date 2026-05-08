@@ -30,6 +30,7 @@ from tessera.cli import (
     import_cmd,
     init_cmd,
     people_cmd,
+    playbook_cmd,
     skills_cmd,
     sync_cmd,
     tokens_cmd,
@@ -80,6 +81,7 @@ def _build_parser() -> argparse.ArgumentParser:
     curl_cmd.register(subparsers)
     audit_cmd.register(subparsers)
     sync_cmd.register(subparsers)
+    playbook_cmd.register(subparsers)
 
     # Existing stubs from earlier phases. Each of these delegates its
     # argv slice to a submodule's own argparse parser; argparse.REMAINDER
