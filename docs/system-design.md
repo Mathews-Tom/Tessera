@@ -588,6 +588,75 @@ Source metadata example:
 }
 ```
 
+### Playbook eval-set contract
+
+An eval set is the caller-owned measurement contract for one Playbook target. It turns the `quality_bar` from prose into representative questions, expected claims, and required source coverage before compilation starts. Tessera stores eval metadata as ordinary facet or artifact metadata; it does not execute evals, judge answers, reject artifacts, or inject hidden quality scores into retrieval ranking.
+
+Eval-set metadata uses this shape:
+
+```json
+{
+  "target": "swcr_design_brief",
+  "evals": [
+    {
+      "id": "swcr-purpose",
+      "question": "Why does Tessera use SWCR instead of rerank-only retrieval?",
+      "expected_claims": [
+        "SWCR optimizes cross-facet coherence",
+        "rerank-only optimizes relevance but not bundle coherence",
+        "SWCR runs after RRF and before cross-encoder rerank"
+      ],
+      "required_source_refs": ["docs/swcr-spec.md", "docs/adr/0011-swcr-default-on-cross-facet-coherence.md"],
+      "severity": "must"
+    }
+  ]
+}
+```
+
+Eval entries use these keys:
+
+| Key | Required | Meaning |
+|---|---:|---|
+| `id` | yes | Stable identifier unique within the target. Rename only when the question's intent changes. |
+| `question` | yes | Representative task question the compiled artifact must support. |
+| `expected_claims` | yes | Claims the caller expects a correct answer to preserve. Matching is caller-side responsibility. |
+| `required_source_refs` | no | Source refs that should support the answer. These refs reuse the same compact path/section/symbol convention as source metadata. |
+| `severity` | yes | Eval importance. Accepted values are `must`, `should`, and `exploratory`. |
+
+Severity semantics are intentionally narrow:
+
+| Severity | Meaning |
+|---|---|
+| `must` | Blocking correctness expectation. A serious Playbook should not be treated as accepted while any `must` eval fails. |
+| `should` | Quality expectation that can ship with an explicit caller-visible gap. |
+| `exploratory` | Learning probe used to expose weak spots; failure does not block artifact registration. |
+
+Compiler output metadata records the eval run summary on the registered artifact:
+
+```json
+{
+  "eval_summary": {
+    "target": "swcr_design_brief",
+    "compiler": "claude-code-playbook-compiler",
+    "passed": 7,
+    "failed": 1,
+    "skipped": 0,
+    "must_failures": []
+  },
+  "caller_metadata": {
+    "failed_evals": [
+      {
+        "id": "swcr-ranking-limit",
+        "severity": "should",
+        "reason": "answer named the ranking boundary but did not cite the benchmark note"
+      }
+    ]
+  }
+}
+```
+
+`eval_summary` is summary metadata, not a daemon contract. Tessera persists it with `register_compiled_artifact` metadata and later exposes it through artifact metadata surfaces; the caller owns prompt execution, claim matching, source-ref checks, and acceptance decisions. Failed eval detail belongs under `metadata.caller_metadata.failed_evals` so failures remain inspectable without turning retrieval ranking into an implicit judge.
+
 Concrete target shapes:
 
 | Target | Descriptor facet | Task | Typical sources |
