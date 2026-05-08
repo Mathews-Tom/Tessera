@@ -18,7 +18,7 @@ from tessera.adapters import models_registry
 from tessera.retrieval import embed_worker
 from tessera.retrieval.pipeline import PipelineContext, recall
 from tessera.retrieval.seed import RetrievalConfig
-from tessera.vault import capture
+from tessera.vault import capture, compiled
 from tessera.vault.connection import VaultConnection
 
 
@@ -431,3 +431,185 @@ async def test_swcr_augments_with_recent_retrospectives(
     aug_retro_count = sum(1 for m in result.matches if m.facet_type == "retrospective")
     no_aug_retro_count = sum(1 for m in no_aug_result.matches if m.facet_type == "retrospective")
     assert aug_retro_count >= no_aug_retro_count
+
+
+# ---- V0.5 Playbook retrieval and staleness contract ---------------------
+#
+# Phase 4 of the compiled-Playbooks enhancement plan promises four
+# observable invariants on the recall surface:
+#
+# 1. A fresh ``compiled_notebook`` row may surface like any other
+#    candidate, carrying ``mode='write_time'`` and ``is_stale=False``.
+# 2. A stale ``compiled_notebook`` row may still surface when relevant
+#    but must carry ``is_stale=True``, and the bundle must emit a
+#    bundle-level ``compiled_artifact_stale`` warning so a caller
+#    scanning warnings (audit triage, dashboards) cannot miss the
+#    fact that a non-authoritative row is in the response.
+# 3. A stale row never surfaces with ``is_stale=False`` — the flag
+#    travels from ``compiled_artifacts.is_stale`` to the match through
+#    the hydration LEFT JOIN; no code path reaches a stale artifact
+#    and presents it as fresh.
+# 4. A ``write_time`` facet without a paired ``compiled_artifacts``
+#    row violates ADR 0019's pair-write contract; rather than
+#    surface a fabricated "fresh authoritative brief" with
+#    ``is_stale=False``, the pipeline raises so the outer recall
+#    handler records the integrity breach (caller-visible failure,
+#    not silent fallback to raw recall).
+
+
+async def _bootstrap_playbook_vault(
+    open_vault: VaultConnection,
+) -> tuple[int, PipelineContext, str, str]:
+    """Seed an agent with one source facet plus a compiled Playbook.
+
+    Returns ``(agent_id, ctx, source_external_id, artifact_external_id)``
+    so individual tests can mutate the source to flip the artifact
+    stale.
+    """
+
+    cur = open_vault.connection.execute(
+        "INSERT INTO agents(external_id, name, created_at) VALUES ('01PLAY', 'a', 0)"
+    )
+    agent_id = int(cur.lastrowid) if cur.lastrowid is not None else 0
+    embedder = _HashEmbedder()
+    reranker = _StaticReranker()
+    model = models_registry.register_embedding_model(
+        open_vault.connection, name="ollama", dim=embedder.dim, activate=True
+    )
+    source = capture.capture(
+        open_vault.connection,
+        agent_id=agent_id,
+        facet_type="project",
+        content="release prep workflow notes for the playbook compiler",
+        source_tool="test",
+    )
+    artifact_external_id = compiled.register_compiled_artifact(
+        open_vault.connection,
+        agent_id=agent_id,
+        content=("Playbook: release prep workflow with gates, evidence, and handoff state"),
+        source_facets=[source.external_id],
+        compiler_version="test/manual@1",
+        source_tool="test",
+    )
+    await embed_worker.run_pass(
+        open_vault.connection,
+        embedder,
+        active_model_id=model.id,
+        batch_size=32,
+        now_epoch=100,
+    )
+    ctx = PipelineContext(
+        conn=open_vault.connection,
+        embedder=embedder,
+        reranker=reranker,
+        active_model_id=model.id,
+        vec_table=models_registry.vec_table_name(model.id),
+        vault_id="01VAULTPLAY",
+        agent_id=agent_id,
+        config=RetrievalConfig(
+            rerank_model="length-score",
+            mmr_lambda=0.7,
+            max_candidates=50,
+            retrieval_mode="rerank_only",
+        ),
+        tool_budget_tokens=2000,
+        k=10,
+        facet_types=("project", "compiled_notebook"),
+    )
+    return agent_id, ctx, source.external_id, artifact_external_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_recall_surfaces_fresh_playbook_with_write_time_mode(
+    open_vault: VaultConnection,
+) -> None:
+    _, ctx, _, artifact_id = await _bootstrap_playbook_vault(open_vault)
+    result = await recall(ctx, query_text="release prep workflow playbook")
+    playbooks = [m for m in result.matches if m.facet_type == "compiled_notebook"]
+    assert playbooks, "expected fresh compiled_notebook row in recall bundle"
+    fresh = next(m for m in playbooks if m.external_id == artifact_id)
+    assert fresh.mode == "write_time"
+    assert fresh.is_stale is False
+    # Bundle carries no stale-artifact warning when nothing is stale.
+    assert not any("compiled_artifact_stale" in w for w in result.warnings)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_recall_surfaces_stale_playbook_with_warning(
+    open_vault: VaultConnection,
+) -> None:
+    agent_id, ctx, source_id, artifact_id = await _bootstrap_playbook_vault(open_vault)
+    flipped = compiled.mark_stale_for_source(
+        open_vault.connection,
+        source_external_id=source_id,
+        source_op="facet_soft_deleted",
+        agent_id=agent_id,
+    )
+    assert flipped == 1
+    result = await recall(ctx, query_text="release prep workflow playbook")
+    playbooks = [m for m in result.matches if m.external_id == artifact_id]
+    assert playbooks, "stale Playbook must remain inspectable through recall"
+    stale = playbooks[0]
+    assert stale.mode == "write_time"
+    assert stale.is_stale is True
+    # Loud bundle-level signal so a caller scanning warnings cannot
+    # mistake the row for authoritative context.
+    assert any("compiled_artifact_stale" in w for w in result.warnings), (
+        f"expected compiled_artifact_stale warning, got {result.warnings!r}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_recall_never_surfaces_stale_playbook_as_fresh(
+    open_vault: VaultConnection,
+) -> None:
+    """A stale artifact's ``is_stale`` must travel from storage to match.
+
+    A regression that drops the LEFT JOIN against ``compiled_artifacts``
+    or fabricates ``is_stale=False`` for ``write_time`` rows would
+    quietly present non-authoritative context as fresh. Guard the
+    invariant directly.
+    """
+
+    agent_id, ctx, source_id, artifact_id = await _bootstrap_playbook_vault(open_vault)
+    compiled.mark_stale_for_source(
+        open_vault.connection,
+        source_external_id=source_id,
+        source_op="facet_soft_deleted",
+        agent_id=agent_id,
+    )
+    result = await recall(ctx, query_text="release prep workflow playbook")
+    for match in result.matches:
+        if match.external_id == artifact_id:
+            assert match.is_stale is True, (
+                "stale compiled artifact must never surface with is_stale=False"
+            )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_recall_orphan_write_time_facet_breaches_pair_write_contract(
+    open_vault: VaultConnection,
+) -> None:
+    """ADR 0019 §pair-write: a ``write_time`` facet without a paired
+    ``compiled_artifacts`` row is an integrity violation. The hydration
+    LEFT JOIN refuses to fabricate an ``is_stale=False`` answer for
+    such a row; the pipeline raises so the outer ``recall`` handler
+    records the breach in the audit log instead of silently surfacing
+    the orphan as fresh authoritative content.
+    """
+
+    _, ctx, _, artifact_id = await _bootstrap_playbook_vault(open_vault)
+    # Drop the paired artifact row directly to forge the orphan state
+    # the contract refuses. Going through ``compiled.forget`` would
+    # also tombstone the facet via the shared ``is_deleted`` column,
+    # which would mask the orphan rather than expose it.
+    open_vault.connection.execute(
+        "DELETE FROM compiled_artifacts WHERE external_id = ?",
+        (artifact_id,),
+    )
+    with pytest.raises(RuntimeError, match="recall_hydration_orphan"):
+        await recall(ctx, query_text="release prep workflow playbook")
