@@ -399,6 +399,46 @@ Response: `{items: [{external_id, facet_type, snippet, captured_at, token_count}
 
 Required scope: `read` on `compiled_notebook` (so write-scoped callers can pre-read inputs without holding per-source-type read scopes).
 
+## CLI: `tessera playbook`
+
+The `tessera playbook` command tree wraps the storage-only API in `tessera.vault.compiled` so a user can orchestrate compiled-artifact (Playbook) work without touching SQL or hand-writing MCP envelopes. The boundary stays the same: this CLI does not call an LLM. The caller picks an external compiler (Claude Code, a local LLM, manual authoring) and registers the result through `tessera playbook register`.
+
+Each subcommand opens the vault directly (`--vault` / `--passphrase` / `$TESSERA_VAULT` / `$TESSERA_PASSPHRASE`) and resolves the agent id the same way `tessera tokens` and `tessera connect` do — auto-selected when the vault has exactly one agent, otherwise `--agent-id` disambiguates.
+
+| Subcommand | Purpose |
+| --- | --- |
+| `tessera playbook targets` | Scan `workflow` and `skill` facets for well-formed compile target descriptors (the four required keys `target`, `task`, `artifact_type`, `quality_bar`). Pass `--json` for machine-readable output. |
+| `tessera playbook sources <target>` | List source facets tagged `metadata.compile_into = [<target>]`. Mirrors `list_compile_sources` over the vault directly. |
+| `tessera playbook scaffold <target> --out <path>` | Write a deterministic Markdown brief covering target, task, source-facet table, required output sections, and provenance expectations. The compiler reads this brief; it never decides for the compiler. Pass `--force` to overwrite an existing file. |
+| `tessera playbook register <target> --content <path> --compiler-version <version>` | Pair-write a compiled artifact via `register_compiled_artifact`. Source membership defaults to the `list_for_compilation` enumeration; pass `--source-id <ulid>` (repeatable) to claim explicit sources. `--artifact-type` overrides the descriptor's value when present. |
+| `tessera playbook stale` | List artifacts where `is_stale = 1` plus the most recent `compiled_artifact_marked_stale` audit row's `source_external_id` and `source_op` so the user can trace the triggering mutation. |
+
+### Example workflow
+
+```bash
+# 1. Confirm the compile contract is registered as workflow/skill metadata.
+tessera playbook targets --json
+
+# 2. Inspect the source facets that will feed the compile.
+tessera playbook sources release_playbook --json
+
+# 3. Emit the compile brief and hand it to an external compiler.
+tessera playbook scaffold release_playbook --out /tmp/release.brief.md
+
+# 4. (Outside Tessera) compile the playbook with the chosen runner; write
+#    the compiled Markdown to /tmp/release.playbook.md.
+
+# 5. Register the result. Sources default to the compile_into enumeration.
+tessera playbook register release_playbook \
+    --content /tmp/release.playbook.md \
+    --compiler-version "claude-code/release-recipe@2026-05-08"
+
+# 6. After source mutations, list the stale artifacts and re-run step 4.
+tessera playbook stale --json
+```
+
+There is intentionally no `tessera playbook compile`. Compilation lives outside the daemon per ADR 0019 §Boundary statement; the CLI scaffolds and registers, the runner compiles.
+
 ## Recipes
 
 ### Pre-prompt hook (Claude Code)

@@ -64,6 +64,8 @@ The `mode` column on `facets` discriminates rows by **production method**, not u
 
 When a Playbook is part of a recall response, every match carries `mode` and `is_stale` so the caller renders a compiled artifact differently from raw context. Fresh Playbooks surface like any other candidate; stale Playbooks remain inspectable but never authoritative — the response carries `is_stale=true` on the match and a bundle-level `compiled_artifact_stale` warning. There is no silent fallback to raw recall and no automatic recompile from the retrieval hot path; the caller decides whether a stale match is acceptable. The full four-invariant contract lives in `docs/system-design.md §Playbook retrieval and staleness contract`.
 
+The compiler-orchestration CLI ships as `tessera playbook`. The five subcommands are `targets`, `sources`, `scaffold`, `register`, and `stale`: enumerate target descriptors, list eligible sources, emit a deterministic Markdown brief for an external compiler, register the compiled artifact, and surface stale artifacts with their cascade cause. There is intentionally no `tessera playbook compile` — Tessera stores; the caller compiles. The full command contract lives in `docs/api.md §CLI: tessera playbook`.
+
 ## Project context as the repo-local layer
 
 There is a second fragmentation problem adjacent to personal AI memory: codebase knowledge. A single `AGENTS.md` or `CLAUDE.md` does not scale once design decisions, test obligations, source references, and project-specific workflows spread across a real repo.
