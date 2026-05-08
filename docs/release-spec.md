@@ -267,11 +267,17 @@ Per-item status is annotated below. Implementation lands in the v0.3 commit seri
 
 - **Field-level Playbook provenance.** Compiled artifacts can optionally carry `metadata.field_provenance`, a caller-named map from field/section keys to `{source_facets, source_refs, confidence, notes}`. Each entry's `source_facets` must be a subset of the artifact's `compiled_artifacts.source_facets`; `source_refs` reuse the compact `{path, section, symbol, line, ref_kind}` convention. Provenance is optional per artifact and per field; field names are caller-defined. The daemon persists the metadata but does not parse source files, fetch repo content, or enforce subset semantics at write time — path resolution and validation are deferred to the later `tessera check context` surface (v0.6 scope) so the daemon hot path stays storage-only.
 
+- **Compiler-orchestration CLI: `tessera playbook`.** The shipped CLI surface for compiled-artifact (Playbook) work is `tessera playbook {targets|sources|scaffold|register|stale|inspect}`. `targets` enumerates `workflow`/`skill` facets carrying the four required descriptor keys (`target`, `task`, `artifact_type`, `quality_bar`); `sources` mirrors `list_compile_sources(target)` over the vault; `scaffold` writes a deterministic Markdown brief covering the target, task, source-facet table, eval-set guidance, the seven minimum artifact sections, and provenance expectations; `register` wraps `register_compiled_artifact`; `stale` lists `is_stale=1` artifacts plus the most recent `compiled_artifact_marked_stale` audit row's cascade cause; `inspect` reads one artifact, optionally narrowed to a `--field` (Markdown heading or `metadata.field_provenance` key) with `--provenance`, `--require-fresh`, and `--max-snippet` controls. There is intentionally no `tessera playbook compile` — compilation lives outside the daemon per ADR 0019 §Boundary statement. The full command contract lives in `docs/api.md §CLI: tessera playbook`.
+
+- **Compiler recipe pack.** Three documented runner workflows wrap the CLI without putting an LLM in the daemon: a Claude Code recipe (interactive scaffold-compile-register, plus `claude -p` headless), a local-LLM recipe (Ollama-class runners that consume the brief and source bodies on-host), and a no-LLM manual authoring recipe. Every recipe stamps the `<runner-name>/<recipe-name>@<semver-or-date>` compiler-version convention onto the registered artifact and writes the seven minimum sections (`Purpose`, `Supported tasks`, `Source inventory`, `Synthesized operating model`, `Known gaps`, `Eval summary`, `Provenance notes`) so `tessera playbook inspect --field` can slice each one. The pack lives in `docs/playbook-compiler-recipes.md`.
+
+- **Playbook dogfood gate.** Recipe-driven compile, recompile, eval, and staleness loops against the four task-shaped targets (`tessera_release_playbook`, `swcr_design_brief`, `dissertation_memory_chapter`, `project_context_adapter_brief`) track separately from the existing compiled-notebook dogfood doc under `docs/dogfood/playbook-dogfood.md`. The gate clears at two registered targets, one source mutation that flips `is_stale`, one recompile that preserves `metadata.target`, and a populated `## Failure cases` log; the open ranking-penalty decision lands as a verbatim block in that document when the run completes. Tessera does not promote the gate's defaults until real-vault evidence accrues.
+
 **Write-time compilation**
 - Compilation agent reads source facets, synthesizes narrative artifact
-- Scheduled or on-demand
-- Source mutations mark artifact stale; next run rebuilds
-- User opts in per-project: `tessera projects compile <name> --schedule daily`
+- Triggered manually through the recipe pack or by a caller-side runner; the daemon does not auto-compile
+- Source mutations mark the paired artifact stale via `mark_stale_for_source`; the recipe pack drives the recompile loop
+- Users opt in per target by tagging source facets with `metadata.compile_into = ["<target>"]` and registering the target descriptor as ordinary `workflow`/`skill` facet metadata
 
 **Episodic temporal upgrades** (if user signal warrants)
 - Time-aware retrieval for projects ("what was I thinking about anneal two weeks ago")
@@ -282,15 +288,16 @@ Per-item status is annotated below. Implementation lands in the v0.3 commit seri
 - End-to-end encrypted at rest in cloud (key stays local)
 - Conflict resolution: last-writer-wins on facets; manual merge for people
 
-**New MCP tools**
-- `recall_notebook(topic)` — read compiled artifact
-- `compile(project_external_id)` — manual trigger
-- `recall_temporal(time_range, query?)` — if shipped
+**New MCP tools (final shipped surface)**
+- Compiled artifacts: `register_compiled_artifact`, `get_compiled_artifact`, `list_compile_sources` (V0.5-P4, ADR 0019). No `recall_notebook`, no `compile_now`, no `compile_playbook` — ADR 0019 §Boundary statement is explicit and the CLI-level inspection lives in `tessera playbook inspect` rather than a daemon tool.
+- Agent profiles: `register_agent_profile`, `get_agent_profile`, `list_agent_profiles` (V0.5-P2, ADR 0017).
+- Verification + retrospective: `register_checklist`, `record_retrospective`, `list_checks_for_agent` (V0.5-P3, ADR 0018).
+- Automations: `register_automation`, `record_automation_run` (V0.5-P5, ADR 0020).
 
-**New CLI**
-- `tessera sync [setup|status|push|pull|conflicts]`
-- `tessera compile [list|run|schedule|stale]`
-- `tessera notebooks [list|show|export]`
+**New CLI (final shipped surface)**
+- `tessera sync [setup|status|push|pull]` (ADR-0022).
+- `tessera audit verify` (V0.5-P8, ADR 0021).
+- `tessera playbook [targets|sources|scaffold|register|stale|inspect]` (V0.5-P4 / V0.5-P7; full contract in `docs/api.md §CLI: tessera playbook`). No `tessera playbook compile` ships — compilation runs through the recipe pack outside the daemon.
 
 **v0.5 ships write-time as a new facet type, not as a per-facet mode toggle.** Users tag a `project` or `skill` as vertical-depth; the compilation agent produces a new `compiled_notebook` facet with `mode=write_time` from those source facets. The source facets stay `mode=query_time`. There is no user-facing switch that converts an existing `preference`, `workflow`, `project`, or `style` row from `query_time` to `write_time` — the `mode` column records the row's production method, not a user choice. A per-facet user-visible mode toggle on existing facet types is not a v0.5 commitment; if real-user signal calls for one after v0.5, it becomes a later decision.
 
@@ -304,6 +311,7 @@ Per-item status is annotated below. Implementation lands in the v0.3 commit seri
 - [ ] Sync handles 50K+ facets without blocking the daemon (V0.5-P9b — 50K-facet local snapshot sync is characterized by B-SYNC-1 under `docs/benchmarks/B-SYNC-1-snapshot-load/results/`; hosted S3 adapter timing and daemon responsiveness remain pending real-host dogfood measurement)
 - [x] **Encryption: data at rest in cloud is unreadable without local key (V0.5-P9 part 1).** AES-256-GCM blob encryption under a fresh DEK per push; DEK wrapped under the master key; manifest HMAC-SHA256 signed under the master key. `test_pull_with_wrong_master_key_aborts_before_decrypt` exercises the wrong-key path; `test_pull_rejects_tampered_blob` exercises the byte-flip detection; `test_pull_rejects_forged_manifest_signature` exercises the manifest tamper path. Three defence-in-depth layers on top of SQLCipher's per-page encryption: single-tag-over-the-file, wrapped DEK for credential rotation, signed sequence for replay defence.
 - [x] **`recall` transparently surfaces compiled artifacts and marks stale ones (V0.5-P7, ADR 0019 §Retrieval surface).** Every recall match carries `mode` (the row's production method — `query_time` or `write_time`) and `is_stale` (V0.5-P6 staleness flag for `compiled_notebook` rows; always `False` for other facet types). Hydration runs as a single `LEFT JOIN compiled_artifacts ON external_id` SQL pass against the K survivors so cost is proportional to response size. No privileged slice — the bundle's token budget envelope treats compiled artifacts as one more facet type per ADR 0019 §Retrieval surface. New `tests/unit/test_recall_stale_surface.py` (8 tests) covers hydration shape and end-to-end propagation; integration `test_recall_match_view_carries_mode_and_is_stale` and `test_recall_match_view_surfaces_is_stale_after_mutation` pin the round-trip through the MCP boundary.
+- [x] **Compiler-orchestration CLI + recipe pack shipped (V0.5-P4 / V0.5-P7).** `tessera playbook {targets|sources|scaffold|register|stale|inspect}` covers target enumeration, source listing, deterministic brief generation, artifact registration, staleness tracing, and field-level inspection. The recipe pack at `docs/playbook-compiler-recipes.md` documents the Claude Code, local-LLM, and no-LLM manual authoring recipes plus the `<runner-name>/<recipe-name>@<semver-or-date>` compiler-version convention and the seven minimum artifact sections. There is intentionally no `tessera playbook compile` — Tessera stores; the caller compiles. CLI integration suite at `tests/integration/test_cli_playbook.py` covers every shipped subcommand (47 tests at this commit); eval-set, field-provenance, and staleness conventions live in `docs/system-design.md §Playbook eval-set contract`, `§Playbook field-level provenance`, and `§Playbook retrieval and staleness contract`.
 - [ ] 1+ user reports running multi-machine sync continuously for 30+ days (tracking protocol: `docs/dogfood/sync-dogfood.md`; pending real multi-machine evidence)
 - [ ] Tom has dogfooded write-time compilation for his actual research for 60+ days (tracking protocol: `docs/dogfood/compiled-notebook-dogfood.md`; pending real compiled-notebook evidence). Task-shaped Playbook dogfood — recipe-driven compile, recompile, eval, and staleness loops against the four Phase 9 targets — tracks separately under `docs/dogfood/playbook-dogfood.md` and remains pending real Playbook evidence.
 
