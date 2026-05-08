@@ -149,12 +149,12 @@ Semantic recall is useful when the user does not know the exact handle. Explicit
 - compiled-artifact IDs
 - compile target identifiers (the `target` key on a descriptor)
 
-The first three handle shapes are unprefixed and resolved by namespace heuristics (ULID → facet, slug → skill, name → person alias). Compiled artifacts and Playbook targets get explicit prefixes so the rewrite is unambiguous when a target name happens to look like a skill slug:
+Compiled artifacts and Playbook targets get explicit `compiled:` and `playbook:` prefixes so the rewrite is unambiguous when a target name happens to look like a skill slug or section ID:
 
 ```text
-[[compiled:01J0ABCD…]]      # exact compiled-artifact ULID
+[[compiled:01J0ABCD…]]         # exact compiled-artifact ULID
 [[compiled:swcr_design_brief]] # latest fresh artifact for that target
-[[playbook:release]]        # alias for the same lookup, target-first reading
+[[playbook:release]]           # alias for the same lookup, target-first reading
 ```
 
 The two prefixes resolve identically; `playbook:` reads naturally in user-facing prompts ("expand `[[playbook:release]]` before drafting"), while `compiled:` reads naturally when piping a specific ULID. Resolution rules:
