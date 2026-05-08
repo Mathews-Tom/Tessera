@@ -330,7 +330,7 @@ async def recall(ctx: PipelineContext, *, query_text: str) -> RecallResult:
         total_found=total_found,
         truncated=truncated,
     )
-    warnings = _warnings(rerank_outcome.degraded, truncated)
+    warnings = _warnings(rerank_outcome.degraded, truncated, matches)
     return RecallResult(
         matches=matches,
         total_found=total_found,
@@ -796,12 +796,28 @@ def _hydrate_match_metadata(
     return out
 
 
-def _warnings(rerank_degraded: bool, truncated: bool) -> tuple[str, ...]:
+def _warnings(
+    rerank_degraded: bool,
+    truncated: bool,
+    matches: tuple[RecallMatch, ...] = (),
+) -> tuple[str, ...]:
     warnings: list[str] = []
     if rerank_degraded:
         warnings.append("reranker_degraded: falling back to RRF order")
     if truncated:
         warnings.append("token_budget_truncated")
+    stale_count = sum(1 for m in matches if m.mode == "write_time" and m.is_stale)
+    if stale_count:
+        # ADR 0019 §Retrieval surface + Phase 4 retrieval-and-staleness
+        # contract: stale compiled artifacts may still surface in a
+        # bundle when relevant, but the caller must treat them as
+        # non-authoritative. The per-match ``is_stale`` field already
+        # tells the caller which row is stale; the bundle-level
+        # warning is the loud signal so a caller scanning warnings
+        # alone (audit triage, dashboards) cannot miss the fact that
+        # at least one ``compiled_notebook`` row in the response is
+        # stale. No silent fallback to raw-only retrieval.
+        warnings.append(f"compiled_artifact_stale: {stale_count} match(es) are stale")
     return tuple(warnings)
 
 

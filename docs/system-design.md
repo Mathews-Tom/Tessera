@@ -256,7 +256,7 @@ Six tools. The heavy lifting is done by `recall`, which is cross-facet by defaul
 | Tool | Args | Returns | Token budget | Notes |
 |---|---|---|---|---|
 | `capture` | `content: str`, `facet_type: str`, `source_tool: str?`, `metadata: dict?`, `volatility: str = 'persistent'`, `ttl_seconds: int?` | `{external_id, is_duplicate, facet_type, volatility, ttl_seconds}` | 512 | Dedups by content hash; embedding happens async. ADR-0016 lifecycle: `persistent` default; `session` and `ephemeral` callers opt in and may override the per-row TTL. |
-| `recall` | `query_text: str`, `facet_types: list[str]? = all readable facets`, `k: int = 10`, `requested_budget_tokens: int?` | `{matches, warnings, degraded_reason, seed, truncated, rerank_degraded, total_tokens}` where each match carries `{external_id, facet_type, snippet, score, rank, captured_at, token_count, mode, is_stale}` | 6000 | **Cross-facet by default.** SWCR coherence weighting. Empty/low-signal calls return no padded context and set `degraded_reason`. V0.5-P7 surfaces `mode` (the row's production method — `query_time` or `write_time`) and `is_stale` (V0.5-P6 staleness flag for `compiled_notebook` rows; always `False` for other facet types) so callers can render compiled artifacts differently from raw context per ADR 0019 §Retrieval surface. |
+| `recall` | `query_text: str`, `facet_types: list[str]? = all readable facets`, `k: int = 10`, `requested_budget_tokens: int?` | `{matches, warnings, degraded_reason, seed, truncated, rerank_degraded, total_tokens}` where each match carries `{external_id, facet_type, snippet, score, rank, captured_at, token_count, mode, is_stale}` | 6000 | **Cross-facet by default.** SWCR coherence weighting. Empty/low-signal calls return no padded context and set `degraded_reason`. V0.5-P7 surfaces `mode` (the row's production method — `query_time` or `write_time`) and `is_stale` (V0.5-P6 staleness flag for `compiled_notebook` rows; always `False` for other facet types) so callers can render compiled artifacts differently from raw context per ADR 0019 §Retrieval surface. When the bundle includes one or more stale `compiled_notebook` matches, `warnings` carries a `compiled_artifact_stale` entry so callers scanning warnings alone (audit triage, dashboards) cannot mistake a non-authoritative row for fresh context — see §Playbook retrieval and staleness contract for the four-invariant contract. |
 | `show` | `external_id: str` | facet snippet + provenance fields | 2048 | Drill-down |
 | `list_facets` | `facet_type: str`, `limit: int = 20`, `since: int?` | array of summaries | 2048 | Browse mode |
 | `stats` | (none) | `{embed_health, by_source, vault_size, active_models, facet_count}` | 1024 | Corpus overview |
@@ -709,6 +709,39 @@ The convention places these constraints on the daemon and on later validators:
 - The daemon does not parse source files, fetch repo content, or follow `source_refs.path` at write time. Path resolution and ref-kind semantics belong to the later `tessera check context` surface (v0.6 scope), where it can scan disk and vault metadata together.
 - Validation lands as documentation first. The daemon may enforce subset semantics at `register_compiled_artifact` time once the convention stabilizes through dogfood; until then, it persists artifact metadata without judging it.
 - Field provenance complements but does not replace the artifact-level `source_facets` list, the eval-set contract, or the `is_stale` flag. It sits alongside them so callers can trace claims without re-running the compiler or reading the full artifact.
+
+### Playbook retrieval and staleness contract
+
+Compiled Playbooks ride the same `recall` pipeline as raw facets, with three caller-visible fields per match — `mode`, `is_stale`, and the bundle-level `warnings` list — encoding the contract a caller needs in order to render a Playbook differently from a raw fact.
+
+Per-match shape:
+
+| Field | Fresh Playbook | Stale Playbook | Raw facet |
+|---|---|---|---|
+| `mode` | `write_time` | `write_time` | `query_time` |
+| `is_stale` | `false` | `true` | `false` (always) |
+
+Bundle-level signals:
+
+| Signal | When emitted |
+|---|---|
+| `warnings` includes `compiled_artifact_stale: <n> match(es) are stale` | Recall response contains at least one match with `mode='write_time'` and `is_stale=true`. |
+| `warnings` includes `reranker_degraded: …` | Cross-encoder reranker failed health check; bundle reverted to RRF order. |
+| `warnings` includes `token_budget_truncated` | Snippet budget cut the bundle short of `k`. |
+
+The stale-Playbook contract has four invariants. Each one is held by at least one test under `tests/integration/test_retrieval_pipeline.py` (Phase 4 V0.5 Playbook retrieval suite) and `tests/unit/test_compiled_staleness.py` (V0.5-P6 wiring suite):
+
+1. **Fresh Playbooks surface like any other candidate.** A `compiled_notebook` row with `is_stale=false` may rank into the bundle when relevant. It carries `mode='write_time'` so callers can render it differently from raw context, and it carries no special ranking penalty — Tessera relies on the retrieval signal, not artifact metadata, to position it.
+2. **Stale Playbooks remain inspectable but never authoritative.** A `compiled_notebook` row with `is_stale=true` may still surface when relevant. The match carries `is_stale=true`, the bundle carries a `compiled_artifact_stale` warning, and the caller is responsible for treating the row as non-authoritative — recompiling, requesting a fresh source bundle, or routing the answer through raw recall instead.
+3. **A stale Playbook never surfaces as fresh.** The hydration LEFT JOIN reads `is_stale` directly off the paired `compiled_artifacts` row; no code path between SQL and the response is allowed to fabricate `is_stale=false` for a `write_time` row. A regression here is a hard test failure, not a soft warning.
+4. **A `write_time` facet without a paired artifact is an integrity breach.** ADR 0019 §pair-write requires both halves under one external_id and one transaction. If a recall ever encounters a `write_time` row without its `compiled_artifacts` companion, the pipeline raises `recall_hydration_orphan` rather than presenting the row as fresh authoritative content. The outer `recall` handler converts that into a `pipeline_error` audit row plus a degraded result so the breach is forensically reconstructible.
+
+The contract is intentionally narrow. v0.5 leaves four behaviors out of scope:
+
+- **No silent fallback from stale Playbook to raw facet recall.** The caller chooses whether a stale match is acceptable; the daemon does not silently swap one mode for another.
+- **No automatic recompile from retrieval.** Recompilation belongs to the caller-owned Playbook compiler workflow, not the recall hot path.
+- **No privileged budget slice for compiled artifacts.** A `compiled_notebook` row competes for the same per-facet token envelope as any other facet type in scope; oversubscribing the bundle with a long Playbook is the same kind of overflow as oversubscribing it with a long project facet, and the existing token-budget enforcer handles it.
+- **No deterministic ranking penalty for stale rows.** v0.5 starts with loud metadata (`is_stale=true` plus the bundle warning) and defers the closed-form penalty until dogfood signal proves it is needed; if added later, it will be a deterministic score adjustment, not a hidden quality score.
 
 Concrete target shapes:
 
