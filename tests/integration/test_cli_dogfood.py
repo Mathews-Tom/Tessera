@@ -2,16 +2,18 @@
 
 Round-trips the four subcommands (init/record/render/status) against
 a per-test ledger directory and proves that ``tessera audit verify``,
-``tessera playbook register``, and ``tessera playbook stale`` auto-
-emit rows to every active gate.
+``tessera sync push|pull``, ``tessera playbook register``, and
+``tessera playbook stale`` auto-emit rows to every active gate.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 
+from tessera.cli import sync_cmd as sync_cli
 from tessera.cli.__main__ import main as cli_main
 from tessera.dogfood.ledger import Ledger
 from tessera.dogfood.render import (
@@ -21,11 +23,20 @@ from tessera.dogfood.render import (
     SUMMARY_START_MARKER,
 )
 from tessera.migration import bootstrap
-from tessera.vault import facets
+from tessera.sync.s3 import S3BlobStore, S3Config
+from tessera.vault import facets, keyring_cache
 from tessera.vault.connection import VaultConnection
-from tessera.vault.encryption import derive_key, new_salt
+from tessera.vault.encryption import derive_key, new_salt, save_salt
+
+# Reuse the canonical fake S3 backend from the unit test module.
+from tests.unit.test_sync_s3 import _FakeS3Backend
 
 _PASSPHRASE = b"correct horse battery staple"
+_SYNC_BUCKET = "tessera-dogfood-test"
+_SYNC_ENDPOINT = "https://s3.us-east-1.amazonaws.com"
+_SYNC_REGION = "us-east-1"
+_SYNC_ACCESS_KEY = "AKIDEXAMPLE"
+_SYNC_SECRET_KEY = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
 
 
 @pytest.fixture
@@ -416,7 +427,7 @@ def test_dogfood_status_reports_per_gate_state(ledger_home: Path) -> None:
 @pytest.mark.integration
 def test_dogfood_init_blocked_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
-    ledger_home: Path,  # noqa: ARG001 — fixture sets TESSERA_DOGFOOD_DIR
+    ledger_home: Path,
 ) -> None:
     """A disabled environment refuses ``dogfood init`` so the operator
     is not split between two ledgers."""
@@ -440,9 +451,7 @@ def test_dogfood_init_blocked_when_disabled(
 
 
 @pytest.mark.integration
-def test_audit_verify_auto_emits_to_active_gate(
-    ledger_home: Path, tmp_path: Path
-) -> None:
+def test_audit_verify_auto_emits_to_active_gate(ledger_home: Path, tmp_path: Path) -> None:
     """``tessera audit verify`` writes an audit_verify row to every active gate."""
 
     cli_main(
@@ -477,9 +486,7 @@ def test_audit_verify_auto_emits_to_active_gate(
 
 
 @pytest.mark.integration
-def test_audit_verify_does_not_emit_when_no_gate_active(
-    ledger_home: Path, tmp_path: Path
-) -> None:
+def test_audit_verify_does_not_emit_when_no_gate_active(ledger_home: Path, tmp_path: Path) -> None:
     """No active gate → no auto-emission, even with the env-var unset."""
 
     vault_path = tmp_path / "vault.db"
@@ -779,9 +786,7 @@ def test_playbook_stale_emits_event_when_listing_non_empty(
 
 
 @pytest.mark.integration
-def test_playbook_stale_emits_no_row_when_listing_empty(
-    ledger_home: Path, tmp_path: Path
-) -> None:
+def test_playbook_stale_emits_no_row_when_listing_empty(ledger_home: Path, tmp_path: Path) -> None:
     """An empty stale listing must not pollute the ledger with no-op rows."""
 
     cli_main(
@@ -811,3 +816,217 @@ def test_playbook_stale_emits_no_row_when_listing_empty(
     assert rc == 0
     rows = list(Ledger("playbook", base_dir=ledger_home).iter_records())
     assert all(r.kind != "stale_event" for r in rows)
+
+
+# ---- sync auto-emission --------------------------------------------------
+
+
+def _bootstrap_vault_with_salt_sidecar(path: Path) -> None:
+    """Bootstrap a vault and persist the salt sidecar where load_salt expects it.
+
+    The sync flow needs the salt next to the vault file so the AES-GCM
+    master key can be re-derived during push.
+    """
+
+    salt = new_salt()
+    save_salt(path, salt)
+    k = derive_key(bytearray(_PASSPHRASE), salt)
+    bootstrap(path, k)
+    k.wipe()
+
+
+@pytest.fixture
+def fake_keyring(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, str], str]:
+    """In-memory keyring so the sync flow doesn't touch the OS keyring."""
+
+    storage: dict[tuple[str, str], str] = {}
+
+    def _store_password(service: str, username: str, value: str) -> None:
+        storage[(service, username)] = value
+
+    def _load_password(service: str, username: str) -> str | None:
+        return storage.get((service, username))
+
+    def _clear_password(service: str, username: str) -> bool:
+        return storage.pop((service, username), None) is not None
+
+    monkeypatch.setattr(keyring_cache, "store_password", _store_password)
+    monkeypatch.setattr(keyring_cache, "load_password", _load_password)
+    monkeypatch.setattr(keyring_cache, "clear_password", _clear_password)
+    return storage
+
+
+@pytest.fixture
+def fake_s3(monkeypatch: pytest.MonkeyPatch) -> _FakeS3Backend:
+    """In-process httpx MockTransport S3 backend, bound into sync_cmd."""
+
+    backend = _FakeS3Backend()
+    backend.add_bucket(_SYNC_BUCKET)
+
+    def _factory(config: S3Config, **_kwargs: object) -> S3BlobStore:
+        transport = httpx.MockTransport(backend.handler())
+        return S3BlobStore(config, transport=transport)
+
+    monkeypatch.setattr(sync_cli, "S3BlobStore", _factory)
+    return backend
+
+
+def _setup_sync(vault_path: Path) -> None:
+    cli_main(
+        [
+            "sync",
+            "setup",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+            "--endpoint",
+            _SYNC_ENDPOINT,
+            "--bucket",
+            _SYNC_BUCKET,
+            "--region",
+            _SYNC_REGION,
+            "--access-key",
+            _SYNC_ACCESS_KEY,
+            "--secret-key",
+            _SYNC_SECRET_KEY,
+            "--prefix",
+            "",
+        ]
+    )
+
+
+@pytest.mark.integration
+def test_sync_push_auto_emits_sync_op_to_active_gate(
+    ledger_home: Path,
+    tmp_path: Path,
+    fake_keyring: dict[tuple[str, str], str],
+    fake_s3: _FakeS3Backend,
+) -> None:
+    """A real ``tessera sync push`` invocation lands a sync_op row in the
+    sync ledger when the gate is active.
+
+    Closes the pr-review S1 gap: previously only the unit-level
+    auto_record dispatch was tested for the sync side; this test
+    proves the sync_cmd hook actually calls auto_record with the
+    right payload shape.
+    """
+
+    cli_main(
+        [
+            "dogfood",
+            "init",
+            "sync",
+            "--operator",
+            "Tom",
+            "--start-date",
+            "2026-05-09",
+        ]
+    )
+    vault_path = tmp_path / "vault.db"
+    _bootstrap_vault_with_salt_sidecar(vault_path)
+    _setup_sync(vault_path)
+
+    rc = cli_main(
+        [
+            "sync",
+            "push",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+        ]
+    )
+    assert rc == 0
+
+    rows = list(Ledger("sync", base_dir=ledger_home).iter_records())
+    sync_ops = [r for r in rows if r.kind == "sync_op"]
+    assert len(sync_ops) == 1
+    payload = sync_ops[0].payload
+    assert payload["command"] == "push"
+    assert payload["exit_code"] == 0
+    assert payload["elapsed_ms"] >= 0
+    assert payload["manifest_seq_after"] == 1
+    # Other gates are uninitialized — no leakage.
+    assert not (ledger_home / "compiled.jsonl").exists()
+    assert not (ledger_home / "playbook.jsonl").exists()
+
+
+@pytest.mark.integration
+def test_sync_push_pull_round_trip_emits_two_sync_op_rows(
+    ledger_home: Path,
+    tmp_path: Path,
+    fake_keyring: dict[tuple[str, str], str],
+    fake_s3: _FakeS3Backend,
+) -> None:
+    """One push + one pull → two distinct sync_op rows on the ledger."""
+
+    cli_main(
+        [
+            "dogfood",
+            "init",
+            "sync",
+            "--operator",
+            "Tom",
+            "--start-date",
+            "2026-05-09",
+        ]
+    )
+    vault_path = tmp_path / "vault.db"
+    _bootstrap_vault_with_salt_sidecar(vault_path)
+    _setup_sync(vault_path)
+
+    cli_main(
+        [
+            "sync",
+            "push",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+        ]
+    )
+    cli_main(
+        [
+            "sync",
+            "pull",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+        ]
+    )
+
+    rows = list(Ledger("sync", base_dir=ledger_home).iter_records())
+    sync_ops = [r for r in rows if r.kind == "sync_op"]
+    assert len(sync_ops) == 2
+    commands = [r.payload["command"] for r in sync_ops]
+    assert commands == ["push", "pull"]
+    assert all(r.payload["exit_code"] == 0 for r in sync_ops)
+
+
+@pytest.mark.integration
+def test_sync_push_does_not_emit_when_gate_inactive(
+    ledger_home: Path,
+    tmp_path: Path,
+    fake_keyring: dict[tuple[str, str], str],
+    fake_s3: _FakeS3Backend,
+) -> None:
+    """No active sync gate → no sync_op row written, even on a successful push."""
+
+    vault_path = tmp_path / "vault.db"
+    _bootstrap_vault_with_salt_sidecar(vault_path)
+    _setup_sync(vault_path)
+
+    rc = cli_main(
+        [
+            "sync",
+            "push",
+            "--vault",
+            str(vault_path),
+            "--passphrase",
+            _PASSPHRASE.decode(),
+        ]
+    )
+    assert rc == 0
+    assert not (ledger_home / "sync.jsonl").exists()

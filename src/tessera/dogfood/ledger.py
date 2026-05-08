@@ -237,7 +237,11 @@ def auto_record(
 
     if is_disabled():
         return []
-    targets = list(GATES) if gates is None else gates
+    # Sort GATES so the dispatch order is deterministic across Python
+    # builds. ``frozenset`` iteration order is hash-derived and non-stable;
+    # callers reading the returned list are entitled to a predictable
+    # order so test assertions and rendered diagnostics stay reproducible.
+    targets = sorted(GATES) if gates is None else list(gates)
     recorded: list[str] = []
     failures: list[str] = []
     for gate in targets:
