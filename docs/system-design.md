@@ -269,7 +269,7 @@ Six tools. The heavy lifting is done by `recall`, which is cross-facet by defaul
 | `list_checks_for_agent` | `profile_external_id: str` | `{checklist: {…} \| null}` | 4096 | V0.5-P3. Resolves `agent_profile.verification_ref` to the canonical live checklist; returns null when missing or soft-deleted. Cross-agent reads blocked. |
 | `register_compiled_artifact` | `content: str`, `source_facets: [str]`, `compiler_version: str`, `artifact_type: str = "playbook"`, `metadata: dict?`, `source_tool: str?` | `{external_id, artifact_type, source_count}` | 512 | V0.5-P4 / ADR 0019. Pair-writes a `compiled_notebook` facet (mode=`write_time`) and a `compiled_artifacts` row under one external_id inside one transaction. Tessera stores; the caller compiles. |
 | `get_compiled_artifact` | `external_id: str` | `{artifact: {external_id, content, artifact_type, source_facets, compiler_version, compiled_at, is_stale, truncated, token_count}} \| {artifact: null}` | 6000 | V0.5-P4. Returns null on missing or cross-agent reads. |
-| `list_compile_sources` | `target: str`, `limit: int = 50` | array of `{external_id, facet_type, snippet, captured_at, token_count}` plus `truncated` + `total_tokens` | 6000 | V0.5-P4. Enumerates source facets tagged `metadata.compile_into = [target]` for the caller-side compiler. Eligible types: `agent_profile`, `project`, `skill`, `verification_checklist`. |
+| `list_compile_sources` | `target: str`, `limit: int = 50` | array of `{external_id, facet_type, snippet, captured_at, token_count}` plus `truncated` + `total_tokens` | 6000 | V0.5-P4. Enumerates source facets tagged `metadata.compile_into = [target]` for the caller-side compiler. Eligible types: `agent_profile`, `project`, `skill`, `verification_checklist`. Target descriptors are ordinary `workflow` or `skill` facets whose metadata names the target and task; source membership still comes only from `compile_into`. |
 | `register_automation` | `content: str`, `metadata: {agent_ref, trigger_spec, cadence, runner, last_run?, last_result?}`, `source_tool: str?` | `{external_id, is_new}` | 512 | V0.5-P5 / ADR 0020. Inserts an `automation` facet for the storage-only registry. Tessera registers; runners execute (no scheduler, no outbound trigger, no in-process timer). Read paths reuse `recall`, `list_facets`, `show`. Cross-agent `agent_ref` writes are rejected. |
 | `record_automation_run` | `external_id: str`, `last_run: str (ISO-8601)`, `last_result: str` | `{external_id, last_run, last_result}` | 256 | V0.5-P5. Updates `last_run` + `last_result` on an existing automation after the runner fires. Cross-agent updates blocked at the storage layer. Audit op `automation_run_recorded` carries `{result_bucket, last_run_at}` — free-form prose stays out of the chain. |
 
@@ -533,6 +533,69 @@ sequenceDiagram
 ## What v0.5 adds — task-shaped write-time compilation
 
 v0.5 introduces `compiled_notebook` as a new facet type and activates the reserved `compiled_artifacts` table. User-facing docs call the artifact a Playbook: a task-ready compiled artifact for a recurring task family, not a generic summary of nearby facts. The user tags allowed source facets for a compile target, and an out-of-process compiler produces a synthesized artifact from those sources. Vertical-depth research is one valid target when the task is "answer questions about this topic"; release prep, retrieval-design answers, and agent operating manuals are equally valid when their task and source set are explicit.
+
+### Compile target metadata contract
+
+A compile target is the named task contract for one Playbook. It answers what the compiler should build, why the artifact exists, and what quality bar the caller will use when deciding whether the compile succeeded. Tessera stores the target descriptor as an ordinary `workflow` or `skill` facet until repeated use proves a first-class table is necessary.
+
+Target descriptor metadata uses these required keys:
+
+| Key | Required | Meaning |
+|---|---:|---|
+| `target` | yes | Stable compile target identifier used by `metadata.compile_into` and `list_compile_sources(target=...)`. |
+| `task` | yes | The recurring task the Playbook supports. This must be task-shaped, not only a topic label. |
+| `artifact_type` | yes | Artifact class passed to `register_compiled_artifact`; current user-facing Playbooks use `playbook`. |
+| `quality_bar` | yes | Caller-owned acceptance criterion for the compiled artifact. |
+| `expected_refresh` | no | Refresh policy such as `manual`, `on_source_change`, or an external cadence owned by the caller. |
+
+Source facet metadata uses `compile_into` as the only membership mechanism:
+
+| Key | Required | Meaning |
+|---|---:|---|
+| `compile_into` | yes, for membership | Array of target identifiers. `list_compile_sources` reads this field directly. |
+| `compile_role` | no | Source role. Accepted values are `primary_source`, `context_shaper`, `verification_source`, and `example_source`. |
+| `compile_priority` | no | Caller-side ordering or weighting hint. Tessera stores it but does not rank sources by it. |
+| `source_refs` | no | Compact pointers to backing files, sections, or symbols. Each ref can carry `path`, `section`, `symbol`, `line`, and `ref_kind`. |
+
+Duplicate target descriptors are invalid at check time, not daemon write time. The daemon stores ordinary facets and does not reject two descriptors that claim the same `target`; later `tessera check context` work owns that validation because it can scan disk-backed context and vault metadata together. The hot path does not infer compile membership from semantic similarity, source refs, descriptor text, or recall results.
+
+Descriptor example:
+
+```json
+{
+  "target": "swcr_design_brief",
+  "task": "answer architecture and retrieval-design questions about SWCR",
+  "artifact_type": "playbook",
+  "expected_refresh": "manual",
+  "quality_bar": "answers representative design questions with cited source facets"
+}
+```
+
+Source metadata example:
+
+```json
+{
+  "compile_into": ["swcr_design_brief"],
+  "compile_role": "primary_source",
+  "compile_priority": 80,
+  "source_refs": [
+    {
+      "path": "docs/swcr-spec.md",
+      "section": "Pipeline placement",
+      "ref_kind": "explains"
+    }
+  ]
+}
+```
+
+Concrete target shapes:
+
+| Target | Descriptor facet | Task | Typical sources |
+|---|---|---|---|
+| `tessera_release_playbook` | `workflow` | execute release prep consistently with gates, evidence, and handoff state visible | release workflow notes, `docs/release-spec.md` project context, verification checklist facets |
+| `swcr_design_brief` | `skill` | answer architecture and retrieval-design questions about SWCR with source-backed claims | system design notes, ADRs, retrieval benchmark notes, implementation-facing project facets |
+| `dissertation_memory_chapter` | `workflow` or `skill` | answer vertical-depth research questions for one dissertation chapter over time | research project facets, literature-review skills, verification checklist facets |
+| `linkedin_launch_context` | `workflow` | produce launch-context posts with the right claims, examples, and style constraints | launch project facets, writing workflow facets, example-source project or skill facets; style rows may shape compiler recall but are not primary sources |
 
 ```mermaid
 graph TB

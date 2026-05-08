@@ -32,9 +32,30 @@ The compilation agent reads tagged sources from the user's vault. v0.5 admits fo
 | `skill`                | Reusable procedures the user has authored (ADR 0012)                                       |
 | `verification_checklist` | Pre-delivery gates per agent (ADR 0018)                                                  |
 
-`identity`, `preference`, `workflow`, `style`, `person`, `retrospective`, `automation` rows are **not** primary inputs but are admissible as **context shapers**: SWCR surfaces them through the standard cross-facet recall when the compiler queries the vault, and they shape the synthesized prose without becoming explicit sections of the artifact.
+`identity`, `preference`, `workflow`, `style`, `person`, `retrospective`, `automation` rows are **not** primary inputs but are admissible as **context shapers**: SWCR surfaces them through the standard cross-facet recall when the compiler queries the vault, and they shape the synthesized prose without becoming explicit sections of the artifact. A target descriptor itself can be stored as a `workflow` or `skill` facet because it describes the task contract; source membership still comes only from source facets tagged with `metadata.compile_into`.
 
 The user tags sources via metadata on the source facet itself (`metadata.compile_into = ['playbook_main']` or equivalent). The compiler reads tagged rows by querying `facets WHERE metadata->>'compile_into' = ?`. No separate compile-membership table.
+
+### Compile target descriptor
+
+A compile target descriptor is the caller-visible contract for one Playbook target. It is ordinary facet metadata, not a new daemon table. Required keys are:
+
+| Key | Meaning |
+| --- | --- |
+| `target` | Stable compile target identifier, shared with source facets' `metadata.compile_into` values. |
+| `task` | Recurring task the compiled artifact supports. The task must be explicit enough to justify write-time synthesis. |
+| `artifact_type` | Artifact class passed to `register_compiled_artifact`; Playbooks use `playbook`. |
+| `quality_bar` | Caller-owned acceptance criterion for the compiled artifact. |
+
+Optional source metadata keys are:
+
+| Key | Meaning |
+| --- | --- |
+| `compile_role` | One of `primary_source`, `context_shaper`, `verification_source`, or `example_source`. |
+| `compile_priority` | Caller-side source ordering or weighting hint. |
+| `source_refs` | Compact source pointers such as `{path, section, symbol, line, ref_kind}`. |
+
+Duplicate target descriptors are invalid at check time, not daemon write time. The daemon persists ordinary facets and keeps `list_compile_sources(target=...)` limited to the `compile_into` array; a later context-checking surface can scan descriptors, reject duplicate `target` values, and report targets with no sources without putting descriptor validation on the recall hot path.
 
 ### Compilation pipeline
 
