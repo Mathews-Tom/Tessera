@@ -244,12 +244,14 @@ The metadata dict is stored under `caller_metadata` per the daemon's pair-write 
 
 ## Validation checklist for the recipe pack
 
-Phase 8 of `.docs/compiled-playbooks-enhancement-plan.md` ships when one recipe in this pack has produced a registered artifact from real Tessera facets, the artifact has been retrieved through `recall`, and a source mutation has flipped staleness on it. Recipe authors record evidence under `docs/dogfood/` rather than this document; the dogfood log is the load-bearing artifact for the gate, not the recipe doc.
+Phase 8 of `.docs/compiled-playbooks-enhancement-plan.md` ships when one recipe in this pack has produced a registered artifact from real Tessera facets, the artifact has been retrieved through `recall`, and a source mutation has flipped staleness on it. Recipe authors record evidence under `docs/dogfood/` rather than this document; the dogfood log is the load-bearing artifact for the gate, not the recipe doc. Phase 9 (`.docs/compiled-playbooks-enhancement-plan.md §Phase 9`) extends the same evidence trail to the task-shaped Playbook surface: recipe-driven recompile loops, eval-set runs, failure-case logging, and the ranking-penalty decision live under `docs/dogfood/playbook-dogfood.md`.
 
 | Gate | Owner | Evidence path |
 | --- | --- | --- |
 | One recipe produces a registered artifact from real Tessera facets | Recipe author | `docs/dogfood/compiled-notebook-dogfood.md` evidence log row |
 | The artifact can be retrieved through `recall` | Recipe author | `tessera recall` output recorded in the dogfood evidence log |
 | Staleness flips when a source mutates | Recipe author | `tessera playbook stale --json` output before and after the source mutation |
+| Two or more Phase 9 targets compiled, recompiled, and evaluated through this recipe pack | Recipe author | `docs/dogfood/playbook-dogfood.md` evidence log + failure-case section |
+| Ranking-penalty decision (Phase 4 open question) recorded against observed dogfood behavior | Recipe author | `docs/dogfood/playbook-dogfood.md §Ranking-penalty decision` |
 
 Recipes outside this pack are welcome. New recipes either land in this document under a new `## Recipe <n>` heading or live in a downstream caller's repo with a backlink. Either way, the runner-name / recipe-name / version convention and the seven minimum sections are the V0.5 contract; recipe authors do not get to renegotiate either through prose alone.
