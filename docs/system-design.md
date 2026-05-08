@@ -542,6 +542,7 @@ graph TB
     COMPILE[Compilation agent<br/>reads source facets,<br/>synthesizes narrative]
     ARTIFACT[compiled_notebook facet written<br/>facet_type=compiled_notebook, mode=write_time<br/>content stored in compiled_artifacts]
     STALE[Source facet mutations<br/>mark artifact is_stale=1]
+    OBSERVE[Caller observes stale artifact<br/>and decides whether to recompile]
   end
 
   subgraph Query["Query-time retrieval (v0.1+)"]
@@ -553,7 +554,8 @@ graph TB
   TRIGGER --> COMPILE
   COMPILE --> ARTIFACT
   ING -.mutates sources.-> STALE
-  STALE -.triggers.-> COMPILE
+  STALE -.visible to.-> OBSERVE
+  OBSERVE -.may invoke.-> TRIGGER
   ASK --> BUNDLE
   ARTIFACT -.surfaced via.-> BUNDLE
 ```
