@@ -138,7 +138,7 @@ Field names under `field_provenance` are caller-defined. Each name corresponds t
 The convention places three constraints on the daemon and on later validators:
 
 - The `source_facets` listed under any field must be a subset of `compiled_artifacts.source_facets`. Field provenance cannot introduce new sources that bypass the artifact's source list.
-- The daemon does not parse source files, fetch repo content, or follow `source_refs.path` at write time. Path resolution belongs to the later `tessera check context` surface (V0.6 scope), where it can scan disk and vault metadata together.
+- The daemon does not parse source files, fetch repo content, or follow `source_refs.path` at write time. Path resolution belongs to the later `tessera check context` surface (v0.6 scope), where it can scan disk and vault metadata together.
 - Validation lands as documentation first. The daemon may enforce subset semantics at registration time once the convention stabilizes through dogfood; until then, `register_compiled_artifact` continues to persist artifact metadata without judging it.
 
 Field provenance is the bridge from "this artifact was compiled from these sources" to "this specific claim is supported by these sources." It does not replace the artifact-level `source_facets` list, the eval-set contract, or the `is_stale` flag — it sits alongside them so callers can answer "which source backed this claim?" without reading the full artifact.
