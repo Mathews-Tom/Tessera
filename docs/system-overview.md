@@ -56,7 +56,9 @@ Tessera ships v0.1 as **query-time only**. The reason is matched to the audience
 
 Each of these facets is about the **horizontal touch of the T-shape**. Query-time is the right mode. Write-time compilation would add complexity without adding value for these types.
 
-**Write-time compilation becomes relevant for the vertical depth of the T-shape** — long-running research notebooks, evolving domain knowledge. v0.5 adds `compiled_notebook` as a new facet type: the user tags a `project` or `skill` as vertical-depth, and a compilation agent synthesizes an artifact from those source facets. The v0.1 schema reserves the facet type and the `compiled_artifacts` table, so the transition is additive, not a rewrite.
+**Write-time compilation becomes relevant when the user has a recurring task that benefits from pre-synthesized context.** v0.5 adds `compiled_notebook` as a new facet type and exposes it in user-facing prose as a Playbook: a task-ready compiled artifact built from explicitly tagged source facets. A Playbook exists to make a repeated task faster, cheaper, more accurate, or more auditable — release prep, SWCR design answers, a dissertation research brief, or an AI workflow operating manual. It is not a generic topic summary unless the repeated task is explicitly "answer questions about this vertical-depth topic."
+
+The vertical-depth use case still matters, but the organizing unit is the task, not the topic. The user tags allowed source facets with compile metadata, an out-of-process compiler synthesizes the Playbook, and Tessera stores the result as a `compiled_notebook` facet paired with a `compiled_artifacts` row. The v0.1 schema reserves the facet type and table, so the transition is additive, not a rewrite.
 
 The `mode` column on `facets` discriminates rows by **production method**, not user choice: v0.1 writes `query_time` for all five facets; v0.5 writes `write_time` for `compiled_notebook` rows produced by the compiler. A per-facet mode toggle on existing facet types is not a v0.5 commitment — if real user signal calls for it after v0.5, it's a later decision.
 
