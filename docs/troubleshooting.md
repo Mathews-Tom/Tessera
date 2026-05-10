@@ -267,7 +267,7 @@ Cite the vault size + `tessera doctor` output when opening an issue.
 
 ### `capture` is silently ignored (no row in vault, no error)
 
-That's a bug — capture is supposed to fail loudly on any write that can't land. If you see this, collect a diagnostic bundle (`tessera doctor --collect`) and open an issue immediately. The audit log at `~/.tessera/events.db` has the request trace if capture reached the daemon at all.
+That's a bug — capture is supposed to fail loudly on any write that can't land. If you see this, collect a diagnostic bundle (`tessera doctor --collect`) and open an issue immediately. The events log at `~/.tessera/run/events.db` has the request trace if capture reached the daemon at all.
 
 ---
 
@@ -363,8 +363,8 @@ No facet content leaves your machine — the bundle is scrubbed per `docs/determ
 
 Logs live at:
 
-- Daemon log: `~/.tessera/log/tesserad.log`
-- Events database: `~/.tessera/events.db` (SQLite; inspect with any SQLite browser)
+- Daemon log: `~/.tessera/run/tesserad.log`
+- Events database: `~/.tessera/run/events.db` (SQLite; inspect with any SQLite browser)
 - Audit log: inside the vault (`SELECT * FROM audit_log` after opening with `tessera vault repl`)
 
 ---

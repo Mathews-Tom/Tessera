@@ -99,7 +99,7 @@ All observability surfaces write to the local vault or local log files. No outbo
 
 ### Structured event log
 
-A separate SQLite file `~/.tessera/events.db` captures structured events for operational debugging:
+A separate SQLite file `~/.tessera/run/events.db` captures structured events for operational debugging. The file lives under the daemon's runtime directory alongside `tesserad.log`, `tesserad.pid`, and the control socket; the top level of `~/.tessera/` is reserved for user-authored data (`vault.db` + its salt sidecar, dogfood ledgers, skill disk syncs).
 
 ```sql
 CREATE TABLE events (

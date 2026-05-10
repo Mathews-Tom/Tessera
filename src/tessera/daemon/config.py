@@ -74,7 +74,18 @@ def resolve_config(
         socket_path=sock,
         log_path=runtime_dir / _LOG_FILENAME,
         pid_path=runtime_dir / _PID_FILENAME,
-        events_db_path=Path(_DEFAULT_VAULT_DIR).expanduser() / _EVENTS_DB_FILENAME,
+        # ``events.db`` joins the rest of the daemon's runtime artifacts
+        # under ``~/.tessera/run/`` so the user-facing top-level
+        # directory only contains things the operator authored
+        # (``vault.db`` + dogfood ledgers + skills disk-syncs). Keeping
+        # ``events.db`` at the top level was an early-v0.1 layout
+        # artifact that broke the multi-vault disambiguation heuristic
+        # in ``cli/_common.resolve_vault_path``: a single fresh install
+        # ended up with two ``*.db`` files at the top level (the real
+        # vault + the daemon's telemetry sink), and the heuristic
+        # refused to guess between them. Moving ``events.db`` under
+        # ``run/`` removes the collision at the source.
+        events_db_path=runtime_dir / _EVENTS_DB_FILENAME,
         # Localhost-only bind already blocks public access; the Origin
         # allowlist further rejects browser-driven requests that
         # hijack ambient-authority DNS rebind vectors.

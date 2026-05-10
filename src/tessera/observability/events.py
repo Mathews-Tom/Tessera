@@ -2,10 +2,21 @@
 
 Per ``docs/determinism-and-observability.md §Structured event log``
 the daemon emits slow-query, embed-pipeline, and capability-lifecycle
-events to a separate ``~/.tessera/events.db`` SQLite file. The log is
-**not** the audit log: audit captures legal-grade mutations, events
-capture operational telemetry. Keeping them in distinct files lets an
-operator wipe the events database without touching forensic records.
+events to a separate ``~/.tessera/run/events.db`` SQLite file. The
+log is **not** the audit log: audit captures legal-grade mutations,
+events capture operational telemetry. Keeping them in distinct files
+lets an operator wipe the events database without touching forensic
+records.
+
+The file lives under the daemon's runtime directory alongside
+``tesserad.log``, ``tesserad.pid``, and the control socket — i.e.
+under ``~/.tessera/run/`` rather than at the top level of
+``~/.tessera/``. The top level is reserved for user-authored data
+(``vault.db`` and its salt sidecar, dogfood ledgers, skill disk
+syncs). Pre-v0.1.x installs may have an ``events.db`` at the old
+top-level path; that file is orphaned after the relocation and can
+be deleted safely (per the 7-day retention nothing is permanently
+lost).
 
 Events are local-only. Nothing in this module speaks to the network.
 The file is a plain SQLite DB (not sqlcipher) so a user or operator
