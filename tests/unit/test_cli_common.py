@@ -56,11 +56,18 @@ def test_resolve_vault_path_default_when_unset(monkeypatch: pytest.MonkeyPatch) 
 def test_resolve_vault_path_disambiguates_multi_vault(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Multiple *.db files in the default dir with no explicit choice → CliError."""
+    """Multiple *.db files with paired .salt sidecars → CliError.
+
+    The disambiguation guard counts only files structured as real
+    vaults (paired ``.db.salt`` sidecar). Two such files with no
+    explicit choice triggers the refuse-to-guess error.
+    """
 
     monkeypatch.delenv("TESSERA_VAULT", raising=False)
     (tmp_path / "work.db").write_bytes(b"")
+    (tmp_path / "work.db.salt").write_bytes(b"\x00" * 16)
     (tmp_path / "personal.db").write_bytes(b"")
+    (tmp_path / "personal.db.salt").write_bytes(b"\x00" * 16)
     monkeypatch.setattr("tessera.cli._common.DEFAULT_VAULT_DIR", tmp_path)
     with pytest.raises(CliError) as exc_info:
         resolve_vault_path(None)
@@ -68,6 +75,34 @@ def test_resolve_vault_path_disambiguates_multi_vault(
     assert "multiple vaults" in msg
     assert "work.db" in msg
     assert "personal.db" in msg
+
+
+@pytest.mark.unit
+def test_resolve_vault_path_ignores_db_files_without_salt_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daemon-internal SQLite files (no .salt sidecar) do not trigger the guard.
+
+    Closes the disambiguation-warning issue where ``events.db`` at
+    the top level of ``~/.tessera/`` collided with the real
+    ``vault.db`` and made every CLI command refuse to guess. The
+    fix relocated ``events.db`` under ``~/.tessera/run/``; this test
+    pins the defence-in-depth filter on the resolver itself so a
+    future auxiliary ``.db`` at the top level cannot reintroduce the
+    collision.
+    """
+
+    monkeypatch.delenv("TESSERA_VAULT", raising=False)
+    (tmp_path / "vault.db").write_bytes(b"")
+    (tmp_path / "vault.db.salt").write_bytes(b"\x00" * 16)
+    # An auxiliary plain-SQLite database (the shape pre-v0.1.x
+    # ``events.db`` used to take). No ``.salt`` sidecar — must not
+    # count as a vault.
+    (tmp_path / "events.db").write_bytes(b"")
+    monkeypatch.setattr("tessera.cli._common.DEFAULT_VAULT_DIR", tmp_path)
+    monkeypatch.setattr("tessera.cli._common.DEFAULT_VAULT_PATH", tmp_path / "vault.db")
+    # No CliError — single salted candidate resolves cleanly.
+    assert resolve_vault_path(None) == tmp_path / "vault.db"
 
 
 @pytest.mark.unit

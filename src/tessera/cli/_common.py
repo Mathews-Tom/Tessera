@@ -59,9 +59,18 @@ def resolve_vault_path(arg_value: Path | None) -> Path:
 
     Multi-vault disambiguation only triggers when none of the three
     above resolved a path *and* ``~/.tessera`` happens to contain more
-    than one ``*.db``. In that rare case we refuse to guess and list
-    the candidates so the user can pass ``--vault`` or set
-    ``$TESSERA_VAULT``.
+    than one ``*.db`` file with a paired ``.salt`` sidecar. In that
+    rare case we refuse to guess and list the candidates so the user
+    can pass ``--vault`` or set ``$TESSERA_VAULT``.
+
+    The ``.salt`` sidecar is the structural discriminator between a
+    real vault (SQLCipher-encrypted, KDF-salted) and an unencrypted
+    auxiliary database that may sit next to it. ``vault.db`` ships
+    with ``vault.db.salt``; daemon-internal SQLite files (e.g. the
+    pre-v0.1.x ``events.db`` location) ship without one. Filtering
+    on the sidecar means the disambiguation guard reflects "real
+    vaults present in this directory" rather than "any file ending in
+    ``.db``".
 
     The returned path is not required to exist — ``tessera init``
     creates it; every other command surfaces a specific
@@ -75,7 +84,11 @@ def resolve_vault_path(arg_value: Path | None) -> Path:
     if env:
         return Path(env).expanduser()
     if DEFAULT_VAULT_DIR.is_dir():
-        candidates = sorted(p for p in DEFAULT_VAULT_DIR.glob("*.db") if p.is_file())
+        candidates = sorted(
+            p
+            for p in DEFAULT_VAULT_DIR.glob("*.db")
+            if p.is_file() and p.with_suffix(".db.salt").is_file()
+        )
         if len(candidates) > 1:
             listing = ", ".join(str(p) for p in candidates)
             raise CliError(
