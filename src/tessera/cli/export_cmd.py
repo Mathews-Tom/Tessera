@@ -34,6 +34,7 @@ from tessera.vault.export import (
     export_sqlite,
     import_json,
 )
+from tessera.vault.okf import export_okf
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -47,12 +48,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     export_parser.add_argument("--passphrase", default=None)
     export_parser.add_argument(
         "--format",
-        choices=("json", "md", "sqlite"),
+        choices=("json", "md", "sqlite", "okf"),
         required=True,
         help=(
             "json: single-file canonical export (byte-equivalent round-trip). "
             "md: one file per facet type written under --output. "
-            "sqlite: plain-text decrypted copy of the vault."
+            "sqlite: plain-text decrypted copy of the vault. "
+            "okf: OKF v0.1 plaintext bundle under --output."
         ),
     )
     export_parser.add_argument(
@@ -60,8 +62,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         type=Path,
         required=True,
         help=(
-            "path to write to. json/sqlite produce a single file; md "
-            "expects a directory and writes one .md per facet type."
+            "path to write to. json/sqlite produce a single file; md/okf "
+            "expect a directory and write markdown files under it."
         ),
     )
     export_parser.add_argument(
@@ -160,6 +162,15 @@ def _dispatch_export(
         if output_path.exists() and not output_path.is_dir():
             raise ValueError(f"--format md requires a directory path, got a file: {output_path}")
         return export_markdown(vault, output_dir=output_path, include_deleted=include_deleted)
+    if format_name == "okf":
+        if output_path.exists() and not output_path.is_dir():
+            raise ValueError(f"--format okf requires a directory path, got a file: {output_path}")
+        return export_okf(
+            vault,
+            output_dir=output_path,
+            include_deleted=include_deleted,
+            now_epoch=int(datetime.now(UTC).timestamp()),
+        )
     if format_name == "sqlite":
         if output_path.is_dir():
             raise ValueError(

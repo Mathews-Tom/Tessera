@@ -1,16 +1,13 @@
-"""OKF (Open Knowledge Format) facet <-> concept mapping — pure and I/O-free.
+"""OKF (Open Knowledge Format) facet <-> concept mapping and export.
 
-Phase 1 of the OKF interchange boundary (ADR 0023): the facet <-> concept
-mapping expressed as pure functions with no filesystem and no database
-access. Keeping the mapping I/O-free makes it unit-testable in isolation
-and lets the eventual exporter / importer (enhancement-plan Phases 2 & 4)
-be a thin I/O shell over these functions.
+Phase 1 of the OKF interchange boundary (ADR 0023) introduced the pure
+facet <-> concept mapping helpers below. Phase 2 adds the explicit export
+I/O shell over those helpers: it reads the vault through the existing export
+snapshot functions and writes a local OKF bundle on user request.
 
 Boundary (ADR 0023): *Tessera stores encrypted; an OKF bundle is what the
-user explicitly asks Tessera to emit.* This module only translates between
-a vault facet and one OKF concept document (YAML frontmatter + markdown
-body); it never reads or writes the vault or the disk.
-
+user explicitly asks Tessera to emit.* This module never makes outbound
+calls; export is a local plaintext projection only.
 Design notes
 ------------
 - The projection input is :class:`ConceptFacet`, a decoupled subset of a
@@ -39,9 +36,14 @@ import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Final
 
+import sqlcipher3
+
 from tessera.vault.canonical_json import canonical_json
+from tessera.vault.connection import VaultConnection
+from tessera.vault.export import ExportSummary, _build_document, _summary
 from tessera.vault.skills import SkillsError, slugify
 
 OKF_VERSION: Final[str] = "0.1"
@@ -74,6 +76,15 @@ _CITATIONS_HEADING: Final[str] = "# Citations"
 _SLUG_SUFFIX_LEN: Final[int] = 6
 _PERSISTENT: Final[str] = "persistent"
 _INT_RE: Final[re.Pattern[str]] = re.compile(r"^-?\d+$")
+
+_RESERVED_BUNDLE_FILES: Final[frozenset[str]] = frozenset({"index.md", "log.md"})
+_RESERVED_BUNDLE_STEMS: Final[frozenset[str]] = frozenset(
+    name.removesuffix(".md") for name in _RESERVED_BUNDLE_FILES
+)
+_SOURCE_REFS: Final[str] = "source_refs"
+_FIELD_PROVENANCE: Final[str] = "field_provenance"
+_CALLER_METADATA: Final[str] = "caller_metadata"
+_ABSOLUTE_PATH_RE: Final[re.Pattern[str]] = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
 
 
 class OKFMappingError(Exception):
@@ -308,6 +319,358 @@ def render_concept(
     return out
 
 
+def export_okf(
+    vault: VaultConnection,
+    *,
+    output_dir: Path,
+    include_deleted: bool = False,
+    now_epoch: int,
+) -> ExportSummary:
+    """Write a conformant OKF v0.1 bundle under ``output_dir``.
+
+    The exporter mirrors the other export formats: it snapshots the vault
+    read-only via ``export._build_document`` / ``export._fetch_facets`` and
+    writes local files only. Each facet becomes one concept document under
+    ``/<facet_type>/<slug>.md``. ``index.md`` files provide progressive
+    disclosure, and compiled notebooks get a synthesized ``# Citations``
+    section from stored provenance.
+    """
+
+    document = _build_document(vault, include_deleted=include_deleted, now_epoch=now_epoch)
+    facets = document["facets"]
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    extras = _fetch_okf_facet_extras(
+        vault.connection,
+        external_ids=tuple(str(facet["external_id"]) for facet in facets),
+    )
+    compiled = _fetch_compiled_provenance(
+        vault.connection,
+        external_ids=tuple(str(facet["external_id"]) for facet in facets),
+    )
+
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    slug_by_external_id: dict[str, str] = {}
+    path_by_external_id: dict[str, str] = {}
+    taken_by_type: dict[str, set[str]] = {}
+
+    for facet in facets:
+        facet_type = str(facet["facet_type"])
+        by_type.setdefault(facet_type, []).append(facet)
+        taken = taken_by_type.setdefault(facet_type, set(_RESERVED_BUNDLE_STEMS))
+        title = _concept_title(facet)
+        slug = concept_slug(title, str(facet["external_id"]), taken)
+        taken.add(slug)
+        external_id = str(facet["external_id"])
+        slug_by_external_id[external_id] = slug
+        path_by_external_id[external_id] = f"/{concept_id(facet_type, slug)}.md"
+
+    for facet_type, rows in sorted(by_type.items()):
+        type_dir = output_dir / facet_type
+        type_dir.mkdir(parents=True, exist_ok=True)
+        rows.sort(key=lambda r: (int(r["captured_at"]), str(r["external_id"])), reverse=True)
+        for facet in rows:
+            external_id = str(facet["external_id"])
+            concept = _concept_facet(facet, extras.get(external_id), compiled.get(external_id))
+            metadata = _okf_metadata(facet)
+            body = str(facet["content"])
+            citations = _citation_lines(compiled.get(external_id), path_by_external_id)
+            concept_path = type_dir / f"{slug_by_external_id[external_id]}.md"
+            concept_path.write_text(
+                render_concept(concept, metadata, body, citations),
+                encoding="utf-8",
+            )
+        (type_dir / "index.md").write_text(
+            _render_type_index(facet_type, rows, slug_by_external_id),
+            encoding="utf-8",
+        )
+
+    (output_dir / "index.md").write_text(
+        _render_root_index(document, by_type),
+        encoding="utf-8",
+    )
+    (output_dir / "log.md").write_text(
+        _render_export_log(document, by_type),
+        encoding="utf-8",
+    )
+    return _summary(document, output_dir, "okf")
+
+
+@dataclass(frozen=True, slots=True)
+class _FacetExtras:
+    volatility: str
+    ttl_seconds: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CompiledProvenance:
+    source_facets: tuple[str, ...]
+    is_stale: bool
+    metadata: dict[str, Any]
+
+
+def _fetch_okf_facet_extras(
+    conn: sqlcipher3.Connection, *, external_ids: Sequence[str]
+) -> dict[str, _FacetExtras]:
+    if not external_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in external_ids)
+    rows = conn.execute(
+        f"""
+        SELECT external_id, volatility, ttl_seconds
+        FROM facets
+        WHERE external_id IN ({placeholders})
+        """,
+        tuple(external_ids),
+    ).fetchall()
+    return {
+        str(row[0]): _FacetExtras(
+            volatility=str(row[1]),
+            ttl_seconds=None if row[2] is None else int(row[2]),
+        )
+        for row in rows
+    }
+
+
+def _fetch_compiled_provenance(
+    conn: sqlcipher3.Connection, *, external_ids: Sequence[str]
+) -> dict[str, _CompiledProvenance]:
+    if not external_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in external_ids)
+    rows = conn.execute(
+        f"""
+        SELECT external_id, source_facets, is_stale, metadata
+        FROM compiled_artifacts
+        WHERE external_id IN ({placeholders})
+        """,
+        tuple(external_ids),
+    ).fetchall()
+    out: dict[str, _CompiledProvenance] = {}
+    for row in rows:
+        sources = _decode_str_list(row[1])
+        out[str(row[0])] = _CompiledProvenance(
+            source_facets=sources,
+            is_stale=bool(row[2]),
+            metadata=_decode_metadata(row[3]),
+        )
+    return out
+
+
+def _concept_facet(
+    facet: Mapping[str, Any],
+    extras: _FacetExtras | None,
+    compiled: _CompiledProvenance | None,
+) -> ConceptFacet:
+    return ConceptFacet(
+        external_id=str(facet["external_id"]),
+        facet_type=str(facet["facet_type"]),
+        content_hash=str(facet["content_hash"]),
+        captured_at=int(facet["captured_at"]),
+        mode=str(facet["mode"]),
+        volatility=extras.volatility if extras is not None else _PERSISTENT,
+        ttl_seconds=extras.ttl_seconds if extras is not None else None,
+        is_stale=compiled.is_stale if compiled is not None else None,
+    )
+
+
+def _okf_metadata(facet: Mapping[str, Any]) -> dict[str, Any]:
+    raw = facet.get("metadata")
+    metadata = dict(raw) if isinstance(raw, dict) else {}
+    for key in ("resource", "disk_path"):
+        value = metadata.get(key)
+        if isinstance(value, str) and _is_absolute_path(value):
+            metadata.pop(key, None)
+    return metadata
+
+
+def _concept_title(facet: Mapping[str, Any]) -> str:
+    metadata = _okf_metadata(facet)
+    title = _nonempty_str(metadata.get("name")) or _nonempty_str(metadata.get("title"))
+    if title is not None:
+        return title
+    for line in str(facet["content"]).splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            return stripped[:96]
+    return str(facet["external_id"])
+
+
+def _citation_lines(
+    compiled: _CompiledProvenance | None, path_by_external_id: Mapping[str, str]
+) -> tuple[str, ...]:
+    if compiled is None:
+        return ()
+
+    lines: list[str] = []
+    seen_sources: set[str] = set()
+    for source in compiled.source_facets:
+        path = path_by_external_id.get(source)
+        if path is None:
+            continue
+        seen_sources.add(source)
+        lines.append(f"- [source facet {source}]({path})")
+
+    for source in _collect_source_facets(compiled.metadata):
+        if source in seen_sources:
+            continue
+        path = path_by_external_id.get(source)
+        if path is None:
+            continue
+        seen_sources.add(source)
+        lines.append(f"- [source facet {source}]({path})")
+
+    for ref in _collect_source_refs(compiled.metadata):
+        rendered = _render_source_ref(ref)
+        if rendered is not None:
+            lines.append(f"- {rendered}")
+    return tuple(lines)
+
+
+def _collect_source_facets(value: Any) -> tuple[str, ...]:
+    out: list[str] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key == "source_facets" and isinstance(nested, list):
+                out.extend(item for item in nested if isinstance(item, str))
+            else:
+                out.extend(_collect_source_facets(nested))
+    elif isinstance(value, list):
+        for item in value:
+            out.extend(_collect_source_facets(item))
+    return tuple(out)
+
+
+def _collect_source_refs(value: Any) -> tuple[Mapping[str, Any] | str, ...]:
+    out: list[Mapping[str, Any] | str] = []
+    if isinstance(value, dict):
+        refs = value.get(_SOURCE_REFS)
+        if isinstance(refs, list):
+            out.extend(ref for ref in refs if isinstance(ref, (dict, str)))
+        for key, nested in value.items():
+            if key != _SOURCE_REFS:
+                out.extend(_collect_source_refs(nested))
+    elif isinstance(value, list):
+        for item in value:
+            out.extend(_collect_source_refs(item))
+    return tuple(out)
+
+
+def _render_source_ref(ref: Mapping[str, Any] | str) -> str | None:
+    if isinstance(ref, str):
+        return _safe_path_label(ref)
+    raw_path = ref.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    label = _safe_path_label(raw_path)
+    suffix_parts = [
+        str(ref[key])
+        for key in ("section", "symbol", "line", "ref_kind")
+        if isinstance(ref.get(key), (str, int))
+    ]
+    suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
+    return f"{label}{suffix}"
+
+
+def _safe_path_label(path: str) -> str:
+    stripped = path.strip()
+    if _is_absolute_path(stripped):
+        return Path(stripped).name
+    parts = [part for part in stripped.replace("\\", "/").split("/") if part not in ("", ".", "..")]
+    return "/".join(parts) or "source"
+
+
+def _is_absolute_path(value: str) -> bool:
+    return bool(_ABSOLUTE_PATH_RE.match(value))
+
+
+def _render_type_index(
+    facet_type: str,
+    rows: Sequence[Mapping[str, Any]],
+    slug_by_external_id: Mapping[str, str],
+) -> str:
+    title = _display_type(facet_type)
+    lines = [
+        f"# {title}",
+        "",
+        f"{len(rows)} concept{'s' if len(rows) != 1 else ''}.",
+        "",
+    ]
+    for facet in rows:
+        external_id = str(facet["external_id"])
+        slug = slug_by_external_id[external_id]
+        lines.append(f"- [{_concept_title(facet)}](/{facet_type}/{slug}.md)")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_root_index(document: Mapping[str, Any], by_type: Mapping[str, Sequence[Any]]) -> str:
+    lines = [
+        render_frontmatter({"okf_version": OKF_VERSION}).rstrip(),
+        "",
+        "# Tessera OKF export",
+        "",
+        f"Vault: `{document['vault_id']}`",
+        f"Exported at: {_format_timestamp(int(document['exported_at']))}",
+        "",
+        "## Facet types",
+        "",
+    ]
+    for facet_type, rows in sorted(by_type.items()):
+        title = _display_type(facet_type)
+        lines.append(
+            f"- [{title}](/{facet_type}/index.md) — {len(rows)} concept"
+            f"{'s' if len(rows) != 1 else ''}"
+        )
+    if not by_type:
+        lines.append("- No concepts exported.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_export_log(document: Mapping[str, Any], by_type: Mapping[str, Sequence[Any]]) -> str:
+    lines = [
+        "# Export log",
+        "",
+        "- event: export",
+        f"- timestamp: {_format_timestamp(int(document['exported_at']))}",
+        f"- vault_id: {document['vault_id']}",
+        f"- include_deleted: {str(bool(document['include_deleted'])).lower()}",
+        f"- facet_count: {len(document['facets'])}",
+        "- facets_by_type:",
+    ]
+    for facet_type, rows in sorted(by_type.items()):
+        lines.append(f"  - {facet_type}: {len(rows)}")
+    if not by_type:
+        lines.append("  - none: 0")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _decode_str_list(raw: Any) -> tuple[str, ...]:
+    try:
+        decoded = json.loads(str(raw) if raw is not None else "[]")
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(decoded, list):
+        return ()
+    return tuple(item for item in decoded if isinstance(item, str))
+
+
+def _decode_metadata(raw: Any) -> dict[str, Any]:
+    try:
+        decoded = json.loads(str(raw) if raw is not None else "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(decoded, dict):
+        return {}
+    caller = decoded.get(_CALLER_METADATA)
+    if isinstance(caller, dict):
+        merged = dict(caller)
+        if isinstance(caller.get(_FIELD_PROVENANCE), dict):
+            return merged
+        merged.update({key: value for key, value in decoded.items() if key != _CALLER_METADATA})
+        return merged
+    return decoded
+
+
 def parse_concept(text: str) -> ParsedConcept:
     """Split a concept document into frontmatter and body (SPEC §9, tolerant).
 
@@ -522,6 +885,7 @@ __all__ = [
     "ParsedConcept",
     "concept_id",
     "concept_slug",
+    "export_okf",
     "facet_to_frontmatter",
     "frontmatter_to_facet_fields",
     "parse_concept",
