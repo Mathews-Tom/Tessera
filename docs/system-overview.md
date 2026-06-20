@@ -80,6 +80,10 @@ The post-v0.5 direction is an optional project-context layer: a repo can carry l
 
 This is not a pivot into a notes app. It is the repo-local counterpart to portable personal context: project knowledge that agents can navigate, humans can review, and checks can enforce.
 
+## Interchange (OKF)
+
+Tessera speaks the Open Knowledge Format (OKF) at its boundary, not in its core. **Tessera stores encrypted; an OKF bundle is what the user explicitly asks Tessera to emit.** An OKF bundle is a conformant directory of plaintext markdown concepts — a decrypted, local, user-initiated projection of the vault that sits in the same trust slot as `tessera export --format md`, and the on-disk convention the v0.6 project-context layer adopts instead of inventing a bespoke one. It is never the system of record and never a sync mechanism: the encrypted vault stays the single source of truth for retrieval, scopes, and audit, and encrypted BYO-sync (`sync/`) remains the only multi-device transport. The durable ULID identity travels in a `tessera_external_id` frontmatter key so bundles round-trip on identity rather than on a mutable file path. See [ADR 0023](adr/0023-okf-interchange-boundary.md).
+
 ## Market context
 
 Honest map as of April 2026.
