@@ -46,13 +46,21 @@ _FACET_TYPES_V01: Final[tuple[str, ...]] = (
 
 @dataclass(frozen=True, slots=True)
 class ExportSummary:
-    """How many rows of each kind landed in the output artifact."""
+    """How many rows of each kind landed in the output artifact.
+
+    ``errors`` and ``skipped`` are import-only: exporters always leave them
+    at their defaults. Import collects one ``errors`` entry per rejected
+    concept (unknown type, traversal escape, malformed frontmatter) and
+    counts §9 type-less concepts in ``skipped`` so neither aborts the run.
+    """
 
     agents: int
     facets: int
     facets_by_type: dict[str, int]
     output_path: Path
     format: str
+    errors: tuple[str, ...] = ()
+    skipped: int = 0
 
 
 def export_json(

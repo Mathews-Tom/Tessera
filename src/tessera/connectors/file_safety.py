@@ -51,6 +51,10 @@ class UnsupportedConfigShapeError(FileSafetyError):
     """Parsed config does not match the expected top-level shape."""
 
 
+class PathTraversalError(FileSafetyError):
+    """A resolved path escapes its permitted root directory."""
+
+
 @dataclass(frozen=True, slots=True)
 class WriteOutcome:
     """Outcome of a safe write.
@@ -111,6 +115,24 @@ def read_toml(path: Path) -> dict[str, Any]:
             f"{path} top-level must be a TOML table, got {type(loaded).__name__}"
         )
     return loaded
+
+
+def resolve_within(root: Path, candidate: Path) -> Path:
+    """Resolve ``candidate`` and confirm it stays inside ``root``.
+
+    Both paths are fully resolved — ``..`` segments collapsed and symlinks
+    followed — before the containment check, so a symlinked or ``../``-laden
+    entry that points outside ``root`` is rejected rather than read. Returns
+    the resolved path on success; raises :class:`PathTraversalError` when it
+    escapes. This is the path-safety primitive the OKF importer routes every
+    concept file through before opening it.
+    """
+
+    base = root.resolve()
+    target = candidate.resolve()
+    if not target.is_relative_to(base):
+        raise PathTraversalError(f"{candidate} escapes {root}")
+    return target
 
 
 def write_safely(
@@ -190,11 +212,13 @@ def toml_serialiser(payload: dict[str, Any]) -> bytes:
 
 __all__ = [
     "FileSafetyError",
+    "PathTraversalError",
     "UnsupportedConfigShapeError",
     "WriteOutcome",
     "json_serialiser",
     "read_json",
     "read_toml",
+    "resolve_within",
     "toml_serialiser",
     "write_safely",
 ]
