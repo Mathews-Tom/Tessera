@@ -174,6 +174,9 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
     # content, query text, and metadata never enter the payload —
     # §S4 boundary preserved.
     "compiled_artifact_marked_stale": frozenset({"source_external_id", "source_op"}),
+    # Explicit plaintext OKF projection. Payload is counts/flags only:
+    # no facet content, no output path, no query text (§S4 boundary).
+    "vault_exported_okf": frozenset({"facet_count", "included_deleted", "scrubbed"}),
 }
 
 

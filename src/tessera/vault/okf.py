@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -41,6 +42,7 @@ from typing import Any, Final
 
 import sqlcipher3
 
+from tessera.observability.scrub import redact_text
 from tessera.vault.canonical_json import canonical_json
 from tessera.vault.connection import VaultConnection
 from tessera.vault.export import ExportSummary, _build_document, _summary
@@ -323,22 +325,24 @@ def export_okf(
     vault: VaultConnection,
     *,
     output_dir: Path,
-    include_deleted: bool = False,
     now_epoch: int,
+    include_deleted: bool = False,
+    scrub: bool = False,
+    force: bool = False,
 ) -> ExportSummary:
     """Write a conformant OKF v0.1 bundle under ``output_dir``.
 
-    The exporter mirrors the other export formats: it snapshots the vault
-    read-only via ``export._build_document`` / ``export._fetch_facets`` and
-    writes local files only. Each facet becomes one concept document under
-    ``/<facet_type>/<slug>.md``. ``index.md`` files provide progressive
-    disclosure, and compiled notebooks get a synthesized ``# Citations``
-    section from stored provenance.
+    The exporter snapshots facets through ``export._build_document`` /
+    ``export._fetch_facets`` and writes local files only. Each facet becomes
+    one concept document under ``/<facet_type>/<slug>.md``. ``index.md`` files
+    provide progressive disclosure, and compiled notebooks get a synthesized
+    ``# Citations`` section from stored provenance. The only vault mutation is
+    the Phase 3 counts-only audit row.
     """
 
     document = _build_document(vault, include_deleted=include_deleted, now_epoch=now_epoch)
     facets = document["facets"]
-    output_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_output_dir(output_dir, force=force)
 
     extras = _fetch_okf_facet_extras(
         vault.connection,
@@ -351,6 +355,7 @@ def export_okf(
 
     by_type: dict[str, list[dict[str, Any]]] = {}
     slug_by_external_id: dict[str, str] = {}
+    title_by_external_id: dict[str, str] = {}
     path_by_external_id: dict[str, str] = {}
     taken_by_type: dict[str, set[str]] = {}
 
@@ -358,10 +363,11 @@ def export_okf(
         facet_type = str(facet["facet_type"])
         by_type.setdefault(facet_type, []).append(facet)
         taken = taken_by_type.setdefault(facet_type, set(_RESERVED_BUNDLE_STEMS))
-        title = _concept_title(facet)
-        slug = concept_slug(title, str(facet["external_id"]), taken)
-        taken.add(slug)
         external_id = str(facet["external_id"])
+        title = _concept_title(facet, scrub=scrub)
+        slug = concept_slug(title, external_id, taken)
+        taken.add(slug)
+        title_by_external_id[external_id] = title
         slug_by_external_id[external_id] = slug
         path_by_external_id[external_id] = f"/{concept_id(facet_type, slug)}.md"
 
@@ -372,8 +378,8 @@ def export_okf(
         for facet in rows:
             external_id = str(facet["external_id"])
             concept = _concept_facet(facet, extras.get(external_id), compiled.get(external_id))
-            metadata = _okf_metadata(facet)
-            body = str(facet["content"])
+            metadata = _okf_metadata(facet, scrub=scrub)
+            body = redact_text(str(facet["content"])) if scrub else str(facet["content"])
             citations = _citation_lines(compiled.get(external_id), path_by_external_id)
             concept_path = type_dir / f"{slug_by_external_id[external_id]}.md"
             concept_path.write_text(
@@ -381,7 +387,7 @@ def export_okf(
                 encoding="utf-8",
             )
         (type_dir / "index.md").write_text(
-            _render_type_index(facet_type, rows, slug_by_external_id),
+            _render_type_index(facet_type, rows, slug_by_external_id, title_by_external_id),
             encoding="utf-8",
         )
 
@@ -392,6 +398,13 @@ def export_okf(
     (output_dir / "log.md").write_text(
         _render_export_log(document, by_type),
         encoding="utf-8",
+    )
+    _append_okf_audit_row(
+        vault.connection,
+        facet_count=len(facets),
+        included_deleted=include_deleted,
+        scrubbed=scrub,
+        at=now_epoch,
     )
     return _summary(document, output_dir, "okf")
 
@@ -407,6 +420,49 @@ class _CompiledProvenance:
     source_facets: tuple[str, ...]
     is_stale: bool
     metadata: dict[str, Any]
+
+
+def _prepare_output_dir(output_dir: Path, *, force: bool) -> None:
+    if output_dir.exists() and not output_dir.is_dir():
+        raise ValueError(f"--format okf requires a directory path, got a file: {output_dir}")
+    if output_dir.exists() and any(output_dir.iterdir()):
+        if not force:
+            raise ValueError(
+                f"refusing to write OKF export into non-empty directory without --force: {output_dir}"
+            )
+        _clear_directory(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _clear_directory(output_dir: Path) -> None:
+    for child in output_dir.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def _append_okf_audit_row(
+    conn: sqlcipher3.Connection,
+    *,
+    facet_count: int,
+    included_deleted: bool,
+    scrubbed: bool,
+    at: int,
+) -> None:
+    from tessera.vault import audit_chain
+
+    audit_chain.audit_log_append(
+        conn,
+        op="vault_exported_okf",
+        actor="tessera export",
+        payload={
+            "facet_count": facet_count,
+            "included_deleted": included_deleted,
+            "scrubbed": scrubbed,
+        },
+        at=at,
+    )
 
 
 def _fetch_okf_facet_extras(
@@ -474,9 +530,11 @@ def _concept_facet(
     )
 
 
-def _okf_metadata(facet: Mapping[str, Any]) -> dict[str, Any]:
+def _okf_metadata(facet: Mapping[str, Any], *, scrub: bool = False) -> dict[str, Any]:
     raw = facet.get("metadata")
     metadata = dict(raw) if isinstance(raw, dict) else {}
+    if scrub:
+        metadata = _redact_metadata(metadata)
     for key in ("resource", "disk_path"):
         value = metadata.get(key)
         if isinstance(value, str) and _is_absolute_path(value):
@@ -484,12 +542,29 @@ def _okf_metadata(facet: Mapping[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def _concept_title(facet: Mapping[str, Any]) -> str:
-    metadata = _okf_metadata(facet)
+def _redact_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): _redact_metadata_value(nested) for key, nested in value.items()}
+
+
+def _redact_metadata_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, list):
+        return [_redact_metadata_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_metadata_value(item) for item in value)
+    if isinstance(value, dict):
+        return _redact_metadata(value)
+    return value
+
+
+def _concept_title(facet: Mapping[str, Any], *, scrub: bool = False) -> str:
+    metadata = _okf_metadata(facet, scrub=scrub)
     title = _nonempty_str(metadata.get("name")) or _nonempty_str(metadata.get("title"))
     if title is not None:
         return title
-    for line in str(facet["content"]).splitlines():
+    content = redact_text(str(facet["content"])) if scrub else str(facet["content"])
+    for line in content.splitlines():
         stripped = line.strip().lstrip("#").strip()
         if stripped:
             return stripped[:96]
@@ -588,6 +663,7 @@ def _render_type_index(
     facet_type: str,
     rows: Sequence[Mapping[str, Any]],
     slug_by_external_id: Mapping[str, str],
+    title_by_external_id: Mapping[str, str],
 ) -> str:
     title = _display_type(facet_type)
     lines = [
@@ -599,7 +675,7 @@ def _render_type_index(
     for facet in rows:
         external_id = str(facet["external_id"])
         slug = slug_by_external_id[external_id]
-        lines.append(f"- [{_concept_title(facet)}](/{facet_type}/{slug}.md)")
+        lines.append(f"- [{title_by_external_id[external_id]}](/{facet_type}/{slug}.md)")
     return "\n".join(lines).rstrip() + "\n"
 
 

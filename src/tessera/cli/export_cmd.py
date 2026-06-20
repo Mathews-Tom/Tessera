@@ -25,7 +25,7 @@ from tessera.cli._common import (
     resolve_passphrase,
     resolve_vault_path,
 )
-from tessera.cli._ui import EMOJI, kv_panel, status, success
+from tessera.cli._ui import EMOJI, kv_panel, status, success, warn
 from tessera.vault.connection import VaultConnection
 from tessera.vault.export import (
     ExportSummary,
@@ -71,6 +71,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         action="store_true",
         help="include soft-deleted facets (is_deleted=1). Default: omit them.",
     )
+    export_parser.add_argument(
+        "--scrub",
+        action="store_true",
+        help="for --format okf, redact known credential patterns from facet content.",
+    )
+    export_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="for --format okf, delete existing output directory contents before writing.",
+    )
     export_parser.set_defaults(handler=_cmd_export)
 
     import_parser = subparsers.add_parser(
@@ -102,13 +112,25 @@ def _cmd_export(args: argparse.Namespace) -> int:
         passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
+    if args.format == "okf":
+        warn(
+            "OKF export writes decrypted plaintext. Do not commit the bundle to a "
+            "public repository or place it in a synced/plaintext location."
+        )
+        if args.force:
+            warn("--force will delete existing contents of the OKF output directory before export.")
     with (
         status(f"exporting vault to {args.format}", emoji=EMOJI["export"]),
         open_vault(vault_path, passphrase) as vault,
     ):
         try:
             summary = _dispatch_export(
-                args.format, vault, args.output, include_deleted=args.include_deleted
+                args.format,
+                vault,
+                args.output,
+                include_deleted=args.include_deleted,
+                scrub=bool(args.scrub),
+                force=bool(args.force),
             )
         except ValueError as exc:
             return fail(str(exc))
@@ -146,8 +168,15 @@ def _dispatch_export(
     output_path: Path,
     *,
     include_deleted: bool,
+    scrub: bool = False,
+    force: bool = False,
 ) -> ExportSummary:
     """Route to the format-specific exporter and validate output-path shape."""
+    if format_name != "okf":
+        if scrub:
+            raise ValueError("--scrub is only supported with --format okf")
+        if force:
+            raise ValueError("--force is only supported with --format okf")
 
     if format_name == "json":
         if output_path.is_dir():
@@ -168,8 +197,10 @@ def _dispatch_export(
         return export_okf(
             vault,
             output_dir=output_path,
-            include_deleted=include_deleted,
             now_epoch=int(datetime.now(UTC).timestamp()),
+            include_deleted=include_deleted,
+            scrub=scrub,
+            force=force,
         )
     if format_name == "sqlite":
         if output_path.is_dir():
