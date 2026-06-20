@@ -565,7 +565,7 @@ tessera okf validate docs/okf-sample-bundle
 | `tessera_is_stale` | `is_stale` (compiled_notebook) | Present only when meaningful |
 | `tessera_volatility` | `volatility` | Omitted for `persistent` |
 | `tessera_ttl_seconds` | `ttl_seconds` | Present only when non-null |
-| `tessera_content_hash` | `content_hash(content)` | Import dedup cross-check |
+| `tessera_content_hash` | `content_hash(content)` | Export-emitted integrity hint; import dedups by recomputing the body's hash, not by reading this field |
 
 Extension keys use the `tessera_` prefix; per SPEC §4.1 consumers must tolerate and round-trip unknown keys, so the bundle stays conformant.
 
