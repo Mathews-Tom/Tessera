@@ -505,11 +505,22 @@ def import_okf(
         if facet_type not in vault_facets.WRITABLE_FACET_TYPES:
             errors.append(f"{rel}: type {facet_type!r} is not a writable facet type")
             continue
-        if TESSERA_EXTERNAL_ID in parsed.frontmatter and _nonempty_str(fields.external_id) is None:
+        ext_id = _nonempty_str(fields.external_id)
+        if TESSERA_EXTERNAL_ID in parsed.frontmatter and ext_id is None:
             # The durable round-trip identity is present but unusable (empty or
             # wrong type). Minting a fresh ULID would silently break dedup on a
             # later re-import, so reject rather than coerce.
             errors.append(f"{rel}: {TESSERA_EXTERNAL_ID} present but not a non-empty string")
+            continue
+        if ext_id is not None and _resolve_existing_identity(conn, ext_id):
+            # Identity match (the mapping contract: prefer tessera_external_id).
+            # The concept already lives in this vault, so re-import is a no-op
+            # that restores it if it was soft-deleted. Resolving on the ULID
+            # *before* content-hash dedup keeps re-import idempotent even when
+            # the exported body differs from stored content (e.g. a compiled
+            # notebook's synthesized ``# Citations`` section).
+            imported += 1
+            by_type[facet_type] = by_type.get(facet_type, 0) + 1
             continue
         try:
             captured_at = _parse_timestamp(fields.timestamp)
@@ -517,9 +528,9 @@ def import_okf(
             errors.append(f"{rel}: {exc}")
             continue
         try:
-            # No per-concept savepoint: SQLite's default ABORT conflict
-            # resolution rolls back only the failing statement, so a collected
-            # IntegrityError leaves prior inserts and the final commit intact.
+            # Content-hash dedup (for bundles with no usable external_id) and the
+            # fresh insert both run through the audited capture path, so every
+            # written concept rides the chain as a facet_inserted row.
             vault_capture.capture(
                 conn,
                 agent_id=agent_id,
@@ -530,7 +541,7 @@ def import_okf(
                 captured_at=captured_at,
                 volatility=fields.volatility or _PERSISTENT,
                 ttl_seconds=fields.ttl_seconds,
-                external_id=fields.external_id,
+                external_id=ext_id,
             )
         except vault_facets.FacetError as exc:
             errors.append(f"{rel}: {exc}")
@@ -548,6 +559,28 @@ def import_okf(
         errors=tuple(errors),
         skipped=skipped,
     )
+
+
+def _resolve_existing_identity(conn: sqlcipher3.Connection, external_id: str) -> bool:
+    """Return True when ``external_id`` already names a facet in this vault.
+
+    ``external_id`` is globally unique, so a hit is the same concept regardless
+    of agent. A soft-deleted hit is restored (round-trip un-delete) so a
+    re-import of a previously-tombstoned concept brings it back rather than
+    colliding on the unique id.
+    """
+
+    row = conn.execute(
+        "SELECT is_deleted FROM facets WHERE external_id = ?", (external_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    if bool(row[0]):
+        conn.execute(
+            "UPDATE facets SET is_deleted = 0, deleted_at = NULL WHERE external_id = ?",
+            (external_id,),
+        )
+    return True
 
 
 def _resolve_import_agent(conn: sqlcipher3.Connection, agent_external_id: str | None) -> int:

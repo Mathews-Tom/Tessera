@@ -15,6 +15,7 @@ from tessera.cli.__main__ import _build_parser
 from tessera.migration import bootstrap
 from tessera.vault import audit_chain
 from tessera.vault import capture as vault_capture
+from tessera.vault import compiled as vault_compiled
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt, save_salt
 from tessera.vault.okf import export_okf, import_okf
@@ -304,16 +305,16 @@ def test_path_traversal_entry_rejected_at_boundary(
 
 
 @pytest.mark.integration
-def test_duplicate_external_id_collected_without_poisoning_transaction(
+def test_duplicate_external_id_within_bundle_dedups(
     open_vault: VaultConnection, tmp_path: Path
 ) -> None:
     target = open_vault
     _create_agent(target.connection, "01T", "t")
     bundle = tmp_path / "bundle"
     (bundle / "preference").mkdir(parents=True)
-    # Two concepts share an external_id but differ in content; the second
-    # collides on UNIQUE(external_id) mid-loop. A third distinct concept sorts
-    # after it, so a poisoned transaction would drop it or break the commit.
+    # Two concepts share an external_id; identity resolves on the ULID, so the
+    # second is a dedup no-op (not a fatal collision). A third distinct concept
+    # sorts after it and must still land.
     (bundle / "preference" / "aaa.md").write_text(
         _concept_doc(
             type_value="Preference", facet_type="preference", external_id="01DUP", body="first"
@@ -335,14 +336,60 @@ def test_duplicate_external_id_collected_without_poisoning_transaction(
 
     summary = import_okf(target, bundle_dir=bundle, agent_external_id="01T")
 
-    assert any("01DUP" in line for line in summary.errors)
-    assert summary.facets_by_type == {"preference": 2}  # aaa + ccc both landed
+    assert not summary.errors
     ids = {
         str(row[0])
         for row in target.connection.execute("SELECT external_id FROM facets").fetchall()
     }
-    assert ids == {"01DUP", "01THIRD"}
+    assert ids == {"01DUP", "01THIRD"}  # 01DUP written once, not duplicated
+    first_writer = target.connection.execute(
+        "SELECT content FROM facets WHERE external_id = '01DUP'"
+    ).fetchone()[0]
+    assert first_writer.strip() == "first"  # first writer wins; the duplicate is a no-op
     audit_chain.verify_chain(target.connection)
+
+
+@pytest.mark.integration
+def test_compiled_notebook_reimport_is_idempotent(
+    open_vault: VaultConnection, tmp_path: Path
+) -> None:
+    source = open_vault
+    agent_id = _seed_source(source.connection)
+    rows = dict(
+        source.connection.execute(
+            "SELECT facet_type, external_id FROM facets "
+            "WHERE facet_type IN ('identity', 'preference')"
+        ).fetchall()
+    )
+    vault_compiled.register_compiled_artifact(
+        source.connection,
+        agent_id=agent_id,
+        content="# Playbook\nUse the operator profile and packaging preference.",
+        source_facets=[rows["identity"], rows["preference"]],
+        compiler_version="test-compiler",
+        source_tool="test",
+        metadata={
+            "field_provenance": {
+                "summary": {"source_facets": [rows["identity"], rows["preference"]]}
+            }
+        },
+        captured_at=1_000_200,
+    )
+    bundle = tmp_path / "bundle"
+    export_okf(source, output_dir=bundle, now_epoch=42)
+    compiled_doc = next((bundle / "compiled_notebook").glob("*.md"))
+    # The exporter bakes a synthesized # Citations section into the body, so the
+    # exported body differs from the stored facet content — content-hash dedup
+    # alone would miss and the preserved external_id would collide.
+    assert "# Citations" in compiled_doc.read_text(encoding="utf-8")
+
+    before = _facet_count(source.connection)
+    summary = import_okf(source, bundle_dir=bundle)  # re-import into the same vault
+    after = _facet_count(source.connection)
+
+    assert not summary.errors  # identity dedup on the ULID, no collision
+    assert after == before  # no duplicate rows, including the compiled notebook
+    audit_chain.verify_chain(source.connection)
 
 
 @pytest.mark.integration
