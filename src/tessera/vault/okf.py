@@ -36,7 +36,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import sqlite3
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -444,7 +443,8 @@ def import_okf(
 
     - **Identity** resolves on ``tessera_external_id`` (the ULID), preserved
       across vaults; content-hash dedup in ``facets.insert`` collapses
-      re-imports and restores soft-deleted rows (un-delete).
+      re-imports and restores soft-deleted rows (un-delete). A present-but-
+      unusable id is rejected, not silently replaced with a fresh ULID.
     - **Type gate**: a concept whose resolved facet type is outside
       :data:`facets.WRITABLE_FACET_TYPES` is rejected with a collected error,
       never coerced into a writable type.
@@ -453,6 +453,11 @@ def import_okf(
       bundle root is rejected before it is read.
     - **SPEC §9 tolerance**: a concept with no non-empty ``type`` is skipped
       and counted (``ExportSummary.skipped``) rather than written.
+    - **Lossy on structured metadata**: the OKF projection (Stack B) emits
+      only the soft frontmatter fields, so importing a structured facet type
+      (``skill``, ``agent_profile``, …) restores its body and soft metadata
+      but not its full structured contract. This is a property of the
+      interchange projection, never a coercion of the strict write-path.
 
     Per-concept failures land in ``ExportSummary.errors`` and never abort the
     run; only a missing bundle directory or an unresolvable agent raises
@@ -481,7 +486,7 @@ def import_okf(
             continue
         try:
             text = safe_path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             errors.append(f"{rel}: {exc}")
             continue
         try:
@@ -500,7 +505,21 @@ def import_okf(
         if facet_type not in vault_facets.WRITABLE_FACET_TYPES:
             errors.append(f"{rel}: type {facet_type!r} is not a writable facet type")
             continue
+        if TESSERA_EXTERNAL_ID in parsed.frontmatter and _nonempty_str(fields.external_id) is None:
+            # The durable round-trip identity is present but unusable (empty or
+            # wrong type). Minting a fresh ULID would silently break dedup on a
+            # later re-import, so reject rather than coerce.
+            errors.append(f"{rel}: {TESSERA_EXTERNAL_ID} present but not a non-empty string")
+            continue
         try:
+            captured_at = _parse_timestamp(fields.timestamp)
+        except OKFParseError as exc:
+            errors.append(f"{rel}: {exc}")
+            continue
+        try:
+            # No per-concept savepoint: SQLite's default ABORT conflict
+            # resolution rolls back only the failing statement, so a collected
+            # IntegrityError leaves prior inserts and the final commit intact.
             vault_capture.capture(
                 conn,
                 agent_id=agent_id,
@@ -508,12 +527,12 @@ def import_okf(
                 content=parsed.body,
                 source_tool=_IMPORT_SOURCE_TOOL,
                 metadata=_import_metadata(fields),
-                captured_at=_parse_timestamp(fields.timestamp),
+                captured_at=captured_at,
                 volatility=fields.volatility or _PERSISTENT,
                 ttl_seconds=fields.ttl_seconds,
                 external_id=fields.external_id,
             )
-        except (vault_facets.FacetError, sqlite3.IntegrityError, sqlcipher3.IntegrityError) as exc:
+        except vault_facets.FacetError as exc:
             errors.append(f"{rel}: {exc}")
             continue
         imported += 1
@@ -566,12 +585,20 @@ def _import_metadata(fields: ImportedConcept) -> dict[str, Any]:
 
 
 def _parse_timestamp(value: str | None) -> int | None:
+    """Parse an OKF ``timestamp`` to epoch seconds.
+
+    Absent (``None`` / empty) returns ``None`` so capture falls back to the
+    import-time clock. A present-but-unparseable value raises
+    :class:`OKFParseError` so the concept becomes a collected error instead of
+    silently rewriting the facet's captured-at provenance to now.
+    """
+
     if not value:
         return None
     try:
         moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise OKFParseError(f"malformed timestamp {value!r}: {exc}") from exc
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
     return int(moment.timestamp())

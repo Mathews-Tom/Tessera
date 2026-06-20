@@ -206,12 +206,17 @@ def _cmd_import_okf(args: argparse.Namespace) -> int:
             )
         except OKFImportError as exc:
             return fail(f"import failed: {exc}")
+    if summary.errors:
+        warn(
+            f"imported {summary.facets}, rejected {len(summary.errors)}, skipped {summary.skipped}"
+        )
+        for line in summary.errors:
+            warn(f"rejected concept: {line}")
+        return 1
     _render_summary(summary, action_emoji=EMOJI["import"])
     if summary.skipped:
         warn(f"{summary.skipped} concept(s) skipped: no non-empty type (SPEC §9)")
-    for line in summary.errors:
-        warn(f"rejected concept: {line}")
-    return 1 if summary.errors else 0
+    return 0
 
 
 def _dispatch_export(

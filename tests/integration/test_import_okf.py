@@ -303,6 +303,126 @@ def test_path_traversal_entry_rejected_at_boundary(
     assert _facet_count(target.connection) == 1
 
 
+@pytest.mark.integration
+def test_duplicate_external_id_collected_without_poisoning_transaction(
+    open_vault: VaultConnection, tmp_path: Path
+) -> None:
+    target = open_vault
+    _create_agent(target.connection, "01T", "t")
+    bundle = tmp_path / "bundle"
+    (bundle / "preference").mkdir(parents=True)
+    # Two concepts share an external_id but differ in content; the second
+    # collides on UNIQUE(external_id) mid-loop. A third distinct concept sorts
+    # after it, so a poisoned transaction would drop it or break the commit.
+    (bundle / "preference" / "aaa.md").write_text(
+        _concept_doc(
+            type_value="Preference", facet_type="preference", external_id="01DUP", body="first"
+        ),
+        encoding="utf-8",
+    )
+    (bundle / "preference" / "bbb.md").write_text(
+        _concept_doc(
+            type_value="Preference", facet_type="preference", external_id="01DUP", body="second"
+        ),
+        encoding="utf-8",
+    )
+    (bundle / "preference" / "ccc.md").write_text(
+        _concept_doc(
+            type_value="Preference", facet_type="preference", external_id="01THIRD", body="third"
+        ),
+        encoding="utf-8",
+    )
+
+    summary = import_okf(target, bundle_dir=bundle, agent_external_id="01T")
+
+    assert any("01DUP" in line for line in summary.errors)
+    assert summary.facets_by_type == {"preference": 2}  # aaa + ccc both landed
+    ids = {
+        str(row[0])
+        for row in target.connection.execute("SELECT external_id FROM facets").fetchall()
+    }
+    assert ids == {"01DUP", "01THIRD"}
+    audit_chain.verify_chain(target.connection)
+
+
+@pytest.mark.integration
+def test_non_utf8_concept_collected_not_fatal(open_vault: VaultConnection, tmp_path: Path) -> None:
+    target = open_vault
+    _create_agent(target.connection, "01T", "t")
+    bundle = tmp_path / "bundle"
+    (bundle / "preference").mkdir(parents=True)
+    (bundle / "preference" / "good.md").write_text(
+        _concept_doc(
+            type_value="Preference", facet_type="preference", external_id="01GOODPREF", body="ok"
+        ),
+        encoding="utf-8",
+    )
+    # Invalid UTF-8 bytes in a .md file: read_text(utf-8) raises
+    # UnicodeDecodeError, which must be collected, not crash the run.
+    (bundle / "preference" / "binary.md").write_bytes(
+        b"---\ntype: Preference\n---\n\xff\xfe\x00bad"
+    )
+
+    summary = import_okf(target, bundle_dir=bundle, agent_external_id="01T")
+
+    assert any("binary.md" in line for line in summary.errors)
+    assert summary.facets_by_type == {"preference": 1}
+    assert _facet_count(target.connection) == 1
+
+
+@pytest.mark.integration
+def test_malformed_timestamp_collected_not_silently_rewritten(
+    open_vault: VaultConnection, tmp_path: Path
+) -> None:
+    target = open_vault
+    _create_agent(target.connection, "01T", "t")
+    bundle = tmp_path / "bundle"
+    (bundle / "preference").mkdir(parents=True)
+    (bundle / "preference" / "good.md").write_text(
+        _concept_doc(
+            type_value="Preference", facet_type="preference", external_id="01GOODPREF", body="ok"
+        ),
+        encoding="utf-8",
+    )
+    (bundle / "preference" / "bad_ts.md").write_text(
+        _concept_doc(
+            type_value="Preference",
+            facet_type="preference",
+            external_id="01BADTS",
+            body="when?",
+            extra=('timestamp: "not-a-date"',),
+        ),
+        encoding="utf-8",
+    )
+
+    summary = import_okf(target, bundle_dir=bundle, agent_external_id="01T")
+
+    assert any("timestamp" in line for line in summary.errors)
+    assert summary.facets_by_type == {"preference": 1}
+    assert _facet_count(target.connection) == 1
+
+
+@pytest.mark.integration
+def test_present_but_empty_external_id_rejected_not_minted(
+    open_vault: VaultConnection, tmp_path: Path
+) -> None:
+    target = open_vault
+    _create_agent(target.connection, "01T", "t")
+    bundle = tmp_path / "bundle"
+    (bundle / "preference").mkdir(parents=True)
+    # tessera_external_id present but empty: minting a fresh ULID would
+    # silently break identity round-trip, so it must be rejected.
+    (bundle / "preference" / "empty_id.md").write_text(
+        _concept_doc(type_value="Preference", facet_type="preference", external_id="", body="x"),
+        encoding="utf-8",
+    )
+
+    summary = import_okf(target, bundle_dir=bundle, agent_external_id="01T")
+
+    assert any("tessera_external_id" in line for line in summary.errors)
+    assert _facet_count(target.connection) == 0
+
+
 # --------------------------------------------------------------------------
 # Audit chain stays intact and import rides it.
 # --------------------------------------------------------------------------

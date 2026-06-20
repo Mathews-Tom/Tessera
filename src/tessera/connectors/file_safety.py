@@ -124,12 +124,16 @@ def resolve_within(root: Path, candidate: Path) -> Path:
     followed — before the containment check, so a symlinked or ``../``-laden
     entry that points outside ``root`` is rejected rather than read. Returns
     the resolved path on success; raises :class:`PathTraversalError` when it
-    escapes. This is the path-safety primitive the OKF importer routes every
-    concept file through before opening it.
+    escapes or cannot be resolved (e.g. a symlink loop). This is the
+    path-safety primitive the OKF importer routes every concept file through
+    before opening it.
     """
 
     base = root.resolve()
-    target = candidate.resolve()
+    try:
+        target = candidate.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise PathTraversalError(f"{candidate} cannot be resolved: {exc}") from exc
     if not target.is_relative_to(base):
         raise PathTraversalError(f"{candidate} escapes {root}")
     return target
