@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
+import inspect
 from typing import Any
 
 import pytest
@@ -348,36 +347,25 @@ def test_concept_slug_falls_back_to_ulid_when_name_unslugable() -> None:
 
 
 # --------------------------------------------------------------------------
-# Purity guard: the module performs no filesystem or DB I/O.
+# Purity guard: mapping helpers perform no filesystem or DB I/O.
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-def test_module_introduces_no_io() -> None:
-    # okf.py's own code performs no inline filesystem / DB I/O, and imports
-    # only pure helpers. ``skills`` is the single mandated reuse
-    # (``skills.slugify``); the Phase-1 mapping functions still touch no file
-    # or DB at call time.
-    source = Path(okf.__file__).read_text(encoding="utf-8")
-    for token in ("open(", ".execute("):
-        assert token not in source, f"okf.py must stay I/O-free; found {token!r}"
-    allowed = {
-        "__future__",
-        "json",
-        "re",
-        "collections.abc",
-        "dataclasses",
-        "datetime",
-        "typing",
-        "tessera.vault.canonical_json",
-        "tessera.vault.skills",
-    }
-    imported: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            imported.add(node.module)
-    assert imported <= allowed, (
-        f"okf.py imports outside the pure allowlist: {sorted(imported - allowed)}"
+def test_mapping_helpers_introduce_no_io() -> None:
+    # Phase 2 adds an exporter I/O shell to okf.py, but the Phase-1 mapping
+    # helpers remain pure and are still safe to unit-test in isolation.
+    helpers = (
+        okf.concept_id,
+        okf.concept_slug,
+        okf.facet_to_frontmatter,
+        okf.frontmatter_to_facet_fields,
+        okf.render_frontmatter,
+        okf.render_concept,
+        okf.parse_concept,
     )
+    banned_tokens = ("open(", ".execute(", "write_text(", "mkdir(", "unlink(", "rmtree(")
+    for helper in helpers:
+        source = inspect.getsource(helper)
+        for token in banned_tokens:
+            assert token not in source, f"{helper.__name__} must stay I/O-free; found {token!r}"
