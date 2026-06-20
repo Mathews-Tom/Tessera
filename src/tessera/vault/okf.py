@@ -3,7 +3,9 @@
 Phase 1 of the OKF interchange boundary (ADR 0023) introduced the pure
 facet <-> concept mapping helpers below. Phase 2 adds the explicit export
 I/O shell over those helpers: it reads the vault through the existing export
-snapshot functions and writes a local OKF bundle on user request.
+snapshot functions and writes a local OKF bundle on user request. Phase 4
+adds :func:`import_okf`, which walks a bundle back into the vault through the
+strict, audited write-path.
 
 Boundary (ADR 0023): *Tessera stores encrypted; an OKF bundle is what the
 user explicitly asks Tessera to emit.* This module never makes outbound
@@ -34,6 +36,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import sqlite3
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,7 +45,11 @@ from typing import Any, Final
 
 import sqlcipher3
 
+from tessera.connectors import file_safety
+from tessera.connectors.file_safety import FileSafetyError
 from tessera.observability.scrub import redact_text
+from tessera.vault import capture as vault_capture
+from tessera.vault import facets as vault_facets
 from tessera.vault.canonical_json import canonical_json
 from tessera.vault.connection import VaultConnection
 from tessera.vault.export import ExportSummary, _build_document, _summary
@@ -100,6 +107,15 @@ class OKFParseError(OKFMappingError):
     body text — the strict-input half of SPEC §9: a document with no
     frontmatter is tolerated as body-only, but a frontmatter fence that
     opens and never closes (or a non ``key: value`` line) is an error.
+    """
+
+
+class OKFImportError(OKFMappingError):
+    """A bundle cannot be imported at all (missing dir or unresolvable agent).
+
+    Per-concept failures are collected on the returned
+    :class:`~tessera.vault.export.ExportSummary` instead of raised, so a
+    single bad concept never aborts the whole import.
     """
 
 
@@ -407,6 +423,158 @@ def export_okf(
         at=now_epoch,
     )
     return _summary(document, output_dir, "okf")
+
+
+_IMPORT_SOURCE_TOOL: Final[str] = "okf-import"
+
+
+def import_okf(
+    vault: VaultConnection,
+    *,
+    bundle_dir: Path,
+    agent_external_id: str | None = None,
+) -> ExportSummary:
+    """Import an OKF bundle into the vault through the strict write-path.
+
+    Models :func:`export.import_json`: walk ``bundle_dir``, skip the reserved
+    ``index.md`` / ``log.md`` files, and write one facet per concept through
+    the audited :func:`capture.capture` path so every import rides the
+    tamper-evident chain as a ``facet_inserted`` row. An externally authored
+    bundle is **untrusted input**:
+
+    - **Identity** resolves on ``tessera_external_id`` (the ULID), preserved
+      across vaults; content-hash dedup in ``facets.insert`` collapses
+      re-imports and restores soft-deleted rows (un-delete).
+    - **Type gate**: a concept whose resolved facet type is outside
+      :data:`facets.WRITABLE_FACET_TYPES` is rejected with a collected error,
+      never coerced into a writable type.
+    - **Path traversal**: every concept file is resolved through
+      :func:`connectors.file_safety.resolve_within`; an entry escaping the
+      bundle root is rejected before it is read.
+    - **SPEC §9 tolerance**: a concept with no non-empty ``type`` is skipped
+      and counted (``ExportSummary.skipped``) rather than written.
+
+    Per-concept failures land in ``ExportSummary.errors`` and never abort the
+    run; only a missing bundle directory or an unresolvable agent raises
+    :class:`OKFImportError`.
+    """
+
+    conn = vault.connection
+    root = bundle_dir.resolve()
+    if not root.is_dir():
+        raise OKFImportError(f"OKF bundle directory not found: {bundle_dir}")
+    agent_id = _resolve_import_agent(conn, agent_external_id)
+
+    by_type: dict[str, int] = {}
+    errors: list[str] = []
+    skipped = 0
+    imported = 0
+
+    for path in sorted(root.rglob("*.md")):
+        if path.name in _RESERVED_BUNDLE_FILES:
+            continue
+        rel = path.relative_to(root).as_posix()
+        try:
+            safe_path = file_safety.resolve_within(root, path)
+        except FileSafetyError as exc:
+            errors.append(f"{rel}: {exc}")
+            continue
+        try:
+            text = safe_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"{rel}: {exc}")
+            continue
+        try:
+            parsed = parse_concept(text)
+        except OKFParseError as exc:
+            errors.append(f"{rel}: {exc}")
+            continue
+        if _nonempty_str(parsed.frontmatter.get("type")) is None:
+            # SPEC §9: a concept with no non-empty ``type`` is non-conformant
+            # for write. Consumers must tolerate it, so skip-and-count rather
+            # than fail the bundle or coerce a type.
+            skipped += 1
+            continue
+        fields = frontmatter_to_facet_fields(parsed.frontmatter)
+        facet_type = fields.facet_type
+        if facet_type not in vault_facets.WRITABLE_FACET_TYPES:
+            errors.append(f"{rel}: type {facet_type!r} is not a writable facet type")
+            continue
+        try:
+            vault_capture.capture(
+                conn,
+                agent_id=agent_id,
+                facet_type=facet_type,
+                content=parsed.body,
+                source_tool=_IMPORT_SOURCE_TOOL,
+                metadata=_import_metadata(fields),
+                captured_at=_parse_timestamp(fields.timestamp),
+                volatility=fields.volatility or _PERSISTENT,
+                ttl_seconds=fields.ttl_seconds,
+                external_id=fields.external_id,
+            )
+        except (vault_facets.FacetError, sqlite3.IntegrityError, sqlcipher3.IntegrityError) as exc:
+            errors.append(f"{rel}: {exc}")
+            continue
+        imported += 1
+        by_type[facet_type] = by_type.get(facet_type, 0) + 1
+
+    conn.commit()
+    return ExportSummary(
+        agents=1,
+        facets=imported,
+        facets_by_type=by_type,
+        output_path=bundle_dir,
+        format="okf",
+        errors=tuple(errors),
+        skipped=skipped,
+    )
+
+
+def _resolve_import_agent(conn: sqlcipher3.Connection, agent_external_id: str | None) -> int:
+    if agent_external_id is not None:
+        row = conn.execute(
+            "SELECT id FROM agents WHERE external_id = ?", (agent_external_id,)
+        ).fetchone()
+        if row is None:
+            raise OKFImportError(
+                f"agent_external_id {agent_external_id!r} not found in target vault"
+            )
+        return int(row[0])
+    rows = conn.execute("SELECT id FROM agents ORDER BY id").fetchall()
+    if not rows:
+        raise OKFImportError("vault has no agents; create one before importing")
+    if len(rows) > 1:
+        ids = ", ".join(str(r[0]) for r in rows)
+        raise OKFImportError(
+            f"vault has {len(rows)} agents ({ids}); pass agent_external_id to pick one"
+        )
+    return int(rows[0][0])
+
+
+def _import_metadata(fields: ImportedConcept) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if fields.title is not None:
+        metadata["title"] = fields.title
+    if fields.description is not None:
+        metadata["description"] = fields.description
+    if fields.tags:
+        metadata["tags"] = list(fields.tags)
+    if fields.resource is not None:
+        metadata["resource"] = fields.resource
+    return metadata
+
+
+def _parse_timestamp(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return int(moment.timestamp())
 
 
 @dataclass(frozen=True, slots=True)
@@ -956,6 +1124,7 @@ __all__ = [
     "TESSERA_VOLATILITY",
     "ConceptFacet",
     "ImportedConcept",
+    "OKFImportError",
     "OKFMappingError",
     "OKFParseError",
     "ParsedConcept",
@@ -964,6 +1133,7 @@ __all__ = [
     "export_okf",
     "facet_to_frontmatter",
     "frontmatter_to_facet_fields",
+    "import_okf",
     "parse_concept",
     "render_concept",
     "render_frontmatter",
