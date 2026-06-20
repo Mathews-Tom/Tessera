@@ -1,6 +1,6 @@
 # ADR 0023 — OKF interchange boundary
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** June 2026
 **Deciders:** Tom Mathews
 **Related:** [ADR 0010](0010-five-facet-user-context-model.md), [ADR 0016](0016-memory-volatility-model.md), [ADR 0019](0019-compiled-notebook-as-agenticos-playbook.md), [ADR 0020](0020-automation-registry-storage-only.md), [ADR 0021](0021-audit-chain-tamper-evidence.md), [ADR 0022](0022-byo-sync-transport.md), `.docs/okf-integration-enhancement-plan.md`, `docs/non-goals.md`, `docs/system-overview.md`, `docs/system-design.md`

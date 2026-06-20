@@ -6,7 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Added
+
+- **OKF interchange — importer, validator, docs, sample bundle (plan Phases 4 + 6, ADR 0023).** `tessera import-okf --input <dir>` ingests an OKF v0.1 bundle into the vault through the strict, audited write-path: identity resolves on the `tessera_external_id` ULID (preserved across vaults) with content-hash dedup collapsing re-imports and restoring soft-deleted rows; a concept whose type is outside `WRITABLE_FACET_TYPES` is collected-rejected (never coerced), a type-less concept is skipped per SPEC §9, and every concept path is resolved inside the bundle root before reading (path-traversal defense via `connectors.file_safety.resolve_within`). Each imported concept rides the audit chain as a `facet_inserted` row, so `tessera audit verify` stays exit 0 across an export→import round-trip. The write-path allowlist and metadata caps are unchanged; the OKF projection stays lossy on structured-facet metadata by design (use `--format json` / `import-vault` for a lossless backup).
+- **`tessera okf validate <dir>`.** A read-only, no-vault, no-network consumer-side conformance check implementing OKF v0.1 SPEC §9 (parseable frontmatter + non-empty `type` on every non-reserved `.md`; reserved `index.md` / `log.md` per §6/§7). Exit `0` when conformant, `1` with a per-file issue list otherwise.
+- **Identity-preserving capture path.** `facets.insert` / `capture.capture` gain an optional `external_id` so the importer can preserve a row's ULID across vaults; a colliding id raises the new `DuplicateExternalIdError`. `ExportSummary` gains import-only `errors` / `skipped` fields.
+- **OKF interchange docs + reference bundle.** `docs/api.md` documents `tessera export --format okf`, `tessera import-okf`, and `tessera okf validate` with the frontmatter mapping table and a copy-pasteable round-trip example; `docs/okf-sample-bundle/` is a committed, living conformant bundle.
+
+### Changed
+
+- ADR 0023 (OKF interchange boundary) moves from Proposed to **Accepted**.
 
 ## [0.5.0rc1] — 2026-05-03 (pre-release)
 

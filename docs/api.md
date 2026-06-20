@@ -500,3 +500,88 @@ The `/mcp` endpoint stays for MCP-aware clients (Claude Desktop, Cursor, Codex).
 - Hook, skill, shell script, cron job, third-party automation → `/api/v1/*`.
 
 Both surfaces accept tokens minted by the same `tessera tokens create`; the same scopes apply.
+
+## OKF interchange (export / import)
+
+Tessera speaks [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) (OKF v0.1) at its boundary: an explicit, decrypted **projection** of the vault you can hand to any OKF consumer, and read back. This is a **CLI** surface (`tessera export` / `tessera import-okf` / `tessera okf validate`), never a daemon route — an OKF bundle is plaintext, so producing one is an explicit, audited, user-initiated act in the same trust slot as `tessera export --format md`. It is never a sync transport ([ADR 0023](adr/0023-okf-interchange-boundary.md)).
+
+A bundle is a directory of markdown files with YAML frontmatter, one concept per file, organized as `<facet_type>/<slug>.md`. Identity travels in the `tessera_external_id` frontmatter key (the durable ULID), so round-trips resolve on identity, not on the mutable file path.
+
+### Export
+
+```bash
+# Write a conformant OKF v0.1 bundle (decrypted plaintext) under a directory.
+tessera export --format okf --output ./my-okf-bundle
+
+# Options:
+#   --include-deleted   include soft-deleted facets
+#   --scrub             redact known credential patterns from content/metadata
+#   --force             clear an existing non-empty output directory first
+```
+
+The exporter is read-only on the vault and makes no outbound calls; it records a counts-only `vault_exported_okf` audit row.
+
+### Import
+
+```bash
+# Ingest a bundle back into the vault through the strict, audited write-path.
+tessera import-okf --input ./my-okf-bundle
+
+#   --agent-external-id <id>   attach imported concepts to a specific agent
+#                              (defaults to the vault's sole agent)
+```
+
+Import treats the bundle as untrusted input:
+
+- **Identity** resolves on `tessera_external_id`; content-hash dedup collapses re-imports and restores soft-deleted rows, so re-importing a bundle is idempotent.
+- **Strict write-path** is never relaxed: a concept whose type is outside the writable allowlist is rejected with a collected per-concept error (never coerced), a concept with no non-empty `type` is skipped per SPEC §9, and every concept path is resolved inside the bundle root before reading (path-traversal defense). The allowlist and metadata caps are unchanged.
+- Each imported concept rides the audit chain as a `facet_inserted` row, so `tessera audit verify` stays exit 0 across an export→import round-trip.
+- The OKF projection is **lossy on structured-facet metadata** (e.g. `skill`, `agent_profile`): a structured concept imports its body and soft frontmatter but not its full structured contract. Use `tessera export --format json` / `tessera import-vault` for a lossless backup.
+
+`import-okf` exits `1` and prints each rejected concept when any concept fails; otherwise it exits `0`.
+
+### Validate
+
+```bash
+# Check any directory for OKF v0.1 conformance (SPEC §9). No vault, no network.
+tessera okf validate docs/okf-sample-bundle
+```
+
+`validate` is a consumer-side conformance check: every non-reserved `.md` must carry parseable frontmatter with a non-empty `type`, and `index.md` / `log.md` must follow §6/§7. Exit `0` when conformant, `1` with a per-file issue list otherwise. A committed reference bundle lives at [`docs/okf-sample-bundle/`](okf-sample-bundle/).
+
+### Frontmatter mapping
+
+| OKF field | Source in Tessera | Notes |
+| --- | --- | --- |
+| `type` *(required)* | `facet_type`, title-cased for display | Raw value preserved in `tessera_facet_type` |
+| `title` | `metadata.name` / `metadata.title` | Consumers derive from filename if absent |
+| `description` | `metadata.description` | Optional |
+| `resource` | `metadata.resource` / skill `disk_path` | Usually absent for personal facets (SPEC §4.4) |
+| `tags` | `metadata.tags` | Optional list |
+| `timestamp` | `captured_at` (epoch → ISO 8601) | Last meaningful change |
+| `tessera_external_id` | `external_id` (ULID) | **Stable round-trip identity** |
+| `tessera_facet_type` | raw `facet_type` | Authoritative round-trip type key |
+| `tessera_mode` | `mode` | `query_time` / `write_time` / `hybrid` |
+| `tessera_is_stale` | `is_stale` (compiled_notebook) | Present only when meaningful |
+| `tessera_volatility` | `volatility` | Omitted for `persistent` |
+| `tessera_ttl_seconds` | `ttl_seconds` | Present only when non-null |
+| `tessera_content_hash` | `content_hash(content)` | Export-emitted integrity hint; import dedups by recomputing the body's hash, not by reading this field |
+
+Extension keys use the `tessera_` prefix; per SPEC §4.1 consumers must tolerate and round-trip unknown keys, so the bundle stays conformant.
+
+### Worked example: round-trip through the sample bundle
+
+```bash
+# 1. Validate the committed reference bundle (conformant by construction).
+tessera okf validate docs/okf-sample-bundle
+# 🔍 OKF v0.1 conformant: 3 concept(s) in docs/okf-sample-bundle
+
+# 2. Import it into a vault (the sole agent is auto-selected).
+tessera import-okf --input docs/okf-sample-bundle
+
+# 3. Export your own vault, then re-import it — identity round-trips.
+tessera export --format okf --output ./out
+tessera okf validate ./out
+tessera import-okf --input ./out      # re-import dedups; no duplicates
+tessera audit verify                  # stays exit 0
+```

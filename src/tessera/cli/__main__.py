@@ -30,6 +30,7 @@ from tessera.cli import (
     export_cmd,
     import_cmd,
     init_cmd,
+    okf_cmd,
     people_cmd,
     playbook_cmd,
     skills_cmd,
@@ -83,6 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_cmd.register(subparsers)
     sync_cmd.register(subparsers)
     playbook_cmd.register(subparsers)
+    okf_cmd.register(subparsers)
     dogfood_cmd.register(subparsers)
 
     # Existing stubs from earlier phases. Each of these delegates its
