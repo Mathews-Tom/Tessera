@@ -54,6 +54,7 @@ These are not engineering deferrals. They are product commitments. Breaking one 
 | Plaintext vault at rest                                                           | Contradicts the user-owned-context framing. Encryption-at-rest is v0.1 mandatory.                                                      |
 | URL-embedded token transport as a recommended configuration                       | Antipattern. ChatGPT Dev Mode connects via an exchange endpoint; URL tokens are deprecated on arrival.                                 |
 | Markdown files as the canonical memory store                                      | Repo-local markdown may become an authoring/review adapter, but the vault remains canonical for auth, audit, retrieval, and sync.      |
+| OKF bundles as a sync mechanism or canonical store                                | OKF is a boundary interchange format only — an explicit decrypted export and the v0.6 on-disk convention. As a sync path it would shadow the encrypted BYO-sync (`sync/`, ADR 0022) with an unencrypted, unsigned, unaudited transport; encrypted BYO-sync remains the only multi-device transport. See ADR 0023. |
 
 ## Out of product scope
 
