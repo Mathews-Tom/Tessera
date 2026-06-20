@@ -131,6 +131,20 @@ def scrub_text_file(name: str, text: str) -> None:
         )
 
 
+def redact_text(text: str) -> str:
+    """Return ``text`` with known credential patterns replaced.
+
+    This is the opt-in redaction half of the scrubber contract for plaintext
+    exports: diagnostic bundles still use the closed gate above, while an OKF
+    export can deliberately emit a shareable-but-redacted body.
+    """
+
+    redacted = text
+    for rule, pattern in _CREDENTIAL_PATTERNS:
+        redacted = pattern.sub(f"[REDACTED:{rule}]", redacted)
+    return redacted
+
+
 def _scan(value: Any, *, location: str) -> list[ScrubViolation]:
     if isinstance(value, dict):
         return _scan_dict(value, location=location)
@@ -224,6 +238,7 @@ __all__ = [
     "ScrubViolation",
     "ScrubberError",
     "ScrubberViolationError",
+    "redact_text",
     "scrub_bundle_file",
     "scrub_jsonl_file",
     "scrub_text_file",

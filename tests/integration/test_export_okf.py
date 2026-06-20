@@ -7,9 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from tessera.cli.__main__ import _build_parser
+from tessera.migration import bootstrap
+from tessera.vault import audit_chain
 from tessera.vault import capture as vault_capture
 from tessera.vault import compiled as vault_compiled
 from tessera.vault.connection import VaultConnection
+from tessera.vault.encryption import derive_key, new_salt, save_salt
 from tessera.vault.okf import OKF_VERSION, TESSERA_EXTERNAL_ID, export_okf, parse_concept
 
 _RESERVED = {"index.md", "log.md"}
@@ -151,6 +155,129 @@ def test_okf_export_include_deleted_parity(
     assert all_rows.facets == live.facets + 1
     assert "soft-deleted OKF note" not in _bundle_text(live_dir)
     assert "soft-deleted OKF note" in _bundle_text(all_dir)
+
+
+@pytest.mark.integration
+def test_okf_export_audits_counts_only_and_chain_verifies(
+    okf_seeded_vault: VaultConnection, tmp_path: Path
+) -> None:
+    export_okf(okf_seeded_vault, output_dir=tmp_path / "okf", include_deleted=True, now_epoch=84)
+
+    rows = okf_seeded_vault.connection.execute(
+        "SELECT payload FROM audit_log WHERE op = 'vault_exported_okf'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == '{"facet_count":6,"included_deleted":true,"scrubbed":false}'
+    audit_chain.verify_chain(okf_seeded_vault.connection)
+
+
+@pytest.mark.integration
+def test_okf_export_scrub_redacts_content_metadata_and_paths(
+    okf_seeded_vault: VaultConnection, tmp_path: Path
+) -> None:
+    secret = "sk-" + "0123456789abcdefghijABCDEFGHIJKL"
+    agent_id = int(
+        okf_seeded_vault.connection.execute(
+            "SELECT id FROM agents WHERE external_id='01AGTOKF'"
+        ).fetchone()[0]
+    )
+    vault_capture.capture(
+        okf_seeded_vault.connection,
+        agent_id=agent_id,
+        facet_type="preference",
+        content=f"Keep this credential out of shared bundles: {secret}",
+        source_tool="test",
+        metadata={
+            "name": f"Credential {secret}",
+            "description": f"metadata secret {secret}",
+            "tags": [f"tag-{secret}"],
+        },
+        captured_at=1_000_007,
+    )
+
+    raw_dir = tmp_path / "raw"
+    scrubbed_dir = tmp_path / "scrubbed"
+    force_dir = tmp_path / "force"
+    export_okf(okf_seeded_vault, output_dir=raw_dir, now_epoch=90)
+    export_okf(okf_seeded_vault, output_dir=scrubbed_dir, now_epoch=91, scrub=True)
+    export_okf(okf_seeded_vault, output_dir=force_dir, now_epoch=92)
+    export_okf(okf_seeded_vault, output_dir=force_dir, now_epoch=93, scrub=True, force=True)
+    assert secret in _bundle_text(raw_dir)
+    scrubbed = _bundle_text(scrubbed_dir)
+    assert secret not in scrubbed
+    assert "[REDACTED:openai_api_key]" in scrubbed
+    assert all(
+        secret not in str(path.relative_to(scrubbed_dir)) for path in scrubbed_dir.rglob("*")
+    )
+    forced = _bundle_text(force_dir)
+    assert secret not in forced
+    assert "[REDACTED:openai_api_key]" in forced
+    assert all(secret not in str(path.relative_to(force_dir)) for path in force_dir.rglob("*"))
+
+
+@pytest.mark.integration
+def test_okf_export_refuses_non_empty_dir_without_force(
+    okf_seeded_vault: VaultConnection, tmp_path: Path
+) -> None:
+    out_dir = tmp_path / "occupied"
+    out_dir.mkdir()
+    (out_dir / "unrelated.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="non-empty directory"):
+        export_okf(okf_seeded_vault, output_dir=out_dir, now_epoch=100)
+
+    summary = export_okf(okf_seeded_vault, output_dir=out_dir, now_epoch=101, force=True)
+
+    assert summary.format == "okf"
+    assert not (out_dir / "unrelated.txt").exists()
+    assert (out_dir / "index.md").is_file()
+
+
+@pytest.mark.integration
+def test_cli_okf_warns_and_audit_verify_stays_green(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault_path = tmp_path / "vault.db"
+    passphrase = "okf safety"
+    _seed_cli_vault(vault_path, passphrase)
+    monkeypatch.setenv("TESSERA_PASSPHRASE", passphrase)
+    parser = _build_parser()
+
+    export_args = parser.parse_args(
+        ["export", "--vault", str(vault_path), "--format", "okf", "--output", str(tmp_path / "okf")]
+    )
+    assert export_args.handler(export_args) == 0
+    output = capsys.readouterr().out
+    assert "WARN" in output
+    assert "decrypted plaintext" in output
+
+    verify_args = parser.parse_args(["audit", "verify", "--vault", str(vault_path)])
+    assert verify_args.handler(verify_args) == 0
+
+
+def _seed_cli_vault(vault_path: Path, passphrase: str) -> None:
+    salt = new_salt()
+    save_salt(vault_path, salt)
+    with derive_key(bytearray(passphrase.encode("utf-8")), salt) as key:
+        bootstrap(vault_path, key)
+        with VaultConnection.open(vault_path, key) as vc:
+            vc.connection.execute(
+                "INSERT INTO agents(external_id, name, created_at) "
+                "VALUES ('01CLIOKF', 'cli', 1_000_000)"
+            )
+            agent_id = int(
+                vc.connection.execute(
+                    "SELECT id FROM agents WHERE external_id='01CLIOKF'"
+                ).fetchone()[0]
+            )
+            vault_capture.capture(
+                vc.connection,
+                agent_id=agent_id,
+                facet_type="identity",
+                content="CLI OKF export identity.",
+                source_tool="test",
+                captured_at=1_000_001,
+            )
 
 
 def _bundle_text(path: Path) -> str:
