@@ -46,6 +46,7 @@ ADRs are numbered sequentially. Numbers are never reused. Superseding decisions 
 | 0020 | [Automation registry, storage-only](0020-automation-registry-storage-only.md) | Accepted |
 | 0021 | [Audit-chain tamper evidence](0021-audit-chain-tamper-evidence.md) | Accepted |
 | 0022 | [BYO sync transport: S3 adapter, CLI, watermark persistence](0022-byo-sync-transport.md) | Accepted |
+| 0023 | [OKF interchange boundary](0023-okf-interchange-boundary.md) | Proposed |
 
 ## When to write an ADR
 
