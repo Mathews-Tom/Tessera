@@ -1002,6 +1002,89 @@ def parse_concept(text: str) -> ParsedConcept:
     return ParsedConcept(frontmatter=frontmatter, body=body)
 
 
+@dataclass(frozen=True, slots=True)
+class OKFValidationIssue:
+    """One OKF v0.1 conformance violation found in a bundle."""
+
+    path: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class OKFValidationReport:
+    """Result of an OKF v0.1 conformance check over a directory."""
+
+    bundle_dir: Path
+    concept_count: int
+    issues: tuple[OKFValidationIssue, ...]
+
+    @property
+    def conformant(self) -> bool:
+        return not self.issues
+
+
+def validate_bundle(bundle_dir: Path) -> OKFValidationReport:
+    """Check a directory against OKF v0.1 conformance (SPEC §9).
+
+    A bundle is conformant when every non-reserved ``.md`` file has a parseable
+    frontmatter block with a non-empty ``type`` (§9.1-§9.2), and each reserved
+    file follows §6/§7: ``log.md`` carries no frontmatter and ``index.md``
+    carries none except the bundle-root one, which may declare ``okf_version``
+    (§11). This is a read-only consumer-side tool — no vault, no network —
+    useful for validating hand-authored bundles before sharing them.
+    """
+
+    issues: list[OKFValidationIssue] = []
+    root = bundle_dir.resolve()
+    if not root.is_dir():
+        return OKFValidationReport(
+            bundle_dir=bundle_dir,
+            concept_count=0,
+            issues=(OKFValidationIssue(str(bundle_dir), "not a directory"),),
+        )
+
+    concept_count = 0
+    for path in sorted(root.rglob("*.md")):
+        rel = path.relative_to(root).as_posix()
+        try:
+            safe = file_safety.resolve_within(root, path)
+            text = safe.read_text(encoding="utf-8")
+        except (FileSafetyError, OSError, UnicodeDecodeError) as exc:
+            issues.append(OKFValidationIssue(rel, f"unreadable: {exc}"))
+            continue
+        try:
+            parsed = parse_concept(text)
+        except OKFParseError as exc:
+            issues.append(OKFValidationIssue(rel, f"malformed frontmatter: {exc}"))
+            continue
+        if path.name in _RESERVED_BUNDLE_FILES:
+            issues.extend(_validate_reserved_file(rel, path, root, parsed))
+            continue
+        concept_count += 1
+        if _nonempty_str(parsed.frontmatter.get("type")) is None:
+            issues.append(OKFValidationIssue(rel, "missing a non-empty `type` field (SPEC §9)"))
+
+    return OKFValidationReport(
+        bundle_dir=bundle_dir, concept_count=concept_count, issues=tuple(issues)
+    )
+
+
+def _validate_reserved_file(
+    rel: str, path: Path, root: Path, parsed: ParsedConcept
+) -> list[OKFValidationIssue]:
+    if not parsed.frontmatter:
+        return []
+    if path.name == "log.md":
+        return [OKFValidationIssue(rel, "log.md must not carry frontmatter (SPEC §7)")]
+    if path.parent != root:
+        return [
+            OKFValidationIssue(
+                rel, "index.md may carry frontmatter only at the bundle root (SPEC §6/§11)"
+            )
+        ]
+    return []
+
+
 # --------------------------------------------------------------------------
 # Internal helpers — pure, no I/O.
 # --------------------------------------------------------------------------
@@ -1187,6 +1270,8 @@ __all__ = [
     "OKFImportError",
     "OKFMappingError",
     "OKFParseError",
+    "OKFValidationIssue",
+    "OKFValidationReport",
     "ParsedConcept",
     "concept_id",
     "concept_slug",
@@ -1197,4 +1282,5 @@ __all__ = [
     "parse_concept",
     "render_concept",
     "render_frontmatter",
+    "validate_bundle",
 ]
