@@ -34,7 +34,7 @@ from tessera.vault.export import (
     export_sqlite,
     import_json,
 )
-from tessera.vault.okf import export_okf
+from tessera.vault.okf import OKFImportError, export_okf, import_okf
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
@@ -105,6 +105,30 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     )
     import_parser.set_defaults(handler=_cmd_import)
 
+    import_okf_parser = subparsers.add_parser(
+        "import-okf", help="import an OKF bundle directory into the vault"
+    )
+    import_okf_parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
+    import_okf_parser.add_argument("--passphrase", default=None)
+    import_okf_parser.add_argument(
+        "--input", type=Path, required=True, help="path to an OKF bundle directory"
+    )
+    import_okf_parser.add_argument(
+        "--agent-external-id",
+        default=None,
+        help=(
+            "attach every imported concept to this agent. If omitted, the "
+            "vault's sole agent is used (fails when the vault has zero or "
+            "many agents)."
+        ),
+    )
+    import_okf_parser.set_defaults(handler=_cmd_import_okf)
+
 
 def _cmd_export(args: argparse.Namespace) -> int:
     try:
@@ -159,6 +183,39 @@ def _cmd_import(args: argparse.Namespace) -> int:
         except (ValueError, KeyError) as exc:
             return fail(f"import failed: {exc}")
     _render_summary(summary, action_emoji=EMOJI["import"])
+    return 0
+
+
+def _cmd_import_okf(args: argparse.Namespace) -> int:
+    if not args.input.is_dir():
+        return fail(f"OKF bundle directory not found: {args.input}")
+    try:
+        vault_path = resolve_vault_path(args.vault)
+        passphrase = resolve_passphrase(args.passphrase)
+    except CliError as exc:
+        return fail(str(exc))
+    with (
+        status(f"importing OKF bundle from {args.input}", emoji=EMOJI["import"]),
+        open_vault(vault_path, passphrase) as vault,
+    ):
+        try:
+            summary = import_okf(
+                vault,
+                bundle_dir=args.input,
+                agent_external_id=args.agent_external_id,
+            )
+        except OKFImportError as exc:
+            return fail(f"import failed: {exc}")
+    if summary.errors:
+        warn(
+            f"imported {summary.facets}, rejected {len(summary.errors)}, skipped {summary.skipped}"
+        )
+        for line in summary.errors:
+            warn(f"rejected concept: {line}")
+        return 1
+    _render_summary(summary, action_emoji=EMOJI["import"])
+    if summary.skipped:
+        warn(f"{summary.skipped} concept(s) skipped: no non-empty type (SPEC §9)")
     return 0
 
 

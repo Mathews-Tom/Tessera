@@ -121,6 +121,10 @@ class UnknownAgentError(FacetError):
     """Referenced agent_id does not exist in ``agents``."""
 
 
+class DuplicateExternalIdError(FacetError):
+    """A caller-supplied ``external_id`` collides with an existing row."""
+
+
 @dataclass(frozen=True, slots=True)
 class Facet:
     id: int
@@ -182,12 +186,19 @@ def insert(
     captured_at: int | None = None,
     volatility: str = "persistent",
     ttl_seconds: int | None = None,
+    external_id: str | None = None,
 ) -> tuple[str, bool]:
     """Insert a facet, deduplicating on ``(agent_id, content_hash)``.
 
     Returns ``(external_id, is_new)``. When a facet with the same normalized
     content already exists for this agent, the existing ``external_id`` is
     returned with ``is_new=False`` and no row is written.
+
+    ``external_id`` lets a trusted caller (the OKF / JSON importers) preserve
+    a row's identity across vaults; when ``None`` a fresh ULID is minted.
+    Content-hash dedup runs first, so a provided ``external_id`` is only
+    consumed on the brand-new-row branch. A provided id that collides with a
+    different existing row raises :class:`DuplicateExternalIdError`.
     """
 
     if facet_type not in WRITABLE_FACET_TYPES:
@@ -216,7 +227,7 @@ def insert(
             )
         return existing_id, False
 
-    external_id = str(ULID())
+    external_id = external_id if external_id else str(ULID())
     captured = captured_at if captured_at is not None else _now_epoch()
     meta_json = json.dumps(metadata or {}, sort_keys=True, ensure_ascii=False)
     try:
@@ -241,8 +252,13 @@ def insert(
             ),
         )
     except (sqlite3.IntegrityError, sqlcipher3.IntegrityError) as exc:
-        if "FOREIGN KEY" in str(exc).upper():
+        message = str(exc)
+        if "FOREIGN KEY" in message.upper():
             raise UnknownAgentError(f"no agent with id {agent_id}") from exc
+        if "facets.external_id" in message:
+            raise DuplicateExternalIdError(
+                f"external_id {external_id!r} already exists in this vault"
+            ) from exc
         raise
     return external_id, True
 

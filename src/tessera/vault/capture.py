@@ -44,6 +44,7 @@ def capture(
     captured_at: int | None = None,
     volatility: str = "persistent",
     ttl_seconds: int | None = None,
+    external_id: str | None = None,
 ) -> CaptureResult:
     """Insert a facet and write the matching audit entry.
 
@@ -53,6 +54,9 @@ def capture(
     :class:`~tessera.vault.facets.InvalidTTLError` for ADR-0016 lifecycle
     misuses, and :class:`~tessera.vault.facets.UnknownAgentError` when
     ``agent_id`` does not correspond to a live ``agents`` row.
+
+    ``external_id`` is forwarded to :func:`facets.insert` so an importer can
+    preserve a row's ULID across vaults; ``None`` mints a fresh one.
     """
 
     effective_ttl = facets.resolve_ttl_seconds(volatility, ttl_seconds)
@@ -81,6 +85,7 @@ def capture(
         captured_at=captured_at,
         volatility=volatility,
         ttl_seconds=effective_ttl,
+        external_id=external_id,
     )
     audit.write(
         conn,
