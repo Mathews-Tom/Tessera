@@ -386,6 +386,10 @@ def _parse_frontmatter(fm_lines: Sequence[str]) -> dict[str, Any]:
         if not raw.strip():
             index += 1
             continue
+        if raw[:1].isspace():
+            raise OKFParseError(
+                f"unexpected indentation in frontmatter (nested mappings unsupported): {raw!r}"
+            )
         key, sep, value_text = raw.partition(":")
         key = key.strip()
         if not sep or not key:
@@ -440,8 +444,33 @@ def _parse_scalar(text: str) -> Any:
         inner = text[1:-1].strip()
         if not inner:
             return []
-        return [_parse_scalar(part.strip()) for part in inner.split(",")]
+        return [_parse_scalar(part) for part in _split_flow_items(inner)]
     return _strip_quotes(text)
+
+
+def _split_flow_items(inner: str) -> list[str]:
+    # Split a flow-sequence body on commas not enclosed in quotes, so a
+    # quoted element containing a comma survives (e.g. ``a, "b, c"``). Only
+    # the foreign / hand-authored fallback path reaches this; Tessera emits
+    # lists as valid JSON, handled by ``json.loads`` above.
+    items: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    for char in inner:
+        if quote is not None:
+            buf.append(char)
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+            buf.append(char)
+        elif char == ",":
+            items.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(char)
+    items.append("".join(buf).strip())
+    return items
 
 
 def _strip_quotes(text: str) -> str:

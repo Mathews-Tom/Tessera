@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from typing import Any
 
@@ -305,6 +306,19 @@ def test_block_list_frontmatter_parses() -> None:
     assert fm["tags"] == ["python", "tooling"]
 
 
+@pytest.mark.unit
+def test_foreign_flow_list_with_quoted_comma_preserved() -> None:
+    text = '---\ntype: Preference\ntags: [python, "a, b"]\n---\nbody\n'
+    fm = okf.parse_concept(text).frontmatter
+    assert fm["tags"] == ["python", "a, b"]
+
+
+@pytest.mark.unit
+def test_nested_mapping_frontmatter_raises() -> None:
+    with pytest.raises(okf.OKFParseError):
+        okf.parse_concept("---\nmetadata:\n  nested: value\n---\nbody\n")
+
+
 # --------------------------------------------------------------------------
 # concept_id / concept_slug.
 # --------------------------------------------------------------------------
@@ -339,14 +353,31 @@ def test_concept_slug_falls_back_to_ulid_when_name_unslugable() -> None:
 
 
 @pytest.mark.unit
-def test_module_stays_io_free() -> None:
+def test_module_introduces_no_io() -> None:
+    # okf.py's own code performs no inline filesystem / DB I/O, and imports
+    # only pure helpers. ``skills`` is the single mandated reuse
+    # (``skills.slugify``); the Phase-1 mapping functions still touch no file
+    # or DB at call time.
     source = Path(okf.__file__).read_text(encoding="utf-8")
-    forbidden = (
-        "import sqlcipher3",
-        "import sqlite3",
-        "from pathlib import",
-        "from tessera.vault.connection",
-        ".execute(",
+    for token in ("open(", ".execute("):
+        assert token not in source, f"okf.py must stay I/O-free; found {token!r}"
+    allowed = {
+        "__future__",
+        "json",
+        "re",
+        "collections.abc",
+        "dataclasses",
+        "datetime",
+        "typing",
+        "tessera.vault.canonical_json",
+        "tessera.vault.skills",
+    }
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imported.add(node.module)
+    assert imported <= allowed, (
+        f"okf.py imports outside the pure allowlist: {sorted(imported - allowed)}"
     )
-    offenders = [token for token in forbidden if token in source]
-    assert not offenders, f"okf.py must stay I/O-free; found {offenders}"
