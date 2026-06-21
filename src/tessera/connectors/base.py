@@ -155,6 +155,36 @@ def build_stdio_via_tessera_bridge_entry(server: McpServerSpec) -> Mapping[str, 
     }
 
 
+def build_opencode_local_entry(server: McpServerSpec) -> Mapping[str, object]:
+    """Return an OpenCode ``mcp`` entry that bridges via Tessera's ``stdio`` command.
+
+    OpenCode's MCP config uses a top-level ``mcp`` key (not
+    ``mcpServers``) and a per-entry shape of ``{"type": "local",
+    "command": [...], "enabled": true}`` for stdio servers. Tessera wires
+    the same first-party stdio ↔ HTTP bridge Claude Desktop uses, so the
+    daemon stays the single HTTP MCP endpoint and OpenCode reaches it over
+    stdio. ``command`` is one argv array — OpenCode has no separate
+    ``args`` field — so the interpreter and module flags live inline.
+    """
+
+    import sys
+
+    return {
+        "type": "local",
+        "command": [
+            sys.executable,
+            "-m",
+            "tessera.cli",
+            "stdio",
+            "--url",
+            server.url,
+            "--token",
+            server.token,
+        ],
+        "enabled": True,
+    }
+
+
 # Backwards-compat alias. Callers upgrading across v0.1.x keep working
 # while the rename propagates.
 build_stdio_via_mcp_remote_entry = build_stdio_via_tessera_bridge_entry
@@ -168,6 +198,7 @@ __all__ = [
     "McpServerSpec",
     "UnknownClientError",
     "UnsupportedConfigShapeError",
+    "build_opencode_local_entry",
     "build_server_entry",
     "build_stdio_via_mcp_remote_entry",
     "build_stdio_via_tessera_bridge_entry",

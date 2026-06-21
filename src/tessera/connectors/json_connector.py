@@ -55,6 +55,9 @@ class JsonConnector:
     # with ``build_stdio_via_mcp_remote_entry`` because its MCP loader
     # speaks stdio transport only.
     entry_builder: EntryBuilder = build_server_entry
+    # Top-level config key holding the MCP server map: ``mcpServers``
+    # for Claude/Cursor/omp/pi, ``mcp`` for OpenCode.
+    top_level_key: str = _TOP_LEVEL_KEY
 
     def default_path(self) -> Path:
         resolver = self.paths.get(platform.system())
@@ -67,7 +70,7 @@ class JsonConnector:
 
     def apply(self, path: Path, server: McpServerSpec) -> ConnectorResult:
         existing = read_json(path)
-        merged = _merge_entry(existing, server, self.entry_builder)
+        merged = _merge_entry(existing, server, self.entry_builder, self.top_level_key)
         outcome = write_safely(path, merged, serialiser=json_serialiser)
         return _to_result(outcome)
 
@@ -79,9 +82,9 @@ class JsonConnector:
             # sibling settings that a stale cached file might carry.
             return ConnectorResult(path=path, backup_path=None, no_op=True)
         existing = read_json(path)
-        if not _has_tessera_entry(existing):
+        if not _has_tessera_entry(existing, self.top_level_key):
             return ConnectorResult(path=path, backup_path=None, no_op=True)
-        pruned = _prune_entry(existing)
+        pruned = _prune_entry(existing, self.top_level_key)
         outcome = write_safely(path, pruned, serialiser=json_serialiser)
         return _to_result(outcome)
 
@@ -144,6 +147,42 @@ def cursor_paths() -> dict[str, PathResolver]:
     }
 
 
+def omp_paths() -> dict[str, PathResolver]:
+    # Oh My Pi reads MCP servers from ~/.omp/agent/mcp.json under a
+    # top-level ``mcpServers`` key with stdio ``{command, args}`` entries.
+    return {
+        "Darwin": lambda: _home() / ".omp" / "agent" / "mcp.json",
+        "Linux": lambda: _home() / ".omp" / "agent" / "mcp.json",
+        "Windows": lambda: _home() / ".omp" / "agent" / "mcp.json",
+    }
+
+
+def pi_paths() -> dict[str, PathResolver]:
+    # Pi (the oh-my-pi base CLI) mirrors omp: ~/.pi/agent/mcp.json,
+    # top-level ``mcpServers`` with stdio ``{command, args}`` entries.
+    return {
+        "Darwin": lambda: _home() / ".pi" / "agent" / "mcp.json",
+        "Linux": lambda: _home() / ".pi" / "agent" / "mcp.json",
+        "Windows": lambda: _home() / ".pi" / "agent" / "mcp.json",
+    }
+
+
+def _xdg_config_home() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return Path(xdg) if xdg else _home() / ".config"
+
+
+def opencode_paths() -> dict[str, PathResolver]:
+    # OpenCode reads global config from $XDG_CONFIG_HOME/opencode/opencode.json
+    # (default ~/.config/opencode/opencode.json) under a top-level ``mcp``
+    # key with ``{type, command|url, enabled}`` entries.
+    return {
+        "Darwin": lambda: _xdg_config_home() / "opencode" / "opencode.json",
+        "Linux": lambda: _xdg_config_home() / "opencode" / "opencode.json",
+        "Windows": lambda: _xdg_config_home() / "opencode" / "opencode.json",
+    }
+
+
 # ---- Merge helpers -------------------------------------------------------
 
 
@@ -151,52 +190,52 @@ def _merge_entry(
     existing: dict[str, object],
     server: McpServerSpec,
     entry_builder: EntryBuilder,
+    top_level_key: str = _TOP_LEVEL_KEY,
 ) -> dict[str, object]:
     """Return a copy of ``existing`` with the Tessera entry merged in.
 
     ``existing`` is not mutated. When the file already has a
-    ``mcpServers`` object, its other keys are preserved as-is; only
-    ``mcpServers["tessera"]`` is rewritten. When the top-level
-    ``mcpServers`` slot exists but isn't a dict, the merge raises
-    :class:`UnsupportedConfigShapeError` rather than stomping it.
-
-    ``entry_builder`` produces the per-entry payload; pluggable so
-    Claude Desktop's stdio-via-mcp-remote shape and the native HTTP
-    shape can share the rest of the merge machinery.
+    ``top_level_key`` object, its other keys are preserved as-is; only
+    the ``tessera`` entry is rewritten. When the slot exists but isn't a
+    dict, the merge raises :class:`UnsupportedConfigShapeError` rather
+    than stomping it. ``entry_builder`` produces the per-entry payload;
+    ``top_level_key`` is ``mcpServers`` for most clients and ``mcp`` for
+    OpenCode.
     """
 
     merged = dict(existing)
-    servers_raw = merged.get(_TOP_LEVEL_KEY, {})
+    servers_raw = merged.get(top_level_key, {})
     if not isinstance(servers_raw, dict):
         raise UnsupportedConfigShapeError(
-            f"config has {_TOP_LEVEL_KEY!r} = {type(servers_raw).__name__}; expected a JSON object"
+            f"config has {top_level_key!r} = {type(servers_raw).__name__}; expected a JSON object"
         )
     servers = dict(servers_raw)
     servers[TESSERA_SERVER_NAME] = dict(entry_builder(server))
-    merged[_TOP_LEVEL_KEY] = servers
+    merged[top_level_key] = servers
     return merged
 
 
-def _has_tessera_entry(existing: dict[str, object]) -> bool:
-    servers = existing.get(_TOP_LEVEL_KEY)
+def _has_tessera_entry(existing: dict[str, object], top_level_key: str = _TOP_LEVEL_KEY) -> bool:
+    servers = existing.get(top_level_key)
     return isinstance(servers, dict) and TESSERA_SERVER_NAME in servers
 
 
-def _prune_entry(existing: dict[str, object]) -> dict[str, object]:
+def _prune_entry(
+    existing: dict[str, object], top_level_key: str = _TOP_LEVEL_KEY
+) -> dict[str, object]:
     """Return a copy of ``existing`` with the Tessera entry removed.
 
-    If removing Tessera empties the ``mcpServers`` map, the empty map
-    is preserved — an emptied key is still a valid JSON shape and the
-    user's config-management scripts may expect the key to exist.
-    Deleting it would be a surprise.
+    If removing Tessera empties the server map, the empty map is
+    preserved — an emptied key is still a valid shape and the user's
+    config-management scripts may expect the key to exist.
     """
 
     pruned = dict(existing)
-    servers_raw = pruned.get(_TOP_LEVEL_KEY, {})
+    servers_raw = pruned.get(top_level_key, {})
     if not isinstance(servers_raw, dict):
         return pruned
     servers = {k: v for k, v in servers_raw.items() if k != TESSERA_SERVER_NAME}
-    pruned[_TOP_LEVEL_KEY] = servers
+    pruned[top_level_key] = servers
     return pruned
 
 
@@ -214,4 +253,7 @@ __all__ = [
     "claude_code_paths",
     "claude_desktop_paths",
     "cursor_paths",
+    "omp_paths",
+    "opencode_paths",
+    "pi_paths",
 ]

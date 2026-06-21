@@ -109,7 +109,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 # ``all`` expands to every file-based client. ChatGPT stays out of the
 # expansion because its handler path is the URL-exchange flow (needs a
 # running daemon + user-interactive paste), not a config-file write.
-_ALL_FILE_BASED_CLIENTS = ("claude-desktop", "claude-code", "cursor", "codex")
+_ALL_FILE_BASED_CLIENTS = (
+    "claude-desktop",
+    "claude-code",
+    "cursor",
+    "codex",
+    "opencode",
+    "omp",
+    "pi",
+)
 _ALL_META = "all"
 
 

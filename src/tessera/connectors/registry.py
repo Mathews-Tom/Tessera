@@ -10,6 +10,7 @@ from __future__ import annotations
 from tessera.connectors.base import (
     Connector,
     UnknownClientError,
+    build_opencode_local_entry,
     build_stdio_via_tessera_bridge_entry,
 )
 from tessera.connectors.chatgpt import ChatGptConnector
@@ -18,6 +19,9 @@ from tessera.connectors.json_connector import (
     claude_code_paths,
     claude_desktop_paths,
     cursor_paths,
+    omp_paths,
+    opencode_paths,
+    pi_paths,
 )
 from tessera.connectors.toml_connector import TomlConnector, codex_paths
 
@@ -50,6 +54,25 @@ def _build_connectors() -> dict[str, Connector]:
         client_id="codex",
         display_name="Codex",
         paths=codex_paths(),
+    )
+    registry["opencode"] = JsonConnector(
+        client_id="opencode",
+        display_name="OpenCode",
+        paths=opencode_paths(),
+        top_level_key="mcp",
+        entry_builder=build_opencode_local_entry,
+    )
+    registry["omp"] = JsonConnector(
+        client_id="omp",
+        display_name="Oh My Pi",
+        paths=omp_paths(),
+        entry_builder=build_stdio_via_tessera_bridge_entry,
+    )
+    registry["pi"] = JsonConnector(
+        client_id="pi",
+        display_name="Pi",
+        paths=pi_paths(),
+        entry_builder=build_stdio_via_tessera_bridge_entry,
     )
     registry["chatgpt"] = ChatGptConnector()
     return registry
