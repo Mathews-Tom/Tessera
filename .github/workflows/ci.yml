@@ -14,6 +14,10 @@ env:
   UV_CACHE_DIR: /tmp/.uv-cache
   PYTHONDONTWRITEBYTECODE: "1"
   PYTHONUNBUFFERED: "1"
+  # Automation must never emit dogfood evidence rows (real 30/60-day
+  # gate traffic only). Harmless on hosted runners (no initialized gate)
+  # but enforces intent for any tessera CLI invoked in a job.
+  TESSERA_DOGFOOD_DISABLE: "1"
 
 jobs:
   lint:

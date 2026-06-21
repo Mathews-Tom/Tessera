@@ -85,3 +85,24 @@ def open_vault(vault_path: Path, vault_key: ProtectedKey) -> Iterator[VaultConne
     # fixture becomes the first failing test and points at the change.
     with VaultConnection.open(vault_path, vault_key) as vc:
         yield vc
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dogfood_ledger(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redirect the dogfood evidence ledger to a throwaway dir for every test.
+
+    Auto-emission (``tessera playbook register`` / ``audit verify`` /
+    ``sync push|pull``) appends a row to every *active* gate under the ledger
+    dir. On a machine where the operator has run ``tessera dogfood init``
+    (e.g. the 60-day compiled gate), an unguarded suite run pollutes the real
+    evidence ledger at ``~/.tessera/dogfood/`` with test traffic. Pointing
+    ``TESSERA_DOGFOOD_DIR`` at a per-test temp dir guarantees no test ever
+    touches the operator's ledger. Tests needing a specific dir override the
+    var in their own fixtures; the kill-switch contract tests drive
+    ``TESSERA_DOGFOOD_DISABLE`` directly and are unaffected.
+    """
+
+    monkeypatch.setenv("TESSERA_DOGFOOD_DIR", str(tmp_path_factory.mktemp("dogfood")))

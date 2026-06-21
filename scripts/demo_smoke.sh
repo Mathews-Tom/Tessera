@@ -20,6 +20,10 @@
 
 set -euo pipefail
 
+# Never emit dogfood evidence rows: this is a throwaway readiness probe,
+# not real 30/60-day dogfood traffic. Keeps the operator's ledger clean.
+export TESSERA_DOGFOOD_DISABLE=1
+
 fail() {
     echo "FAIL: $1" >&2
     exit 1

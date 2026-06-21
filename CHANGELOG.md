@@ -17,6 +17,10 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 - ADR 0023 (OKF interchange boundary) moves from Proposed to **Accepted**.
 
+### Fixed
+
+- **Dogfood evidence ledger isolated from tests and demo scripts.** The pytest suite (`tests/conftest.py`, autouse) now redirects `TESSERA_DOGFOOD_DIR` to a per-test temp dir, and `scripts/demo_smoke.sh`, `scripts/demo_reset.sh`, plus CI export `TESSERA_DOGFOOD_DISABLE=1`. Previously, running the suite or a demo on a machine with an initialized dogfood gate (e.g. the 60-day compiled gate) auto-emitted `register` / `stale_event` / `audit_verify` rows into the operator's real 30/60-day evidence ledger at `~/.tessera/dogfood/`, contaminating the v0.5-GA dogfood evidence with synthetic test traffic.
+
 ## [0.5.0rc1] — 2026-05-03 (pre-release)
 
 ### Schema v4 (additive over v3, V0.5-P1 + V0.5-P2, ADRs 0016 / 0017)
