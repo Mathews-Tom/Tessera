@@ -12,10 +12,15 @@ adheres to [Semantic Versioning](https://semver.org/).
 - **`tessera okf validate <dir>`.** A read-only, no-vault, no-network consumer-side conformance check implementing OKF v0.1 SPEC §9 (parseable frontmatter + non-empty `type` on every non-reserved `.md`; reserved `index.md` / `log.md` per §6/§7). Exit `0` when conformant, `1` with a per-file issue list otherwise.
 - **Identity-preserving capture path.** `facets.insert` / `capture.capture` gain an optional `external_id` so the importer can preserve a row's ULID across vaults; a colliding id raises the new `DuplicateExternalIdError`. `ExportSummary` gains import-only `errors` / `skipped` fields.
 - **OKF interchange docs + reference bundle.** `docs/api.md` documents `tessera export --format okf`, `tessera import-okf`, and `tessera okf validate` with the frontmatter mapping table and a copy-pasteable round-trip example; `docs/okf-sample-bundle/` is a committed, living conformant bundle.
+- **MCP connectors for OpenCode, Oh My Pi (`omp`), and Pi (`pi`).** `tessera connect {opencode,omp,pi}` (and `tessera connect all`) now write the Tessera MCP entry into each client's config: `~/.omp/agent/mcp.json` and `~/.pi/agent/mcp.json` (top-level `mcpServers`, stdio `{command, args}` bridge entry) and `$XDG_CONFIG_HOME/opencode/opencode.json` (top-level `mcp`, `{type: "local", command, enabled}` entry). `JsonConnector` gains a `top_level_key` field so the `mcp`-vs-`mcpServers` shape difference is data, not a new class; the existing safe merge preserves every other key (`$schema`, `provider`, `model`, sibling MCP servers) and writes a timestamped backup. `tessera disconnect` prunes only the Tessera entry.
 
 ### Changed
 
 - ADR 0023 (OKF interchange boundary) moves from Proposed to **Accepted**.
+
+### Fixed
+
+- **Dogfood evidence ledger isolated from tests and demo scripts.** The pytest suite (`tests/conftest.py`, autouse) now redirects `TESSERA_DOGFOOD_DIR` to a per-test temp dir, and `scripts/demo_smoke.sh`, `scripts/demo_reset.sh`, plus CI export `TESSERA_DOGFOOD_DISABLE=1`. Previously, running the suite or a demo on a machine with an initialized dogfood gate (e.g. the 60-day compiled gate) auto-emitted `register` / `stale_event` / `audit_verify` rows into the operator's real 30/60-day evidence ledger at `~/.tessera/dogfood/`, contaminating the v0.5-GA dogfood evidence with synthetic test traffic.
 
 ## [0.5.0rc1] — 2026-05-03 (pre-release)
 

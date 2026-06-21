@@ -103,7 +103,7 @@ Auto-generated from `~/.tessera/dogfood/compiled.jsonl`. Run `tessera dogfood re
 <!-- BEGIN tessera-dogfood evidence-log -->
 | Date (UTC) | Machine | Kind | External ID | Compiler version | Elapsed (ms) | Exit / Useful | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| _no records yet_ | | | | | | | |
+| 2026-06-20T23:24:03.372697Z | DRUK.local|arm64 | gate_initialized | — | manual/research-recipe@2026-05-09 | — | — | Tom Mathews @ 2026-06-20 |
 <!-- END tessera-dogfood evidence-log -->
 
 ## Acceptance summary
@@ -113,8 +113,8 @@ Auto-generated from the same ledger; the gate clears when every row reads `Met`.
 <!-- BEGIN tessera-dogfood acceptance-summary -->
 | Check | Status | Evidence |
 | --- | --- | --- |
-| 60 consecutive days completed | Pending | no gate_initialized row |
-| Real dissertation topic used | Pending | — |
+| 60 consecutive days completed | Pending | 0 days from 2026-06-20 to 2026-06-20 |
+| Real dissertation topic used | Met | topic: annealed memory consolidation in agentic systems |
 | Compiled artifact registered through shipped path | Pending | — |
 | Source updates exercised stale detection | Pending | — |
 | Audit verification passed after compiled-artifact changes | Pending | — |

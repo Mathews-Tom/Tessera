@@ -31,6 +31,9 @@
 
 set -u
 
+# Reset must not write dogfood evidence rows into the operator's ledger.
+export TESSERA_DOGFOOD_DISABLE=1
+
 VAULT_PATH="${1:-$HOME/.tessera/demo.db}"
 VAULT_DIR="$(dirname "$VAULT_PATH")"
 SALT_PATH="${VAULT_PATH}.salt"
