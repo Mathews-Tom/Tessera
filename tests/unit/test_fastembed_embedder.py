@@ -23,6 +23,7 @@ from tessera.adapters.errors import (
     AdapterResponseError,
 )
 from tessera.adapters.fastembed_embedder import (
+    DEFAULT_CACHE_DIR,
     DEFAULT_DIM,
     DEFAULT_MODEL,
     FastEmbedEmbedder,
@@ -65,6 +66,7 @@ def test_default_attrs_match_module_constants() -> None:
     embedder = FastEmbedEmbedder()
     assert embedder.model_name == DEFAULT_MODEL
     assert embedder.dim == DEFAULT_DIM
+    assert embedder.cache_dir == DEFAULT_CACHE_DIR
     assert FastEmbedEmbedder.name == "fastembed"
 
 

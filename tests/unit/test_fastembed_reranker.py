@@ -18,10 +18,8 @@ from tessera.adapters.errors import (
     AdapterModelNotFoundError,
     AdapterResponseError,
 )
-from tessera.adapters.fastembed_reranker import (
-    DEFAULT_MODEL,
-    FastEmbedReranker,
-)
+from tessera.adapters.fastembed_embedder import DEFAULT_CACHE_DIR
+from tessera.adapters.fastembed_reranker import DEFAULT_MODEL, FastEmbedReranker
 
 
 class _FakeCrossEncoder:
@@ -47,6 +45,7 @@ def _patch_cross_encoder(monkeypatch: pytest.MonkeyPatch, replacement: Any) -> N
 def test_default_attrs_match_module_constants() -> None:
     reranker = FastEmbedReranker()
     assert reranker.model_name == DEFAULT_MODEL
+    assert reranker.cache_dir == DEFAULT_CACHE_DIR
     assert FastEmbedReranker.name == "fastembed"
 
 
