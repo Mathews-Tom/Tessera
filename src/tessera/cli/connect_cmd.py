@@ -31,10 +31,17 @@ from tessera.connectors import (
     Connector,
     UnknownClientError,
     available_clients,
+    file_based_clients,
     get_connector,
 )
 from tessera.connectors.base import McpServerSpec
 from tessera.connectors.chatgpt import ChatGptConnector
+from tessera.connectors.renewal import (
+    MANAGED_ACCESS_TTL_SECONDS,
+)
+from tessera.connectors.renewal import (
+    register as register_managed_installation,
+)
 from tessera.daemon.config import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
 
 # Sensible default scopes for a newly-minted client token. Claude
@@ -76,13 +83,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
     connect.add_argument(
         "--token-ttl-days",
         type=float,
-        default=None,
         help=(
-            "override the class-default access-token TTL (capped at 90 days). "
-            "Use for demo installs that need 'set and forget' — with the "
-            "default service TTL of 24h, the client config needs to be "
-            "refreshed daily via another `tessera connect` run. Set to e.g. "
-            "30 for a month-long token."
+            "override the managed service-token TTL (capped at 90 days). "
+            "File-based connectors default to 90 days and tesserad renews "
+            "registered configurations 14 days before expiry."
         ),
     )
     connect.add_argument(
@@ -109,15 +113,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
 # ``all`` expands to every file-based client. ChatGPT stays out of the
 # expansion because its handler path is the URL-exchange flow (needs a
 # running daemon + user-interactive paste), not a config-file write.
-_ALL_FILE_BASED_CLIENTS = (
-    "claude-desktop",
-    "claude-code",
-    "cursor",
-    "codex",
-    "opencode",
-    "omp",
-    "pi",
-)
 _ALL_META = "all"
 
 
@@ -154,7 +149,7 @@ def _expand_clients(raw: list[str]) -> list[str]:
     resolved: list[str] = []
     for entry in raw:
         if entry == _ALL_META:
-            for client in _ALL_FILE_BASED_CLIENTS:
+            for client in file_based_clients():
                 if client not in seen:
                     seen.add(client)
                     resolved.append(client)
@@ -225,33 +220,56 @@ def _disconnect_one(args: argparse.Namespace, client_id: str) -> int:
 
 
 def _connect_file_based(args: argparse.Namespace, connector: Connector) -> int:
+    if args.token_class != "service":
+        return fail("file-based connectors require managed service tokens")
     try:
         vault_path = resolve_vault_path(args.vault)
         passphrase = resolve_passphrase(args.passphrase)
+        path = args.path or connector.default_path()
     except CliError as exc:
         return fail(str(exc))
-    access_ttl_seconds = _resolve_ttl_seconds(args.token_ttl_days)
+    except Exception as exc:
+        return fail(f"{connector.display_name}: {exc}")
+    requested_ttl_seconds = _resolve_ttl_seconds(args.token_ttl_days)
+    if requested_ttl_seconds not in (None, MANAGED_ACCESS_TTL_SECONDS):
+        return fail("file-based connectors use fixed 90-day managed service tokens")
+    access_ttl_seconds = MANAGED_ACCESS_TTL_SECONDS
     with status(f"minting token + writing {connector.display_name} config", emoji=EMOJI["connect"]):
         try:
-            raw_token = _mint_token(
+            raw_token, capability_id, resolved_agent_id = _mint_token(
                 vault=vault_path,
                 passphrase=passphrase,
                 agent_id=args.agent_id,
                 client_id=connector.client_id,
-                token_class=args.token_class,
+                token_class="service",
                 access_ttl_seconds=access_ttl_seconds,
             )
         except Exception as exc:
             return fail(f"token mint failed: {exc}")
-        try:
-            path = args.path or connector.default_path()
-        except Exception as exc:
-            return fail(f"{connector.display_name}: {exc}")
         spec = McpServerSpec(url=args.url, token=raw_token)
         try:
             result = connector.apply(path, spec)
         except Exception as exc:
+            with open_vault(vault_path, passphrase) as vc:
+                tokens.revoke(
+                    vc.connection,
+                    token_id=capability_id,
+                    now_epoch=int(datetime.now(UTC).timestamp()),
+                    reason="connect_config_write_failed",
+                    actor="cli",
+                )
             return fail(f"{connector.display_name}: config write failed: {exc}")
+        with open_vault(vault_path, passphrase) as vc:
+            register_managed_installation(
+                vc.connection,
+                connector_id=connector.client_id,
+                config_path=str(path.resolve()),
+                agent_id=resolved_agent_id,
+                capability_id=capability_id,
+                access_ttl_seconds=access_ttl_seconds,
+                now_epoch=int(datetime.now(UTC).timestamp()),
+                actor="cli",
+            )
     if result.no_op:
         info(
             f"{connector.display_name}: config already has the Tessera entry at {result.path}",
@@ -305,7 +323,7 @@ def _connect_chatgpt(args: argparse.Namespace) -> int:
         return fail(str(exc))
     access_ttl_seconds = _resolve_ttl_seconds(args.token_ttl_days)
     try:
-        raw_token = _mint_token(
+        raw_token, _, _ = _mint_token(
             vault=vault_path,
             passphrase=passphrase,
             agent_id=args.agent_id,
@@ -353,7 +371,7 @@ def _mint_token(
     client_id: str,
     token_class: str,
     access_ttl_seconds: int | None = None,
-) -> str:
+) -> tuple[str, int, int]:
     """Mint a capability token for ``client_id`` against the vault's agent.
 
     When ``agent_id`` is None, :func:`resolve_agent_id` auto-selects the
@@ -378,7 +396,7 @@ def _mint_token(
             now_epoch=now_epoch,
             access_ttl_seconds=access_ttl_seconds,
         )
-    return issued.raw_token
+    return issued.raw_token, issued.token_id, resolved_agent_id
 
 
 __all__ = ["register"]

@@ -104,6 +104,70 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
         {"token_id", "token_class", "client_name", "token_hash_prefix", "reason"}
     ),
     "auth_denied": frozenset({"client_name", "reason"}),
+    # Managed file-connector renewal. Paths and numeric row identifiers are
+    # operational metadata; token material and token hashes are deliberately
+    # excluded from every payload.
+    "connector_installation_registered": frozenset(
+        {
+            "installation_id",
+            "connector_id",
+            "config_path",
+            "active_capability_id",
+            "access_ttl_seconds",
+        }
+    ),
+    "connector_renewal_staged": frozenset(
+        {
+            "installation_id",
+            "connector_id",
+            "config_path",
+            "active_capability_id",
+            "pending_capability_id",
+            "expires_at",
+        }
+    ),
+    "connector_renewal_completed": frozenset(
+        {
+            "installation_id",
+            "connector_id",
+            "config_path",
+            "previous_capability_id",
+            "active_capability_id",
+            "expires_at",
+            "backup_written",
+        }
+    ),
+    "connector_renewal_write_failed": frozenset(
+        {
+            "installation_id",
+            "connector_id",
+            "config_path",
+            "active_capability_id",
+            "pending_capability_id",
+            "failure_class",
+            "backup_written",
+        }
+    ),
+    "connector_renewal_reconciled": frozenset(
+        {
+            "installation_id",
+            "connector_id",
+            "config_path",
+            "active_capability_id",
+            "pending_capability_id",
+            "state",
+        }
+    ),
+    "connector_config_drift": frozenset(
+        {
+            "installation_id",
+            "connector_id",
+            "config_path",
+            "active_capability_id",
+            "pending_capability_id",
+            "state",
+        }
+    ),
     "scope_denied": frozenset({"token_id", "client_name", "required_op", "required_facet_type"}),
     # Daemon lifecycle: ``daemon_warmed`` records the result of the
     # supervisor's explicit embedder + reranker warm-up at startup. The

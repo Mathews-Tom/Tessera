@@ -25,6 +25,7 @@ from tessera.connectors.base import (
     McpServerSpec,
     UnsupportedConfigShapeError,
     build_server_entry,
+    token_from_entry,
 )
 from tessera.connectors.file_safety import (
     WriteOutcome,
@@ -66,6 +67,14 @@ class TomlConnector:
         merged = _merge_entry(existing, server)
         outcome = write_safely(path, merged, serialiser=toml_serialiser)
         return _to_result(outcome)
+
+    def read_token(self, path: Path) -> str | None:
+        if not path.exists():
+            return None
+        servers = read_toml(path).get(_TOP_LEVEL_KEY)
+        if not isinstance(servers, dict):
+            return None
+        return token_from_entry(servers.get(TESSERA_SERVER_NAME))
 
     def remove(self, path: Path) -> ConnectorResult:
         if not path.exists():

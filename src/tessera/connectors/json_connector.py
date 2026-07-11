@@ -21,6 +21,7 @@ from tessera.connectors.base import (
     McpServerSpec,
     UnsupportedConfigShapeError,
     build_server_entry,
+    token_from_entry,
 )
 from tessera.connectors.file_safety import (
     WriteOutcome,
@@ -73,6 +74,14 @@ class JsonConnector:
         merged = _merge_entry(existing, server, self.entry_builder, self.top_level_key)
         outcome = write_safely(path, merged, serialiser=json_serialiser)
         return _to_result(outcome)
+
+    def read_token(self, path: Path) -> str | None:
+        if not path.exists():
+            return None
+        servers = read_json(path).get(self.top_level_key)
+        if not isinstance(servers, dict):
+            return None
+        return token_from_entry(servers.get(TESSERA_SERVER_NAME))
 
     def remove(self, path: Path) -> ConnectorResult:
         if not path.exists():

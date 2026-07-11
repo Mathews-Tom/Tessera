@@ -291,6 +291,34 @@ def verify_and_touch(
     )
 
 
+def resolve_live_without_touch(
+    conn: sqlcipher3.Connection, *, raw_token: str, now_epoch: int
+) -> VerifiedCapability | None:
+    """Resolve a live token without updating usage or writing an audit row."""
+    parsed = _parse_raw_token(raw_token)
+    if parsed is None:
+        return None
+    claimed_class, _ = parsed
+    row = _find_by_access_token(conn, raw_token=raw_token, token_class=claimed_class)
+    if row is None:
+        return None
+    cap_id, agent_id, client_name, scopes_json, stored_class, expires_at, revoked_at = row
+    if revoked_at is not None or expires_at <= now_epoch:
+        return None
+    try:
+        scope = parse_scope(scopes_json)
+    except Exception:
+        return None
+    return VerifiedCapability(
+        token_id=cap_id,
+        agent_id=agent_id,
+        client_name=client_name,
+        token_class=_coerce_token_class(stored_class),
+        scope=scope,
+        expires_at=expires_at,
+    )
+
+
 def refresh(
     conn: sqlcipher3.Connection,
     *,

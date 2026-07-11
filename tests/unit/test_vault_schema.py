@@ -11,14 +11,10 @@ from tessera.vault import schema
 
 @pytest.mark.unit
 def test_schema_version_matches_current_surface() -> None:
-    # v4 absorbs the v0.5 reconciliation cumulatively: V0.5-P1 added the
-    # ADR-0016 memory volatility column / TTL / sweep index on top of the
-    # v0.3 People + Skills surface; V0.5-P2 reserves the v0.5 facet
-    # types (agent_profile, verification_checklist, retrospective,
-    # automation) in the facet_type CHECK and adds the
-    # ``agents.profile_facet_external_id`` FK linkage column. Schema
-    # bump for v0.5 stays at 4 because every delta is additive.
-    assert schema.SCHEMA_VERSION == 4
+    # v5 adds the managed file-connector installation registry, which
+    # records capability row IDs and absolute configuration paths without
+    # storing credential material.
+    assert schema.SCHEMA_VERSION == 5
 
 
 @pytest.mark.unit

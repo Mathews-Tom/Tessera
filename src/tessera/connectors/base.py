@@ -1,11 +1,12 @@
 """Connector protocol — the per-client contract for ``tessera connect``.
 
 A connector is the module that knows one AI tool's config-file shape.
-Every connector implements the same three-method protocol:
+Every connector implements the same four-method protocol:
 
-* ``default_path()``  — where this client looks for its MCP config.
-* ``apply(path, server)`` — add the Tessera MCP entry.
+* ``default_path()`` — where this client looks for its MCP config.
+* ``apply(path, server)`` — add or replace Tessera's MCP entry atomically.
 * ``remove(path)`` — remove the Tessera MCP entry; leave the rest alone.
+* ``read_token(path)`` — inspect only Tessera's configured bearer for renewal.
 
 The shared shape across every v0.1 client is "an MCP server registry
 keyed by server name". JSON clients (Claude Desktop, Claude Code,
@@ -93,6 +94,31 @@ class Connector(Protocol):
     def apply(self, path: Path, server: McpServerSpec) -> ConnectorResult: ...
 
     def remove(self, path: Path) -> ConnectorResult: ...
+
+    def read_token(self, path: Path) -> str | None: ...
+
+
+def token_from_entry(entry: object) -> str | None:
+    """Extract Tessera's bearer from a connector entry without logging it."""
+    if not isinstance(entry, Mapping):
+        return None
+    headers = entry.get("headers")
+    if isinstance(headers, Mapping):
+        authorization = headers.get("Authorization")
+        if isinstance(authorization, str) and authorization.startswith("Bearer "):
+            return authorization.removeprefix("Bearer ")
+    for key in ("args", "command"):
+        values = entry.get(key)
+        if isinstance(values, list):
+            try:
+                index = values.index("--token")
+            except ValueError:
+                continue
+            if index + 1 < len(values):
+                candidate: object = values[index + 1]
+                if isinstance(candidate, str):
+                    return candidate
+    return None
 
 
 def build_server_entry(server: McpServerSpec) -> Mapping[str, object]:

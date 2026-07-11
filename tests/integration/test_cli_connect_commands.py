@@ -18,7 +18,8 @@ from pathlib import Path
 import pytest
 
 from tessera.cli.__main__ import _build_parser
-from tessera.connectors.base import TESSERA_SERVER_NAME
+from tessera.connectors.base import TESSERA_SERVER_NAME, ConnectorResult, McpServerSpec
+from tessera.connectors.json_connector import JsonConnector
 
 
 @pytest.fixture
@@ -107,7 +108,75 @@ def test_connect_claude_desktop_writes_entry(
     assert "url" not in entry
     out = capsys.readouterr().out
     assert "wrote Tessera entry" in out
+    from tessera.vault.connection import VaultConnection
+    from tessera.vault.encryption import derive_key, load_salt
 
+    salt = load_salt(vault)
+    with (
+        derive_key(bytearray(b"correct horse battery staple"), salt) as key,
+        VaultConnection.open(vault, key) as vc,
+    ):
+        registration = vc.connection.execute(
+            "SELECT connector_id, config_path, agent_id, active_capability_id, "
+            "pending_capability_id, access_ttl_seconds "
+            "FROM managed_connector_installations"
+        ).fetchone()
+    assert registration is not None
+    assert registration[0] == "claude-desktop"
+    assert registration[1] == str(config_path.resolve())
+    assert registration[2] == agent_id
+    assert registration[3] > 0
+    assert registration[4] is None
+    assert registration[5] == 90 * 24 * 60 * 60
+
+
+
+@pytest.mark.integration
+def test_connect_write_failure_does_not_register_or_leave_capability_live(
+    short_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, agent_id = _init_vault(short_tmp, monkeypatch)
+    config_path = short_tmp / "cursor.json"
+    parser = _build_parser()
+    connect_args = parser.parse_args(
+        [
+            "connect",
+            "cursor",
+            "--vault",
+            str(vault),
+            "--agent-id",
+            str(agent_id),
+            "--path",
+            str(config_path),
+        ]
+    )
+
+    def _raise_write_error(
+        self: JsonConnector, path: Path, server: McpServerSpec
+    ) -> ConnectorResult:
+        del self, path, server
+        raise OSError("forced config write failure")
+
+    monkeypatch.setattr(JsonConnector, "apply", _raise_write_error)
+    assert connect_args.handler(connect_args) == 1
+
+    from tessera.vault.connection import VaultConnection
+    from tessera.vault.encryption import derive_key, load_salt
+
+    salt = load_salt(vault)
+    with (
+        derive_key(bytearray(b"correct horse battery staple"), salt) as key,
+        VaultConnection.open(vault, key) as vc,
+    ):
+        registrations = vc.connection.execute(
+            "SELECT COUNT(*) FROM managed_connector_installations"
+        ).fetchone()
+        live_capabilities = vc.connection.execute(
+            "SELECT COUNT(*) FROM capabilities WHERE revoked_at IS NULL"
+        ).fetchone()
+    assert registrations[0] == 0
+    assert live_capabilities[0] == 0
+    assert not config_path.exists()
 
 @pytest.mark.integration
 def test_connect_claude_code_uses_native_http(
