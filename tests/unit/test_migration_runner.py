@@ -865,8 +865,6 @@ def test_v3_to_v4_migration_is_idempotent_under_resume(tmp_path: Path) -> None:
     assert state.schema_version == SCHEMA_VERSION
 
 
-
-
 @pytest.mark.unit
 def test_upgrade_creates_managed_connector_installation_registry(tmp_path: Path) -> None:
     """A pre-v5 vault gains the complete v5 connector-renewal registry."""
@@ -902,6 +900,7 @@ def test_upgrade_creates_managed_connector_installation_registry(tmp_path: Path)
         "created_at",
         "updated_at",
     }
+
 
 @pytest.mark.unit
 def test_step_savepoint_rolls_back_on_failure(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -276,7 +276,9 @@ async def _renewal_loop(state: DaemonState, stop: asyncio.Event, config: DaemonC
     while not stop.is_set():
         try:
             now_epoch = _now_epoch()
-            reconcile_pending(state.vault.connection, now_epoch=now_epoch, event_log=state.event_log)
+            reconcile_pending(
+                state.vault.connection, now_epoch=now_epoch, event_log=state.event_log
+            )
             adopt_default_installations(state.vault.connection, now_epoch=now_epoch)
             renew_due(
                 state.vault.connection,
@@ -286,7 +288,9 @@ async def _renewal_loop(state: DaemonState, stop: asyncio.Event, config: DaemonC
                 event_log=state.event_log,
             )
         except Exception as exc:
-            print(f"[tesserad] connector renewal failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            print(
+                f"[tesserad] connector renewal failed: {type(exc).__name__}: {exc}", file=sys.stderr
+            )
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=_RENEWAL_SWEEP_SECONDS)
 

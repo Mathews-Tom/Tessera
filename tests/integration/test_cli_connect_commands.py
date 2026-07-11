@@ -130,7 +130,6 @@ def test_connect_claude_desktop_writes_entry(
     assert registration[5] == 90 * 24 * 60 * 60
 
 
-
 @pytest.mark.integration
 def test_connect_write_failure_does_not_register_or_leave_capability_live(
     short_tmp: Path, monkeypatch: pytest.MonkeyPatch
@@ -177,6 +176,7 @@ def test_connect_write_failure_does_not_register_or_leave_capability_live(
     assert registrations[0] == 0
     assert live_capabilities[0] == 0
     assert not config_path.exists()
+
 
 @pytest.mark.integration
 def test_connect_claude_code_uses_native_http(

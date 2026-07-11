@@ -300,7 +300,6 @@ async def test_supervisor_emits_daemon_warmed_audit_row(
     assert payload["duration_ms"] >= 0.0
 
 
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_connector_renewal_pass_runs_immediately_and_stops(
@@ -344,6 +343,7 @@ async def test_connector_renewal_pass_runs_immediately_and_stops(
         events.close()
 
     assert calls == ["reconcile", "adopt", "renew"]
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio

@@ -712,6 +712,7 @@ _V3_TO_V4_STEPS: Final[tuple[MigrationStep, ...]] = (
 
 # ---- v4 -> v5 forward migration steps -----------------------------------
 
+
 def _step_create_managed_connector_installations(conn: sqlcipher3.Connection) -> None:
     conn.execute(
         """

@@ -18,6 +18,8 @@ from tessera.observability.events import EventLevel, EventLog
 from tessera.vault import audit
 
 MANAGED_ACCESS_TTL_SECONDS: Final[int] = 90 * 24 * 60 * 60
+
+
 @dataclass(frozen=True, slots=True)
 class ManagedInstallation:
     """One config file whose Tessera capability is daemon-managed."""
@@ -362,7 +364,9 @@ def reconcile_pending(
                 event_log,
                 level="info",
                 event="renewal_reconciled",
-                attrs=_event_attrs(installation, pending_capability_id=pending_id, state="promoted"),
+                attrs=_event_attrs(
+                    installation, pending_capability_id=pending_id, state="promoted"
+                ),
                 now_epoch=now_epoch,
             )
             reconciled += 1
@@ -391,7 +395,9 @@ def reconcile_pending(
                 event_log,
                 level="info",
                 event="renewal_reconciled",
-                attrs=_event_attrs(installation, pending_capability_id=pending_id, state="discarded"),
+                attrs=_event_attrs(
+                    installation, pending_capability_id=pending_id, state="discarded"
+                ),
                 now_epoch=now_epoch,
             )
             reconciled += 1

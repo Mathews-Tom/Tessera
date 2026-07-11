@@ -123,9 +123,12 @@ def test_registers_custom_path_only_after_successful_write(
     path = _config_path(tmp_path, "cursor")
     issued = _issue(open_vault, agent_id=agent_id, client_name="cursor")
 
-    assert open_vault.connection.execute(
-        "SELECT COUNT(*) FROM managed_connector_installations"
-    ).fetchone()[0] == 0
+    assert (
+        open_vault.connection.execute(
+            "SELECT COUNT(*) FROM managed_connector_installations"
+        ).fetchone()[0]
+        == 0
+    )
 
     get_connector("cursor").apply(
         path, McpServerSpec(url="http://127.0.0.1:5710/mcp", token=issued.raw_token)
@@ -164,7 +167,9 @@ def test_adopts_only_a_valid_existing_default_path(
     connector = get_connector("claude-code")
     issued = _issue(open_vault, agent_id=agent_id, client_name="claude-code")
     default_path = connector.default_path()
-    connector.apply(default_path, McpServerSpec(url="http://127.0.0.1:5710/mcp", token=issued.raw_token))
+    connector.apply(
+        default_path, McpServerSpec(url="http://127.0.0.1:5710/mcp", token=issued.raw_token)
+    )
 
     adopted = adopt_default_installations(open_vault.connection, now_epoch=_NOW)
 
@@ -209,9 +214,12 @@ def test_adoption_skips_custom_expired_malformed_and_mismatched_configs(
     )
 
     assert adopt_default_installations(open_vault.connection, now_epoch=_NOW + 2) == 0
-    assert open_vault.connection.execute(
-        "SELECT COUNT(*) FROM managed_connector_installations"
-    ).fetchone()[0] == 0
+    assert (
+        open_vault.connection.execute(
+            "SELECT COUNT(*) FROM managed_connector_installations"
+        ).fetchone()[0]
+        == 0
+    )
     assert custom_path.exists()
 
 
@@ -232,13 +240,16 @@ def test_due_renewal_preserves_identity_scope_class_and_old_token(
     )
     events = EventLog.open(tmp_path / "events.db")
     try:
-        assert renew_due(
-            open_vault.connection,
-            now_epoch=_NOW,
-            horizon_seconds=_HORIZON,
-            url="http://127.0.0.1:5710/mcp",
-            event_log=events,
-        ) == 1
+        assert (
+            renew_due(
+                open_vault.connection,
+                now_epoch=_NOW,
+                horizon_seconds=_HORIZON,
+                url="http://127.0.0.1:5710/mcp",
+                event_log=events,
+            )
+            == 1
+        )
     finally:
         events.close()
 
@@ -276,17 +287,25 @@ def test_outside_horizon_does_not_rewrite_or_mint(
         ttl_seconds=_HORIZON + 1,
     )
     before = path.read_bytes()
-    capability_count = open_vault.connection.execute("SELECT COUNT(*) FROM capabilities").fetchone()[0]
+    capability_count = open_vault.connection.execute(
+        "SELECT COUNT(*) FROM capabilities"
+    ).fetchone()[0]
 
-    assert renew_due(
-        open_vault.connection,
-        now_epoch=_NOW,
-        horizon_seconds=_HORIZON,
-        url="http://127.0.0.1:5710/mcp",
-    ) == 0
+    assert (
+        renew_due(
+            open_vault.connection,
+            now_epoch=_NOW,
+            horizon_seconds=_HORIZON,
+            url="http://127.0.0.1:5710/mcp",
+        )
+        == 0
+    )
 
     assert path.read_bytes() == before
-    assert open_vault.connection.execute("SELECT COUNT(*) FROM capabilities").fetchone()[0] == capability_count
+    assert (
+        open_vault.connection.execute("SELECT COUNT(*) FROM capabilities").fetchone()[0]
+        == capability_count
+    )
     assert due(open_vault.connection, now_epoch=_NOW, horizon_seconds=_HORIZON) == []
 
 
@@ -310,25 +329,32 @@ def test_config_write_failure_revokes_staged_replacement_and_preserves_old_confi
         raise OSError("forced config write failure")
 
     monkeypatch.setattr(connector_type, "apply", _raise_write_error)
-    assert renew_due(
-        open_vault.connection,
-        now_epoch=_NOW,
-        horizon_seconds=_HORIZON,
-        url="http://127.0.0.1:5710/mcp",
-    ) == 0
+    assert (
+        renew_due(
+            open_vault.connection,
+            now_epoch=_NOW,
+            horizon_seconds=_HORIZON,
+            url="http://127.0.0.1:5710/mcp",
+        )
+        == 0
+    )
 
     assert path.read_bytes() == before
     _, active_id, pending_id = _installation_row(open_vault)
     assert active_id == old.token_id
     assert pending_id is None
     revoked = open_vault.connection.execute(
-        "SELECT revoked_at FROM capabilities WHERE id != ? ORDER BY id DESC LIMIT 1", (old.token_id,)
+        "SELECT revoked_at FROM capabilities WHERE id != ? ORDER BY id DESC LIMIT 1",
+        (old.token_id,),
     ).fetchone()
     assert revoked is not None
     assert revoked[0] == _NOW
-    assert tokens.resolve_live_without_touch(
-        open_vault.connection, raw_token=old.raw_token, now_epoch=_NOW + 1
-    ) is not None
+    assert (
+        tokens.resolve_live_without_touch(
+            open_vault.connection, raw_token=old.raw_token, now_epoch=_NOW + 1
+        )
+        is not None
+    )
     payload = _audit_payloads(open_vault, prefix="connector_renewal_write_failed")[-1]
     assert payload["failure_class"] == "OSError"
 
@@ -360,9 +386,12 @@ def test_restart_reconciliation_promotes_pending_file_token(
     _, active_id, pending_id = _installation_row(open_vault)
     assert active_id == pending.token_id
     assert pending_id is None
-    assert tokens.resolve_live_without_touch(
-        open_vault.connection, raw_token=old.raw_token, now_epoch=_NOW + 1
-    ) is not None
+    assert (
+        tokens.resolve_live_without_touch(
+            open_vault.connection, raw_token=old.raw_token, now_epoch=_NOW + 1
+        )
+        is not None
+    )
 
 
 @pytest.mark.integration
@@ -389,9 +418,12 @@ def test_restart_reconciliation_discards_unwritten_pending_token(
     _, active_id, pending_id = _installation_row(open_vault)
     assert active_id == old.token_id
     assert pending_id is None
-    assert tokens.resolve_live_without_touch(
-        open_vault.connection, raw_token=pending.raw_token, now_epoch=_NOW + 1
-    ) is None
+    assert (
+        tokens.resolve_live_without_touch(
+            open_vault.connection, raw_token=pending.raw_token, now_epoch=_NOW + 1
+        )
+        is None
+    )
 
 
 @pytest.mark.integration
@@ -422,9 +454,12 @@ def test_restart_reconciliation_records_drift_without_mutating_pending(
     _, observed_active, observed_pending = _installation_row(open_vault)
     assert observed_active == active_id
     assert observed_pending == pending.token_id
-    assert tokens.resolve_live_without_touch(
-        open_vault.connection, raw_token=pending.raw_token, now_epoch=_NOW + 1
-    ) is not None
+    assert (
+        tokens.resolve_live_without_touch(
+            open_vault.connection, raw_token=pending.raw_token, now_epoch=_NOW + 1
+        )
+        is not None
+    )
     assert _audit_payloads(open_vault, prefix="connector_config_drift")[-1]["state"] == "neither"
 
 
@@ -442,13 +477,16 @@ def test_renewal_audit_and_events_exclude_secrets(
     )
     events = EventLog.open(tmp_path / "events.db")
     try:
-        assert renew_due(
-            open_vault.connection,
-            now_epoch=_NOW,
-            horizon_seconds=_HORIZON,
-            url="http://127.0.0.1:5710/mcp",
-            event_log=events,
-        ) == 1
+        assert (
+            renew_due(
+                open_vault.connection,
+                now_epoch=_NOW,
+                horizon_seconds=_HORIZON,
+                url="http://127.0.0.1:5710/mcp",
+                event_log=events,
+            )
+            == 1
+        )
         new_raw = get_connector("claude-desktop").read_token(path)
         assert new_raw is not None
         rendered = "\n".join(
@@ -456,7 +494,8 @@ def test_renewal_audit_and_events_exclude_secrets(
             for payload in _audit_payloads(open_vault, prefix="connector_")
         )
         event_rendered = "\n".join(
-            json.dumps(event.attrs, sort_keys=True) for event in events.recent(limit=20, min_level="debug")
+            json.dumps(event.attrs, sort_keys=True)
+            for event in events.recent(limit=20, min_level="debug")
         )
     finally:
         events.close()
@@ -483,18 +522,24 @@ def test_disposable_vault_renewal_lifecycle_end_to_end(
     )
     events = EventLog.open(tmp_path / "events.db")
     try:
-        assert renew_due(
-            open_vault.connection,
-            now_epoch=_NOW,
-            horizon_seconds=_HORIZON,
-            url="http://127.0.0.1:5710/mcp",
-            event_log=events,
-        ) == 1
+        assert (
+            renew_due(
+                open_vault.connection,
+                now_epoch=_NOW,
+                horizon_seconds=_HORIZON,
+                url="http://127.0.0.1:5710/mcp",
+                event_log=events,
+            )
+            == 1
+        )
         first_replacement = get_connector("claude-code").read_token(path)
         assert first_replacement is not None
-        assert tokens.resolve_live_without_touch(
-            open_vault.connection, raw_token=original.raw_token, now_epoch=_NOW + 1
-        ) is not None
+        assert (
+            tokens.resolve_live_without_touch(
+                open_vault.connection, raw_token=original.raw_token, now_epoch=_NOW + 1
+            )
+            is not None
+        )
 
         staged = _issue(open_vault, agent_id=agent_id, client_name="claude-code")
         installation_id, _, _ = _installation_row(open_vault)
@@ -516,20 +561,21 @@ def test_disposable_vault_renewal_lifecycle_end_to_end(
         )
         before_failure = path.read_bytes()
 
-        def _raise_write_error(
-            self: object, config_path: Path, server: McpServerSpec
-        ) -> object:
+        def _raise_write_error(self: object, config_path: Path, server: McpServerSpec) -> object:
             del self, config_path, server
             raise OSError("forced config write failure")
 
         monkeypatch.setattr(type(get_connector("claude-code")), "apply", _raise_write_error)
-        assert renew_due(
-            open_vault.connection,
-            now_epoch=_NOW,
-            horizon_seconds=_HORIZON,
-            url="http://127.0.0.1:5710/mcp",
-            event_log=events,
-        ) == 0
+        assert (
+            renew_due(
+                open_vault.connection,
+                now_epoch=_NOW,
+                horizon_seconds=_HORIZON,
+                url="http://127.0.0.1:5710/mcp",
+                event_log=events,
+            )
+            == 0
+        )
     finally:
         events.close()
 
