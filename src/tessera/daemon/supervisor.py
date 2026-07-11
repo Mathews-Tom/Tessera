@@ -23,6 +23,7 @@ from typing import Any
 from tessera.adapters.fastembed_reranker import FastEmbedReranker
 from tessera.adapters.protocol import Embedder, Reranker
 from tessera.auth.tokens import VerifiedCapability
+from tessera.connectors.renewal import adopt_default_installations, reconcile_pending, renew_due
 from tessera.daemon.config import DaemonConfig
 from tessera.daemon.control import ControlError, ControlRequest, serve_control_socket
 from tessera.daemon.dispatch import UnknownMethodError, dispatch_tool_call
@@ -47,6 +48,8 @@ _EVENTS_SWEEP_SECONDS = 3600.0
 # keeps the soft-delete latency well inside the shortest TTL while
 # leaving the daemon idle the rest of the time.
 _COMPACTION_SWEEP_SECONDS = 300.0
+_RENEWAL_SWEEP_SECONDS = 24 * 60 * 60.0
+_RENEWAL_HORIZON_SECONDS = 14 * 24 * 60 * 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +62,7 @@ class DaemonHandles:
     embed_task: asyncio.Task[None]
     events_task: asyncio.Task[None]
     compaction_task: asyncio.Task[None]
+    renewal_task: asyncio.Task[None]
     event_log: EventLog
 
 
@@ -119,6 +123,9 @@ async def run_daemon(
                 _compaction_sweep_loop(state, stop, event_log),
                 name="tessera.compaction_sweep",
             )
+            renewal_task = asyncio.create_task(
+                _renewal_loop(state, stop, config), name="tessera.connector_renewal"
+            )
             _write_pid_file(config.pid_path)
             if ready is not None:
                 ready.set()
@@ -133,6 +140,7 @@ async def run_daemon(
                         embed_task=embed_task,
                         events_task=events_task,
                         compaction_task=compaction_task,
+                        renewal_task=renewal_task,
                         event_log=event_log,
                     ),
                     socket_path=config.socket_path,
@@ -262,6 +270,31 @@ async def _compaction_sweep_loop(
         )
 
 
+async def _renewal_loop(state: DaemonState, stop: asyncio.Event, config: DaemonConfig) -> None:
+    """Reconcile, adopt, and renew once at start and every 24 hours afterward."""
+
+    while not stop.is_set():
+        try:
+            now_epoch = _now_epoch()
+            reconcile_pending(
+                state.vault.connection, now_epoch=now_epoch, event_log=state.event_log
+            )
+            adopt_default_installations(state.vault.connection, now_epoch=now_epoch)
+            renew_due(
+                state.vault.connection,
+                now_epoch=now_epoch,
+                horizon_seconds=_RENEWAL_HORIZON_SECONDS,
+                url=f"http://{config.http_host}:{config.http_port}/mcp",
+                event_log=state.event_log,
+            )
+        except Exception as exc:
+            print(
+                f"[tesserad] connector renewal failed: {type(exc).__name__}: {exc}", file=sys.stderr
+            )
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=_RENEWAL_SWEEP_SECONDS)
+
+
 async def _embed_worker_loop(state: DaemonState, stop: asyncio.Event) -> None:
     """Periodically drain the embed queue until the daemon stops.
 
@@ -359,12 +392,15 @@ async def _shutdown(handles: DaemonHandles, *, socket_path: Path, pid_path: Path
     handles.embed_task.cancel()
     handles.events_task.cancel()
     handles.compaction_task.cancel()
+    handles.renewal_task.cancel()
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await handles.embed_task
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await handles.events_task
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await handles.compaction_task
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await handles.renewal_task
     with contextlib.suppress(Exception):
         handles.event_log.close()
     with contextlib.suppress(FileNotFoundError):

@@ -710,6 +710,41 @@ _V3_TO_V4_STEPS: Final[tuple[MigrationStep, ...]] = (
 )
 
 
+# ---- v4 -> v5 forward migration steps -----------------------------------
+
+
+def _step_create_managed_connector_installations(conn: sqlcipher3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_connector_installations (
+            id                    INTEGER PRIMARY KEY,
+            connector_id          TEXT NOT NULL,
+            config_path           TEXT NOT NULL UNIQUE,
+            agent_id              INTEGER NOT NULL REFERENCES agents(id),
+            active_capability_id  INTEGER NOT NULL REFERENCES capabilities(id),
+            pending_capability_id INTEGER REFERENCES capabilities(id),
+            access_ttl_seconds    INTEGER NOT NULL,
+            created_at            INTEGER NOT NULL,
+            updated_at            INTEGER NOT NULL,
+            CHECK (pending_capability_id IS NULL OR pending_capability_id != active_capability_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS managed_connector_due
+            ON managed_connector_installations(active_capability_id)
+        """
+    )
+
+
+_V4_TO_V5_STEPS: Final[tuple[MigrationStep, ...]] = (
+    MigrationStep(
+        "create_managed_connector_installations", 5, _step_create_managed_connector_installations
+    ),
+)
+
+
 # Forward-migration step registry keyed by target version. Bootstrap (target 1
 # from a fresh vault) is intentionally absent: it cannot use the step runner
 # because `_meta` and `_migration_steps` do not exist until the schema DDL has
@@ -720,6 +755,7 @@ _STEPS_BY_TARGET: Final[dict[int, Sequence[MigrationStep]]] = {
     2: _V1_TO_V2_STEPS,
     3: _V2_TO_V3_STEPS,
     4: _V3_TO_V4_STEPS,
+    5: _V4_TO_V5_STEPS,
 }
 
 

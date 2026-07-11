@@ -69,6 +69,15 @@ class ChatGptConnector:
             "run 'tessera connect chatgpt' to get a bootstrap URL."
         )
 
+    def read_token(self, path: Path) -> str | None:
+        """Reject token inspection because ChatGPT has no local config file."""
+
+        del path
+        raise ConnectorError(
+            "ChatGPT Developer Mode does not use an on-disk config file; "
+            "there is no configured token to inspect."
+        )
+
     def apply(self, path: Path, server: McpServerSpec) -> ConnectorResult:
         del path, server
         raise ConnectorError(

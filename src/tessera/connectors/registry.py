@@ -85,6 +85,16 @@ def available_clients() -> list[str]:
     return sorted(_REGISTRY.keys())
 
 
+def file_based_clients() -> list[str]:
+    """Return every connector that owns a local configuration file."""
+
+    return sorted(
+        client_id
+        for client_id, connector in _REGISTRY.items()
+        if not isinstance(connector, ChatGptConnector)
+    )
+
+
 def get_connector(client_id: str) -> Connector:
     try:
         return _REGISTRY[client_id]
@@ -94,4 +104,4 @@ def get_connector(client_id: str) -> Connector:
         ) from exc
 
 
-__all__ = ["available_clients", "get_connector"]
+__all__ = ["available_clients", "file_based_clients", "get_connector"]

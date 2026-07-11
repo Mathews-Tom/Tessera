@@ -22,8 +22,10 @@ warm-running daemon does not block its event loop on a 500-doc batch.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import ClassVar, Final
 
 from fastembed import TextEmbedding
@@ -36,6 +38,9 @@ from tessera.adapters.registry import register_embedder
 
 DEFAULT_MODEL: Final[str] = "nomic-ai/nomic-embed-text-v1.5"
 DEFAULT_DIM: Final[int] = 768
+DEFAULT_CACHE_DIR: Final[str] = os.environ.get(
+    "FASTEMBED_CACHE_DIR", str(Path.home() / ".cache" / "fastembed")
+)
 
 
 @register_embedder("fastembed")
@@ -53,7 +58,7 @@ class FastEmbedEmbedder:
 
     model_name: str = DEFAULT_MODEL
     dim: int = DEFAULT_DIM
-    cache_dir: str | None = None
+    cache_dir: str = DEFAULT_CACHE_DIR
     _model: TextEmbedding | None = field(default=None, init=False, repr=False)
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
@@ -114,4 +119,4 @@ class FastEmbedEmbedder:
         return [vec.tolist() for vec in self._model.embed(texts)]
 
 
-__all__ = ["DEFAULT_DIM", "DEFAULT_MODEL", "FastEmbedEmbedder"]
+__all__ = ["DEFAULT_CACHE_DIR", "DEFAULT_DIM", "DEFAULT_MODEL", "FastEmbedEmbedder"]

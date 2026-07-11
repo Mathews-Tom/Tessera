@@ -18,7 +18,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import httpx
 import pytest
@@ -29,7 +29,9 @@ from tessera.auth.scopes import build_scope
 from tessera.daemon import supervisor
 from tessera.daemon.config import resolve_config
 from tessera.daemon.control import call_control
+from tessera.daemon.state import DaemonState
 from tessera.migration import bootstrap
+from tessera.observability.events import EventLog
 from tessera.vault import capture as vault_capture
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt, save_salt
@@ -72,6 +74,12 @@ class _FakeReranker:
 
     async def health_check(self) -> None:
         return None
+
+
+@dataclass
+class _RenewalState:
+    vault: VaultConnection
+    event_log: EventLog
 
 
 def _pick_port() -> int:
@@ -290,6 +298,51 @@ async def test_supervisor_emits_daemon_warmed_audit_row(
     assert payload["embedder_name"] == "_RecordingEmbedder"
     assert isinstance(payload["duration_ms"], int | float)
     assert payload["duration_ms"] >= 0.0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_connector_renewal_pass_runs_immediately_and_stops(
+    open_vault: VaultConnection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    stop = asyncio.Event()
+    events = EventLog.open(tmp_path / "events.db")
+    state = _RenewalState(vault=open_vault, event_log=events)
+    config = resolve_config(
+        vault_path=tmp_path / "vault.db",
+        http_port=_pick_port(),
+        socket_path=tmp_path / "control.sock",
+    )
+
+    def _reconcile(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        calls.append("reconcile")
+        return 0
+
+    def _adopt(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        calls.append("adopt")
+        return 0
+
+    def _renew(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        calls.append("renew")
+        stop.set()
+        return 0
+
+    monkeypatch.setattr(supervisor, "reconcile_pending", _reconcile)
+    monkeypatch.setattr(supervisor, "adopt_default_installations", _adopt)
+    monkeypatch.setattr(supervisor, "renew_due", _renew)
+    try:
+        await asyncio.wait_for(
+            supervisor._renewal_loop(cast(DaemonState, state), stop, config),
+            timeout=1.0,
+        )
+    finally:
+        events.close()
+
+    assert calls == ["reconcile", "adopt", "renew"]
 
 
 @pytest.mark.integration

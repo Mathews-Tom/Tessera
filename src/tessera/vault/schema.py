@@ -1,4 +1,4 @@
-"""v4 vault schema per docs/system-design.md §Vault schema and §Failure taxonomy.
+"""v5 vault schema per docs/system-design.md §Vault schema and §Failure taxonomy.
 
 Schema v4 absorbs the v0.5 reconciliation in cumulative form. V0.5-P1
 (ADR 0016) added a ``volatility`` column to ``facets`` covering
@@ -16,6 +16,11 @@ write extends a forward-only linear hash chain that ``tessera audit
 verify`` walks end-to-end. Both columns default to ``''`` so the
 column add is purely additive at bootstrap; the migration runner
 backfills the chain in id-ASC order.
+
+Schema v5 adds ``managed_connector_installations``. The daemon records the
+absolute config path, connector and agent identity, active/pending capability
+row IDs, and replacement TTL for every managed file-based MCP installation.
+The table deliberately contains no credential material.
 
 Schema v3 activated the v0.3 People + Skills surface: ``facets`` carries
 an optional ``disk_path`` for skills synced to disk, the ``people`` and
@@ -35,7 +40,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Final
 
-SCHEMA_VERSION: Final[int] = 4
+SCHEMA_VERSION: Final[int] = 5
 
 _PRAGMAS: Final[tuple[str, ...]] = (
     "PRAGMA foreign_keys = ON",
@@ -256,6 +261,24 @@ _TABLES: Final[tuple[str, ...]] = (
         prev_hash           TEXT NOT NULL DEFAULT '',
         row_hash            TEXT NOT NULL DEFAULT ''
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS managed_connector_installations (
+        id                    INTEGER PRIMARY KEY,
+        connector_id          TEXT NOT NULL,
+        config_path           TEXT NOT NULL UNIQUE,
+        agent_id              INTEGER NOT NULL REFERENCES agents(id),
+        active_capability_id  INTEGER NOT NULL REFERENCES capabilities(id),
+        pending_capability_id INTEGER REFERENCES capabilities(id),
+        access_ttl_seconds    INTEGER NOT NULL,
+        created_at            INTEGER NOT NULL,
+        updated_at            INTEGER NOT NULL,
+        CHECK (pending_capability_id IS NULL OR pending_capability_id != active_capability_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS managed_connector_due
+        ON managed_connector_installations(active_capability_id)
     """,
     """
     CREATE INDEX IF NOT EXISTS audit_at ON audit_log(at DESC)

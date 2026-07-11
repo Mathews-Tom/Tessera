@@ -123,19 +123,19 @@ tessera doctor                    # all green = ready
 ### 7. Wire your AI tools
 
 ```bash
-# One shot — every detected file-based MCP client
-tessera connect all --token-ttl-days 30
+# One shot — every file-based MCP client:
+# Claude Desktop, Claude Code, Cursor, Codex, OpenCode, Oh My Pi, and Pi.
+tessera connect all
 
-# Or per-tool, with control over scope
-tessera connect claude-desktop
-tessera connect claude-code
-tessera connect cursor
-tessera connect codex
+# Or register a custom configuration path explicitly.
+tessera connect claude-code --path /absolute/path/to/config.json
 ```
 
-Default service-token TTL is 24 hours. `--token-ttl-days 30` is the "set and forget" personal-use mode (cap 90).
+File-based connectors use managed 90-day service tokens. While `tesserad` runs, it immediately checks registered configurations at startup and then every 24 hours. When a credential is within 14 days of expiry, Tessera writes a replacement through the connector's atomic backup-and-replace path and retains the prior token until its natural expiry. A running client continues using its cached token until restarted; Tessera never restarts a client or revokes the replaced token early.
 
-ChatGPT Developer Mode is deferred to v0.1.x — three stacked blockers (HTTPS front, Bearer auth in the New App dialog, canonical HTTP MCP). Two Anthropic clients sharing one vault still demonstrates the portability story today.
+The first daemon pass adopts only valid default-path Tessera entries. A custom path becomes managed only after an explicit `tessera connect <client> --path <absolute-path>` write. Missing, malformed, expired, or manually changed entries are reported as configuration drift and are never recreated or overwritten. After reboot or logout, start `tesserad` manually to resume the renewal schedule.
+
+ChatGPT Developer Mode remains out of scope because it has no file-based connector configuration.
 
 ### 8. Teach it the first thing
 

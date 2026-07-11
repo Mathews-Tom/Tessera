@@ -866,6 +866,43 @@ def test_v3_to_v4_migration_is_idempotent_under_resume(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_upgrade_creates_managed_connector_installation_registry(tmp_path: Path) -> None:
+    """A pre-v5 vault gains the complete v5 connector-renewal registry."""
+
+    vault_path = tmp_path / "v3-connectors.db"
+    _bootstrap_v3_vault(vault_path)
+
+    key = derive_key(bytearray(_PASS), _SALT)
+    state = upgrade(vault_path, key)
+    key.wipe()
+    assert state.schema_version == SCHEMA_VERSION
+
+    key = derive_key(bytearray(_PASS), _SALT)
+    from tessera.vault.connection import VaultConnection
+
+    with VaultConnection.open(vault_path, key) as vc:
+        columns = {
+            str(row[1])
+            for row in vc.connection.execute(
+                "PRAGMA table_info(managed_connector_installations)"
+            ).fetchall()
+        }
+    key.wipe()
+
+    assert columns == {
+        "id",
+        "connector_id",
+        "config_path",
+        "agent_id",
+        "active_capability_id",
+        "pending_capability_id",
+        "access_ttl_seconds",
+        "created_at",
+        "updated_at",
+    }
+
+
+@pytest.mark.unit
 def test_step_savepoint_rolls_back_on_failure(vault: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A step that raises must leave neither its DDL nor its marker behind."""
 

@@ -27,6 +27,7 @@ from tessera.adapters.errors import (
     AdapterModelNotFoundError,
     AdapterResponseError,
 )
+from tessera.adapters.fastembed_embedder import DEFAULT_CACHE_DIR
 from tessera.adapters.registry import register_reranker
 
 DEFAULT_MODEL: Final[str] = "Xenova/ms-marco-MiniLM-L-12-v2"
@@ -52,7 +53,7 @@ class FastEmbedReranker:
     name: ClassVar[str] = "fastembed"
 
     model_name: str = DEFAULT_MODEL
-    cache_dir: str | None = None
+    cache_dir: str = DEFAULT_CACHE_DIR
     _model: TextCrossEncoder | None = field(default=None, init=False, repr=False)
 
     async def score(

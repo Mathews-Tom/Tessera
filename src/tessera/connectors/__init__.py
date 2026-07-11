@@ -13,7 +13,7 @@ from tessera.connectors.base import (
     UnknownClientError,
     UnsupportedConfigShapeError,
 )
-from tessera.connectors.registry import available_clients, get_connector
+from tessera.connectors.registry import available_clients, file_based_clients, get_connector
 
 __all__ = [
     "Connector",
@@ -22,5 +22,6 @@ __all__ = [
     "UnknownClientError",
     "UnsupportedConfigShapeError",
     "available_clients",
+    "file_based_clients",
     "get_connector",
 ]
