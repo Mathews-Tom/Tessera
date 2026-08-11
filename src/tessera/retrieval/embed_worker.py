@@ -39,7 +39,7 @@ from tessera.adapters.errors import AdapterError
 from tessera.adapters.protocol import Embedder
 from tessera.observability.events import EventLog
 from tessera.retrieval.retry_policy import BACKOFF_SECONDS, MAX_ATTEMPTS, decide
-from tessera.vault.connection import savepoint
+from tessera.vault.connection import ensure_vec_loaded, savepoint
 
 DEFAULT_BATCH_SIZE = 16
 
@@ -76,6 +76,7 @@ async def run_pass(
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive; got {batch_size}")
     now = now_epoch if now_epoch is not None else _now_epoch()
+    ensure_vec_loaded(conn)
     vec_table = f"vec_{active_model_id}"
     candidates = _fetch_candidates(conn, limit=batch_size * 4)
     embedded = 0

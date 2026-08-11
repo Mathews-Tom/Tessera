@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 import pytest
+import sqlcipher3
 
 # Registering the Ollama embedder satisfies models_registry's adapter check
 # even though the tests use a fake embedder directly against the worker.
@@ -21,7 +22,7 @@ from tessera.adapters.errors import (
 from tessera.retrieval import embed_worker
 from tessera.retrieval.retry_policy import BACKOFF_SECONDS, MAX_ATTEMPTS
 from tessera.vault import capture
-from tessera.vault.connection import VaultConnection
+from tessera.vault.connection import VaultConnection, ensure_vec_loaded
 
 
 @dataclass
@@ -94,6 +95,31 @@ async def test_successful_pass_marks_facets_embedded(open_vault: VaultConnection
     assert [s[0] for s in statuses] == ["embedded", "embedded"]
     vec_rows = open_vault.connection.execute(f"SELECT COUNT(*) FROM vec_{model_id}").fetchone()
     assert int(vec_rows[0]) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pass_loads_vector_extension(
+    open_vault: VaultConnection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent_id = _make_agent(open_vault)
+    model_id = _register_model(open_vault, dim=4)
+    _capture_n(open_vault, agent_id, 1)
+    loaded: list[sqlcipher3.Connection] = []
+
+    def _track_vec_load(conn: sqlcipher3.Connection) -> None:
+        loaded.append(conn)
+        ensure_vec_loaded(conn)
+
+    monkeypatch.setattr("tessera.retrieval.embed_worker.ensure_vec_loaded", _track_vec_load)
+    await embed_worker.run_pass(
+        open_vault.connection,
+        FakeEmbedder(sequence=[[1.0, 0.0, 0.0, 0.0]]),
+        active_model_id=model_id,
+        now_epoch=100,
+    )
+
+    assert loaded == [open_vault.connection]
 
 
 @pytest.mark.unit
