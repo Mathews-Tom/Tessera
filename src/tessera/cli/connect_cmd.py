@@ -44,14 +44,14 @@ from tessera.connectors.renewal import (
 )
 from tessera.daemon.config import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
 
-# Sensible default scopes for a newly-minted client token. Claude
-# Desktop / Code / Cursor / Codex / ChatGPT all work against the
-# five v0.1 writable facets; read+write wildcarded to them gives a
-# new user a connector that "just works" without a scope-tuning
-# exercise. Operators who want a narrower grant can still use
-# ``tessera tokens create`` + paste the token into the config by
-# hand; this command is the one-shot convenience path.
-_DEFAULT_READ = ("identity", "preference", "workflow", "project", "style")
+# Sensible default scopes for a newly-minted client token. File-based
+# connectors are managed installations for the vault owner, and recall is
+# designed to retrieve every facet the owner has stored. A wildcard read
+# scope prevents a connector issued before a facet type is introduced from
+# failing with ``scope_denied`` after that type becomes active. Keep writes
+# limited to the original capture surface: widening writes is a separate
+# least-privilege decision.
+_DEFAULT_READ = ("*",)
 _DEFAULT_WRITE = ("preference", "workflow", "project", "style")
 
 

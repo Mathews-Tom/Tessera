@@ -11,12 +11,14 @@ HTTP server, not a file-writer.
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from tessera.auth import tokens
 from tessera.cli.__main__ import _build_parser
 from tessera.connectors.base import TESSERA_SERVER_NAME, ConnectorResult, McpServerSpec
 from tessera.connectors.json_connector import JsonConnector
@@ -100,6 +102,7 @@ def test_connect_claude_desktop_writes_entry(
     # Token arrives as a named `--token` flag.
     token_idx = entry["args"].index("--token") + 1
     assert entry["args"][token_idx].startswith("tessera_service_")
+    raw_token = entry["args"][token_idx]
     # No npx, no mcp-remote, no native-HTTP keys.
     assert "npx" not in entry["args"]
     assert "mcp-remote" not in entry["args"]
@@ -121,6 +124,11 @@ def test_connect_claude_desktop_writes_entry(
             "pending_capability_id, access_ttl_seconds "
             "FROM managed_connector_installations"
         ).fetchone()
+        verified = tokens.verify_and_touch(
+            vc.connection,
+            raw_token=raw_token,
+            now_epoch=1_000_001,
+        )
     assert registration is not None
     assert registration[0] == "claude-desktop"
     assert registration[1] == str(config_path.resolve())
@@ -128,6 +136,7 @@ def test_connect_claude_desktop_writes_entry(
     assert registration[3] > 0
     assert registration[4] is None
     assert registration[5] == 90 * 24 * 60 * 60
+    assert verified.scope.allows(op="read", facet_type="retrospective")
 
 
 @pytest.mark.integration
@@ -179,15 +188,14 @@ def test_connect_write_failure_does_not_register_or_leave_capability_live(
 
 
 @pytest.mark.integration
-def test_connect_claude_code_uses_native_http(
+def test_connect_claude_code_uses_stdio_bridge(
     short_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Claude Code speaks HTTP MCP natively and takes the `type: http`
-    # entry shape. Regression guard against accidentally emitting the
-    # stdio-via-mcp-remote wrapper (which would add an `npx` dep for
-    # no reason on a client that doesn't need it).
+    # Claude Code initializes standard Streamable HTTP MCP. Tessera's
+    # /mcp endpoint has a custom envelope, so the maintained stdio bridge
+    # provides the compatible transport and preserves bearer-token auth.
     vault, agent_id = _init_vault(short_tmp, monkeypatch)
     config_path = short_tmp / "claude_code.json"
     parser = _build_parser()
@@ -206,12 +214,18 @@ def test_connect_claude_code_uses_native_http(
     assert connect_args.handler(connect_args) == 0
     loaded = json.loads(config_path.read_text())
     entry = loaded["mcpServers"][TESSERA_SERVER_NAME]
-    assert entry["type"] == "http"
-    assert entry["url"].startswith("http://127.0.0.1:")
-    assert entry["headers"]["Authorization"].startswith("Bearer tessera_service_")
-    # Explicit: Claude Code does NOT get the mcp-remote stdio wrapper.
-    assert "command" not in entry
-    assert "args" not in entry
+    assert entry["command"] == sys.executable
+    assert entry["args"][:5] == [
+        "-m",
+        "tessera.cli",
+        "stdio",
+        "--url",
+        "http://127.0.0.1:5710/mcp",
+    ]
+    assert entry["args"][5] == "--token"
+    assert entry["args"][6].startswith("tessera_service_")
+    assert "type" not in entry
+    assert "headers" not in entry
 
 
 @pytest.mark.integration
