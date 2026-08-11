@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from tessera.auth import tokens
 from tessera.cli.__main__ import _build_parser
 from tessera.connectors.base import TESSERA_SERVER_NAME, ConnectorResult, McpServerSpec
 from tessera.connectors.json_connector import JsonConnector
@@ -101,6 +102,7 @@ def test_connect_claude_desktop_writes_entry(
     # Token arrives as a named `--token` flag.
     token_idx = entry["args"].index("--token") + 1
     assert entry["args"][token_idx].startswith("tessera_service_")
+    raw_token = entry["args"][token_idx]
     # No npx, no mcp-remote, no native-HTTP keys.
     assert "npx" not in entry["args"]
     assert "mcp-remote" not in entry["args"]
@@ -122,6 +124,11 @@ def test_connect_claude_desktop_writes_entry(
             "pending_capability_id, access_ttl_seconds "
             "FROM managed_connector_installations"
         ).fetchone()
+        verified = tokens.verify_and_touch(
+            vc.connection,
+            raw_token=raw_token,
+            now_epoch=1_000_001,
+        )
     assert registration is not None
     assert registration[0] == "claude-desktop"
     assert registration[1] == str(config_path.resolve())
@@ -129,6 +136,7 @@ def test_connect_claude_desktop_writes_entry(
     assert registration[3] > 0
     assert registration[4] is None
     assert registration[5] == 90 * 24 * 60 * 60
+    assert verified.scope.allows(op="read", facet_type="retrospective")
 
 
 @pytest.mark.integration
