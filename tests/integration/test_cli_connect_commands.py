@@ -11,6 +11,7 @@ HTTP server, not a file-writer.
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -179,15 +180,14 @@ def test_connect_write_failure_does_not_register_or_leave_capability_live(
 
 
 @pytest.mark.integration
-def test_connect_claude_code_uses_native_http(
+def test_connect_claude_code_uses_stdio_bridge(
     short_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Claude Code speaks HTTP MCP natively and takes the `type: http`
-    # entry shape. Regression guard against accidentally emitting the
-    # stdio-via-mcp-remote wrapper (which would add an `npx` dep for
-    # no reason on a client that doesn't need it).
+    # Claude Code initializes standard Streamable HTTP MCP. Tessera's
+    # /mcp endpoint has a custom envelope, so the maintained stdio bridge
+    # provides the compatible transport and preserves bearer-token auth.
     vault, agent_id = _init_vault(short_tmp, monkeypatch)
     config_path = short_tmp / "claude_code.json"
     parser = _build_parser()
@@ -206,12 +206,18 @@ def test_connect_claude_code_uses_native_http(
     assert connect_args.handler(connect_args) == 0
     loaded = json.loads(config_path.read_text())
     entry = loaded["mcpServers"][TESSERA_SERVER_NAME]
-    assert entry["type"] == "http"
-    assert entry["url"].startswith("http://127.0.0.1:")
-    assert entry["headers"]["Authorization"].startswith("Bearer tessera_service_")
-    # Explicit: Claude Code does NOT get the mcp-remote stdio wrapper.
-    assert "command" not in entry
-    assert "args" not in entry
+    assert entry["command"] == sys.executable
+    assert entry["args"][:5] == [
+        "-m",
+        "tessera.cli",
+        "stdio",
+        "--url",
+        "http://127.0.0.1:5710/mcp",
+    ]
+    assert entry["args"][5] == "--token"
+    assert entry["args"][6].startswith("tessera_service_")
+    assert "type" not in entry
+    assert "headers" not in entry
 
 
 @pytest.mark.integration

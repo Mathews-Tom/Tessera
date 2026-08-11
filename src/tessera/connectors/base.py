@@ -122,13 +122,11 @@ def token_from_entry(entry: object) -> str | None:
 
 
 def build_server_entry(server: McpServerSpec) -> Mapping[str, object]:
-    """Return the per-entry payload for clients that speak HTTP MCP natively.
+    """Return the HTTP entry for clients that speak Tessera's wire shape.
 
-    Claude Code, Cursor, and Codex all accept the MCP spec's native
-    HTTP transport shape: ``{"type": "http", "url": ..., "headers": ...}``.
-    Claude Desktop is the exception — see
-    :func:`build_stdio_via_mcp_remote_entry` for its stdio-bridge
-    equivalent.
+    Cursor and Codex accept ``{"type": "http", "url": ..., "headers": ...}``.
+    Claude Desktop and Claude Code use
+    :func:`build_stdio_via_tessera_bridge_entry` for compatibility.
 
     ChatGPT Dev Mode uses a different shape entirely (no config file,
     URL-embedded bootstrap nonce) handled by its own connector.

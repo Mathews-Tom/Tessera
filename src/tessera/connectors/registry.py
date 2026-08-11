@@ -28,12 +28,10 @@ from tessera.connectors.toml_connector import TomlConnector, codex_paths
 
 def _build_connectors() -> dict[str, Connector]:
     registry: dict[str, Connector] = {}
-    # Claude Desktop's MCP loader speaks stdio only; the stdio-via-
-    # tessera-bridge builder emits a ``python -m tessera.cli stdio``
-    # command that tunnels stdio ↔ HTTP using Tessera's first-party
-    # bridge. Every other JSON-based client (Claude Code, Cursor)
-    # speaks HTTP MCP natively and uses the default native-HTTP entry
-    # builder.
+    # Tessera's /mcp endpoint uses its established custom HTTP envelope,
+    # not the standard Streamable HTTP wire protocol that Claude Code
+    # initiates. Route both Claude clients through the maintained stdio
+    # bridge, which presents standard MCP and translates tool calls.
     registry["claude-desktop"] = JsonConnector(
         client_id="claude-desktop",
         display_name="Claude Desktop",
@@ -44,6 +42,7 @@ def _build_connectors() -> dict[str, Connector]:
         client_id="claude-code",
         display_name="Claude Code",
         paths=claude_code_paths(),
+        entry_builder=build_stdio_via_tessera_bridge_entry,
     )
     registry["cursor"] = JsonConnector(
         client_id="cursor",
