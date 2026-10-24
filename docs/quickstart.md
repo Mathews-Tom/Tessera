@@ -148,6 +148,8 @@ Status reports the registered expiry and next renewal eligibility as Unix timest
 
 After initial registration, opt in to storing the vault passphrase in the OS keyring. The generated service references only the vault path and nonsecret vault ID; it does not contain the passphrase.
 
+Installation verifies the supplied passphrase before changing the cached credential or service file. With a running daemon, verification uses a vault-bound key-confirmation proof over the owner-only control socket, without transmitting the passphrase or raw vault key or reopening the owned vault. A rejected passphrase leaves the previous installation intact.
+
 ```bash
 tessera daemon install --keyring --vault "$HOME/.tessera/vault.db"
 tessera daemon stop
@@ -182,6 +184,8 @@ tessera connect omp --recover
 ```
 
 Select clients explicitly; `--recover all` is rejected. Use `--path /absolute/config/path` for a custom registration and `--socket /absolute/control.sock` for a custom daemon. Recovery preserves the original agent, client, and scopes. Revoked, unknown, replaced, malformed, missing, pending, and unregistered configurations are refused rather than silently overwritten. This authority comes from the owner-only local administrative socket, not from possession of an expired bearer token.
+
+Rotation audit payloads identify the `trigger` as `owner_recovery` or scheduled `renewal`, including write failures and interrupted operations reconciled after restart. Historical pending operations without recorded provenance use `null` rather than guessing their origin.
 
 Reload the client after replacement. In an existing OMP session, run `/mcp reload`; other clients must reload their MCP configuration or restart. New sessions reuse the saved service credential and do not require another login. Verify `stats` and `recall` after the reload.
 

@@ -22,6 +22,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Verified keyring installation against a live daemon.** Candidate credentials must pass owner-only key confirmation before replacing cached credentials or service files. Rejected passphrases preserve the existing installation without reopening the owned vault or transmitting a raw key or passphrase.
+- **Credential-rotation audit provenance.** Staged, completed, failed, and reconciled rotations distinguish scheduled renewal from explicit owner recovery, preserving the original trigger across interruption; historical missing provenance remains explicitly unknown.
 - **Owner-only administrative socket directory.** Runtime directories are restricted to the current user, and startup refuses symlinked directories or foreign/non-socket control paths instead of replacing arbitrary files.
 - **Dogfood evidence ledger isolated from tests and demo scripts.** The pytest suite (`tests/conftest.py`, autouse) now redirects `TESSERA_DOGFOOD_DIR` to a per-test temp dir, and `scripts/demo_smoke.sh`, `scripts/demo_reset.sh`, plus CI export `TESSERA_DOGFOOD_DISABLE=1`. Previously, running the suite or a demo on a machine with an initialized dogfood gate (e.g. the 60-day compiled gate) auto-emitted `register` / `stale_event` / `audit_verify` rows into the operator's real 30/60-day evidence ledger at `~/.tessera/dogfood/`, contaminating the v0.5-GA dogfood evidence with synthetic test traffic.
 
