@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import os
 import subprocess
 import sys
@@ -14,7 +15,11 @@ from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase, 
 from tessera.cli._ui import EMOJI, console, info, kv_panel, status, success
 from tessera.daemon.config import DaemonConfig, resolve_config
 from tessera.daemon.control import ControlError, call_control
-from tessera.daemon.supervisor import run_daemon
+from tessera.daemon.supervisor import (
+    _KEYRING_INSTALL_PROOF_DOMAIN,
+    _KEYRING_INSTALL_VERIFY_METHOD,
+    run_daemon,
+)
 from tessera.daemon.units import (
     launchd_plist,
     launchd_plist_path,
@@ -22,6 +27,7 @@ from tessera.daemon.units import (
     systemd_unit_path,
 )
 from tessera.vault.connection import VaultError
+from tessera.vault.encryption import derive_key, load_salt
 from tessera.vault.keyring_cache import (
     KeyringUnavailableError,
     cache_passphrase,
@@ -485,7 +491,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
 
 
 def _vault_id_for_keyring_install(vault_path: Path, passphrase: bytearray) -> str:
-    """Use the live owner's identity, or unlock only when the daemon is absent."""
+    """Validate credentials with the live owner, or unlock only while it is absent."""
     config = resolve_config(vault_path=vault_path)
     try:
         if not config.socket_path.exists():
@@ -521,6 +527,34 @@ def _vault_id_for_keyring_install(vault_path: Path, passphrase: bytearray) -> st
     except (OSError, ControlError, TimeoutError) as exc:
         raise CliError(
             "cannot obtain local daemon status; refusing to open a potentially owned vault"
+        ) from exc
+    live_path = response.get("vault_path")
+    try:
+        if not isinstance(live_path, str) or Path(live_path).resolve() != vault_path:
+            raise CliError(
+                "running daemon vault path does not match --vault; refusing keyring install"
+            )
+        with derive_key(passphrase, load_salt(vault_path)) as key:
+            raw_key = bytearray.fromhex(key.hex())
+            try:
+                proof = hmac.digest(
+                    raw_key,
+                    _KEYRING_INSTALL_PROOF_DOMAIN + str(vault_path).encode("utf-8"),
+                    "sha256",
+                ).hex()
+            finally:
+                raw_key[:] = b"\0" * len(raw_key)
+        response = asyncio.run(
+            call_control(
+                config.socket_path,
+                method=_KEYRING_INSTALL_VERIFY_METHOD,
+                args={"vault_path": str(vault_path), "proof": proof},
+            )
+        )
+    except (OSError, ValueError, ControlError, TimeoutError) as exc:
+        raise CliError(
+            "cannot verify the supplied passphrase with the running daemon; "
+            "keyring installation refused"
         ) from exc
     live_path = response.get("vault_path")
     vault_id = response.get("vault_id")

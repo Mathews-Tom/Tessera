@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import signal
 import sys
 import time
@@ -57,6 +58,8 @@ _EVENTS_SWEEP_SECONDS = 3600.0
 _COMPACTION_SWEEP_SECONDS = 300.0
 _RENEWAL_SWEEP_SECONDS = 24 * 60 * 60.0
 _RENEWAL_HORIZON_SECONDS = 14 * 24 * 60 * 60
+_KEYRING_INSTALL_VERIFY_METHOD = "verify_keyring_install"
+_KEYRING_INSTALL_PROOF_DOMAIN = b"tessera:keyring-install:v1\0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +130,7 @@ async def run_daemon(
                     state,
                     stop,
                     nonce_store,
+                    key=key,
                     connector_url=f"http://{config.http_host}:{config.http_port}/mcp",
                 ),
             )
@@ -362,6 +366,7 @@ def _make_control_dispatcher(
     stop: asyncio.Event,
     nonce_store: NonceStore,
     *,
+    key: ProtectedKey,
     connector_url: str = "http://127.0.0.1:5710/mcp",
 ) -> Callable[[ControlRequest], Awaitable[dict[str, Any]]]:
     async def _dispatch(req: ControlRequest) -> dict[str, Any]:
@@ -373,6 +378,31 @@ def _make_control_dispatcher(
                 "active_model_id": state.active_model_id,
                 "schema_version": state.vault.state.schema_version,
             }
+        if req.method == _KEYRING_INSTALL_VERIFY_METHOD:
+            vault_path = req.args.get("vault_path")
+            proof = req.args.get("proof")
+            if not isinstance(vault_path, str) or vault_path != str(state.vault_path.resolve()):
+                raise ControlError("requested vault does not match the running daemon")
+            if (
+                not isinstance(proof, str)
+                or len(proof) != 64
+                or any(char not in "0123456789abcdef" for char in proof)
+            ):
+                raise ControlError("invalid keyring installation proof")
+            # Send only a domain-separated key-confirmation MAC over the owner-only
+            # socket, never a raw vault key or passphrase. It grants no HTTP access.
+            raw_key = bytearray.fromhex(key.hex())
+            try:
+                expected = hmac.digest(
+                    raw_key,
+                    _KEYRING_INSTALL_PROOF_DOMAIN + vault_path.encode("utf-8"),
+                    "sha256",
+                ).hex()
+            finally:
+                raw_key[:] = b"\0" * len(raw_key)
+            if not hmac.compare_digest(expected, proof):
+                raise ControlError("passphrase does not unlock the running vault")
+            return {"vault_id": state.vault_id, "vault_path": vault_path}
         if req.method == "stop":
             stop.set()
             return {"stopping": True}

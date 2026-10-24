@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import stat
+import sys
 import tempfile
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
@@ -22,12 +23,13 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import httpx
+import keyring
 import pytest
 
 from tessera.adapters import models_registry
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope
-from tessera.cli import connect_cmd
+from tessera.cli import connect_cmd, daemon_cmd
 from tessera.cli.__main__ import _build_parser
 from tessera.connectors import get_connector
 from tessera.connectors.base import McpServerSpec
@@ -37,6 +39,7 @@ from tessera.daemon.config import resolve_config
 from tessera.daemon.control import ControlError, call_control
 from tessera.migration import bootstrap
 from tessera.vault import capture as vault_capture
+from tessera.vault import keyring_cache
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt, save_salt
 
@@ -193,6 +196,161 @@ async def test_supervisor_starts_serves_and_stops(
     # Shutdown cleans up socket + pid.
     assert not config.socket_path.exists()
     assert not config.pid_path.exists()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+async def test_live_keyring_install_verifies_before_replacing_credentials_or_service(
+    short_run_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    platform: str,
+) -> None:
+    vault_path = short_run_dir / "vault.db"
+    passphrase = b"live-keyring-secret"
+    salt = new_salt()
+    save_salt(vault_path, salt)
+    with derive_key(passphrase, salt) as key:
+        bootstrap(vault_path, key)
+        with VaultConnection.open(vault_path, key) as vault:
+            vault_id = vault.state.vault_id
+            models_registry.register_embedding_model(
+                vault.connection, name="fastembed-fake-model", dim=8, activate=True
+            )
+
+    def fake_resolve(conn: Any) -> tuple[_FakeEmbedder, int, str]:
+        model = models_registry.active_model(conn)
+        return _FakeEmbedder(), model.id, models_registry.vec_table_name(model.id)
+
+    monkeypatch.setattr(supervisor, "resolve_embedder", fake_resolve)
+    monkeypatch.setattr(supervisor, "FastEmbedReranker", _FakeReranker)
+    monkeypatch.setenv("HOME", str(short_run_dir))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(sys, "platform", platform)
+    config = replace(
+        resolve_config(
+            vault_path=vault_path,
+            passphrase=passphrase,
+            socket_path=short_run_dir / "control" / "t.sock",
+            http_port=_pick_port(),
+        ),
+        pid_path=short_run_dir / "pid",
+        events_db_path=short_run_dir / "events.db",
+    )
+    monkeypatch.setattr(daemon_cmd, "resolve_config", lambda **kwargs: config)
+    entries: dict[tuple[str, str], str] = {}
+
+    def store(service: str, username: str, password: str) -> None:
+        entries[(service, username)] = password
+
+    monkeypatch.setattr(keyring, "set_password", store)
+    monkeypatch.setattr(
+        keyring, "get_password", lambda service, username: entries.get((service, username))
+    )
+    keyring_cache.cache_passphrase(vault_id, bytearray(b"previous-cached-credential"))
+    previous_cache = entries.copy()
+    parser = _build_parser()
+    initial = parser.parse_args(["daemon", "install", "--vault", str(vault_path)])
+    assert initial.handler(initial) == 0
+    service_path = (
+        short_run_dir / "Library/LaunchAgents/com.tessera.daemon.plist"
+        if platform == "darwin"
+        else short_run_dir / ".config/systemd/user/tesserad.service"
+    )
+    previous_service = service_path.read_bytes()
+    capsys.readouterr()
+    stop = asyncio.Event()
+    ready = asyncio.Event()
+    daemon_task = asyncio.create_task(supervisor.run_daemon(config, stop_event=stop, ready=ready))
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=10.0)
+
+        def forbidden(*args: object, **kwargs: object) -> None:
+            pytest.fail("live keyring installation must not reopen the owned vault")
+
+        monkeypatch.setattr(daemon_cmd, "open_vault", forbidden)
+        wrong = parser.parse_args(
+            [
+                "daemon",
+                "install",
+                "--keyring",
+                "--vault",
+                str(vault_path),
+                "--passphrase",
+                "mistyped-live-secret",
+            ]
+        )
+        assert await asyncio.to_thread(wrong.handler, wrong) == 1
+        assert entries == previous_cache
+        assert service_path.read_bytes() == previous_service
+        rejected_output = capsys.readouterr()
+        assert "passphrase" in rejected_output.out + rejected_output.err
+        assert "mistyped-live-secret" not in rejected_output.out + rejected_output.err
+
+        wrong_vault = parser.parse_args(
+            [
+                "daemon",
+                "install",
+                "--keyring",
+                "--vault",
+                str(short_run_dir / "other.db"),
+                "--passphrase",
+                passphrase.decode(),
+            ]
+        )
+        assert await asyncio.to_thread(wrong_vault.handler, wrong_vault) == 1
+        assert entries == previous_cache
+        assert service_path.read_bytes() == previous_service
+
+        # The real owner-only socket rejects malformed and wrong-vault proofs.
+        invalid_proofs: tuple[object, ...] = (
+            None,
+            7,
+            [],
+            "",
+            "0" * 63,
+            "0" * 65,
+            "z" * 64,
+            "é" * 64,
+        )
+        for proof in invalid_proofs:
+            with pytest.raises(ControlError, match="invalid keyring installation proof"):
+                await call_control(
+                    config.socket_path,
+                    method=supervisor._KEYRING_INSTALL_VERIFY_METHOD,
+                    args={"vault_path": str(vault_path.resolve()), "proof": proof},
+                )
+        with pytest.raises(ControlError, match="requested vault does not match"):
+            await call_control(
+                config.socket_path,
+                method=supervisor._KEYRING_INSTALL_VERIFY_METHOD,
+                args={"vault_path": str(short_run_dir / "other.db"), "proof": "0" * 64},
+            )
+
+        correct = parser.parse_args(
+            [
+                "daemon",
+                "install",
+                "--keyring",
+                "--vault",
+                str(vault_path),
+                "--passphrase",
+                passphrase.decode(),
+            ]
+        )
+        assert await asyncio.to_thread(correct.handler, correct) == 0
+        assert keyring_cache.load_passphrase(vault_id) == bytearray(passphrase)
+        service = service_path.read_text()
+        assert service_path.read_bytes() != previous_service
+        assert "--keyring-vault-id" in service
+        assert vault_id in service
+        output = capsys.readouterr()
+        assert passphrase.decode() not in service + output.out + output.err
+        assert (await call_control(config.socket_path, method="ping")) == {"pong": True}
+    finally:
+        stop.set()
+        await asyncio.wait_for(daemon_task, timeout=10.0)
 
 
 @pytest.mark.integration

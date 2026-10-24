@@ -171,14 +171,16 @@ def test_keyring_install_caches_offline_identity_without_secret_in_service(
 def test_keyring_install_uses_running_daemon_without_opening_vault(
     offline_home: Path,
     control_path_present: Path,
+    encrypted_vault: tuple[Path, str],
     cached_keyring: dict[tuple[str, str], str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = offline_home / "vault.db"
+    path, vault_id = encrypted_vault
     monkeypatch.setenv("TESSERA_PASSPHRASE", "startup-test-secret")
 
     async def live(*args: object, **kwargs: object) -> dict[str, str]:
-        return {"vault_path": str(path), "vault_id": "live-vault-id"}
+        identity = vault_id if kwargs["method"] == "verify_keyring_install" else "unverified"
+        return {"vault_path": str(path), "vault_id": identity}
 
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("must not open a vault owned by the live daemon")
@@ -187,10 +189,15 @@ def test_keyring_install_uses_running_daemon_without_opening_vault(
     monkeypatch.setattr(daemon_cmd, "open_vault", forbidden)
     args = _build_parser().parse_args(["daemon", "install", "--keyring", "--vault", str(path)])
     assert args.handler(args) == 0
-    assert set(cached_keyring) == {(keyring_cache.SERVICE_NAME, "live-vault-id")}
+    assert set(cached_keyring) == {(keyring_cache.SERVICE_NAME, vault_id)}
+    assert keyring_cache.load_passphrase(vault_id) == bytearray(b"startup-test-secret")
+    program, body = _service_args(offline_home, sys.platform)
+    assert program[-2:] == ["--keyring-vault-id", vault_id]
+    assert "startup-test-secret" not in body
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("stage", ["status", "verify_keyring_install"])
 @pytest.mark.parametrize(
     "response",
     [
@@ -202,14 +209,19 @@ def test_keyring_install_uses_running_daemon_without_opening_vault(
 def test_keyring_install_rejects_unbound_live_identity(
     offline_home: Path,
     control_path_present: Path,
+    encrypted_vault: tuple[Path, str],
     cached_keyring: dict[tuple[str, str], str],
     monkeypatch: pytest.MonkeyPatch,
     response: dict[str, str],
+    stage: str,
 ) -> None:
+    path, vault_id = encrypted_vault
     monkeypatch.setenv("TESSERA_PASSPHRASE", "startup-test-secret")
 
     async def live(*args: object, **kwargs: object) -> dict[str, str]:
-        return response
+        if kwargs["method"] == stage:
+            return response
+        return {"vault_path": str(path), "vault_id": vault_id}
 
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("must not open a vault while a daemon is running")
@@ -222,13 +234,61 @@ def test_keyring_install_rejects_unbound_live_identity(
             "install",
             "--keyring",
             "--vault",
-            str(offline_home / "vault.db"),
+            str(path),
         ]
     )
     assert args.handler(args) == 1
     assert cached_keyring == {}
     assert not (offline_home / "Library/LaunchAgents/com.tessera.daemon.plist").exists()
     assert not (offline_home / ".config/systemd/user/tesserad.service").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_keyring_install_verification_failure_preserves_previous_installation(
+    offline_home: Path,
+    control_path_present: Path,
+    encrypted_vault: tuple[Path, str],
+    cached_keyring: dict[tuple[str, str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    platform: str,
+) -> None:
+    path, vault_id = encrypted_vault
+    monkeypatch.setattr(sys, "platform", platform)
+    keyring_cache.cache_passphrase(vault_id, bytearray(b"startup-test-secret"))
+    previous_cache = cached_keyring.copy()
+    parser = _build_parser()
+    initial = parser.parse_args(["daemon", "install", "--vault", str(path)])
+    assert initial.handler(initial) == 0
+    service_path = offline_home / (
+        "Library/LaunchAgents/com.tessera.daemon.plist"
+        if platform == "darwin"
+        else ".config/systemd/user/tesserad.service"
+    )
+    previous_service = service_path.read_bytes()
+    capsys.readouterr()
+
+    async def live(*args: object, **kwargs: object) -> dict[str, str]:
+        if kwargs["method"] == "status":
+            return {"vault_path": str(path), "vault_id": vault_id}
+        raise ControlError("passphrase does not unlock the running vault")
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("credential rejection must not reopen the daemon-owned vault")
+
+    monkeypatch.setattr(daemon_cmd, "call_control", live)
+    monkeypatch.setattr(daemon_cmd, "open_vault", forbidden)
+    candidate = bytearray(b"mistyped-startup-secret")
+    monkeypatch.setattr(daemon_cmd, "resolve_passphrase", lambda explicit: candidate)
+    args = parser.parse_args(["daemon", "install", "--keyring", "--vault", str(path)])
+    assert args.handler(args) == 1
+    assert cached_keyring == previous_cache
+    assert service_path.read_bytes() == previous_service
+    assert candidate == bytearray(len(b"mistyped-startup-secret"))
+    output = capsys.readouterr()
+    assert "passphrase" in output.out + output.err
+    assert "mistyped-startup-secret" not in output.out + output.err
 
 
 @pytest.mark.unit
