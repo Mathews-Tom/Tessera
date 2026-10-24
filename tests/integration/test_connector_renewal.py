@@ -407,6 +407,9 @@ def test_restart_reconciliation_promotes_pending_file_token(
     _, active_id, pending_id = _installation_row(open_vault)
     assert active_id == pending.token_id
     assert pending_id is None
+    # Historical pending operations without staged provenance must not be guessed.
+    payload = _audit_payloads(open_vault, prefix="connector_renewal_reconciled")[-1]
+    assert payload["trigger"] is None
     assert (
         tokens.resolve_live_without_touch(
             open_vault.connection, raw_token=old.raw_token, now_epoch=_NOW + 1
@@ -875,3 +878,86 @@ def test_interrupted_owner_recovery_uses_existing_reconciliation(
             ).fetchone()[0]
             == old.expires_at + 1
         )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("trigger", ["renewal", "owner_recovery"])
+@pytest.mark.parametrize("outcome", ["completed", "write_failed", "promoted", "discarded"])
+def test_rotation_audit_preserves_trigger_through_failure_and_resume(
+    open_vault: VaultConnection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trigger: str,
+    outcome: str,
+) -> None:
+    agent_id = _new_agent(open_vault)
+    path, old = _write_installation(
+        open_vault,
+        tmp_path=tmp_path,
+        agent_id=agent_id,
+        connector_id="omp",
+        ttl_seconds=_HORIZON - 1,
+    )
+    now = old.expires_at if trigger == "owner_recovery" else _NOW
+    connector_type = type(get_connector("omp"))
+    original_apply = get_connector("omp").apply
+
+    class InterruptedRotation(BaseException):
+        pass
+
+    def interrupted_apply(self: object, path: Path, server: McpServerSpec) -> object:
+        if outcome == "write_failed":
+            raise OSError("forced write failure")
+        if outcome == "promoted":
+            original_apply(path, server)
+        raise InterruptedRotation
+
+    if outcome != "completed":
+        monkeypatch.setattr(connector_type, "apply", interrupted_apply)
+
+    def rotate() -> None:
+        if trigger == "owner_recovery":
+            recover_expired(
+                open_vault.connection,
+                connector_id="omp",
+                config_path=path,
+                now_epoch=now,
+                url="http://127.0.0.1:5710/mcp",
+            )
+        else:
+            assert renew_due(
+                open_vault.connection,
+                now_epoch=now,
+                horizon_seconds=_HORIZON,
+                url="http://127.0.0.1:5710/mcp",
+            ) == (0 if outcome == "write_failed" else 1)
+
+    if outcome in {"promoted", "discarded"}:
+        with pytest.raises(InterruptedRotation):
+            rotate()
+        open_vault.connection.commit()
+        _, active_id, pending_id = _installation_row(open_vault)
+        assert active_id == old.token_id
+        assert pending_id is not None
+        assert reconcile_pending(open_vault.connection, now_epoch=now + 1) == 1
+        _, active_id, cleared_pending = _installation_row(open_vault)
+        assert cleared_pending is None
+        assert active_id == (pending_id if outcome == "promoted" else old.token_id)
+        terminal_op = "connector_renewal_reconciled"
+    else:
+        if outcome == "write_failed" and trigger == "owner_recovery":
+            with pytest.raises(RecoveryRefused):
+                rotate()
+        else:
+            rotate()
+        terminal_op = f"connector_renewal_{outcome}"
+        _, active_id, pending_id = _installation_row(open_vault)
+        assert pending_id is None
+        assert (active_id == old.token_id) == (outcome == "write_failed")
+
+    staged = _audit_payloads(open_vault, prefix="connector_renewal_staged")
+    terminal = _audit_payloads(open_vault, prefix=terminal_op)
+    assert len(staged) == len(terminal) == 1
+    assert staged[0]["trigger"] == terminal[0]["trigger"] == trigger
+    if outcome in {"promoted", "discarded"}:
+        assert terminal[0]["state"] == outcome

@@ -124,6 +124,7 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
             "active_capability_id",
             "pending_capability_id",
             "expires_at",
+            "trigger",
         }
     ),
     "connector_renewal_completed": frozenset(
@@ -135,6 +136,7 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
             "active_capability_id",
             "expires_at",
             "backup_written",
+            "trigger",
         }
     ),
     "connector_renewal_write_failed": frozenset(
@@ -146,6 +148,7 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
             "pending_capability_id",
             "failure_class",
             "backup_written",
+            "trigger",
         }
     ),
     "connector_renewal_reconciled": frozenset(
@@ -156,6 +159,7 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
             "active_capability_id",
             "pending_capability_id",
             "state",
+            "trigger",
         }
     ),
     "connector_config_drift": frozenset(
@@ -166,6 +170,7 @@ _PAYLOAD_ALLOWLIST: Final[dict[OpName, frozenset[str]]] = {
             "active_capability_id",
             "pending_capability_id",
             "state",
+            "trigger",
         }
     ),
     "scope_denied": frozenset({"token_id", "client_name", "required_op", "required_facet_type"}),

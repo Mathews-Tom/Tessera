@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 import sqlcipher3
 
@@ -19,6 +20,8 @@ from tessera.observability.events import EventLevel, EventLog
 from tessera.vault import audit
 
 MANAGED_ACCESS_TTL_SECONDS: Final[int] = 90 * 24 * 60 * 60
+
+_RotationTrigger = Literal["renewal", "owner_recovery"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +151,7 @@ def recover_expired(
         now_epoch=now_epoch,
         url=url,
         event_log=event_log,
+        trigger="owner_recovery",
     ):
         raise RecoveryRefused("config_write_failed")
 
@@ -326,6 +330,7 @@ def renew_due(
             now_epoch=now_epoch,
             url=url,
             event_log=event_log,
+            trigger="renewal",
         ):
             renewed += 1
     return renewed
@@ -339,6 +344,7 @@ def _rotate(
     now_epoch: int,
     url: str,
     event_log: EventLog | None,
+    trigger: _RotationTrigger,
 ) -> bool:
     """Stage, write, then promote for both pre-expiry renewal and owner recovery."""
     issued = tokens.issue(
@@ -356,13 +362,18 @@ def _rotate(
         "SET pending_capability_id = ?, updated_at = ? WHERE id = ?",
         (issued.token_id, now_epoch, installation.id),
     )
-    _write_stage_audit(conn, installation=installation, issued=issued, now_epoch=now_epoch)
+    _write_stage_audit(
+        conn, installation=installation, issued=issued, now_epoch=now_epoch, trigger=trigger
+    )
     _emit(
         event_log,
         level="info",
         event="renewal_staged",
         attrs=_event_attrs(
-            installation, pending_capability_id=issued.token_id, expires_at=issued.expires_at
+            installation,
+            pending_capability_id=issued.token_id,
+            expires_at=issued.expires_at,
+            trigger=trigger,
         ),
         now_epoch=now_epoch,
     )
@@ -390,6 +401,7 @@ def _rotate(
             pending_capability_id=issued.token_id,
             failure_class=type(exc).__name__,
             now_epoch=now_epoch,
+            trigger=trigger,
         )
         _emit(
             event_log,
@@ -399,6 +411,7 @@ def _rotate(
                 installation,
                 pending_capability_id=issued.token_id,
                 failure_class=type(exc).__name__,
+                trigger=trigger,
             ),
             now_epoch=now_epoch,
         )
@@ -426,6 +439,7 @@ def _rotate(
             "previous_capability_id": installation.active_capability_id,
             "active_capability_id": issued.token_id,
             "expires_at": issued.expires_at,
+            "trigger": trigger,
             "backup_written": result.backup_path is not None,
         },
         at=now_epoch,
@@ -439,6 +453,7 @@ def _rotate(
             active_capability_id=issued.token_id,
             expires_at=issued.expires_at,
             backup_written=result.backup_path is not None,
+            trigger=trigger,
         ),
         now_epoch=now_epoch,
     )
@@ -465,6 +480,7 @@ def reconcile_pending(
         pending_id = installation.pending_capability_id
         if pending_id is None:  # pragma: no cover — query contract
             continue
+        trigger = _pending_trigger(conn, installation=installation, pending_id=pending_id)
         configured, state = _inspect_configured_capability(
             conn,
             connector_id=installation.connector_id,
@@ -487,13 +503,17 @@ def reconcile_pending(
                 pending_capability_id=pending_id,
                 state="promoted",
                 now_epoch=now_epoch,
+                trigger=trigger,
             )
             _emit(
                 event_log,
                 level="info",
                 event="renewal_reconciled",
                 attrs=_event_attrs(
-                    installation, pending_capability_id=pending_id, state="promoted"
+                    installation,
+                    pending_capability_id=pending_id,
+                    state="promoted",
+                    trigger=trigger,
                 ),
                 now_epoch=now_epoch,
             )
@@ -522,13 +542,17 @@ def reconcile_pending(
                 pending_capability_id=pending_id,
                 state="discarded",
                 now_epoch=now_epoch,
+                trigger=trigger,
             )
             _emit(
                 event_log,
                 level="info",
                 event="renewal_reconciled",
                 attrs=_event_attrs(
-                    installation, pending_capability_id=pending_id, state="discarded"
+                    installation,
+                    pending_capability_id=pending_id,
+                    state="discarded",
+                    trigger=trigger,
                 ),
                 now_epoch=now_epoch,
             )
@@ -540,8 +564,31 @@ def reconcile_pending(
             state="neither",
             now_epoch=now_epoch,
             event_log=event_log,
+            trigger=trigger,
         )
     return reconciled
+
+
+def _pending_trigger(
+    conn: sqlcipher3.Connection, *, installation: ManagedInstallation, pending_id: int
+) -> _RotationTrigger | None:
+    """Read durable origin; pre-attribution rotations remain explicitly unknown."""
+    row = conn.execute(
+        "SELECT payload FROM audit_log WHERE op = 'connector_renewal_staged' "
+        "AND json_extract(payload, '$.installation_id') = ? "
+        "AND json_extract(payload, '$.pending_capability_id') = ? ORDER BY id DESC LIMIT 1",
+        (installation.id, pending_id),
+    ).fetchone()
+    if row is None:
+        return None
+    trigger = json.loads(str(row[0])).get("trigger")
+    if trigger is None:
+        return None
+    if trigger == "renewal":
+        return "renewal"
+    if trigger == "owner_recovery":
+        return "owner_recovery"
+    raise ValueError("invalid persisted connector rotation trigger")
 
 
 def _installation_from_row(row: tuple[int | str | None, ...]) -> ManagedInstallation:
@@ -631,6 +678,7 @@ def _write_stage_audit(
     installation: ManagedInstallation,
     issued: tokens.IssuedToken,
     now_epoch: int,
+    trigger: _RotationTrigger,
 ) -> None:
     audit.write(
         conn,
@@ -644,6 +692,7 @@ def _write_stage_audit(
             "active_capability_id": installation.active_capability_id,
             "pending_capability_id": issued.token_id,
             "expires_at": issued.expires_at,
+            "trigger": trigger,
         },
         at=now_epoch,
     )
@@ -656,6 +705,7 @@ def _write_failure_audit(
     pending_capability_id: int,
     failure_class: str,
     now_epoch: int,
+    trigger: _RotationTrigger,
 ) -> None:
     audit.write(
         conn,
@@ -670,6 +720,7 @@ def _write_failure_audit(
             "pending_capability_id": pending_capability_id,
             "failure_class": failure_class,
             "backup_written": False,
+            "trigger": trigger,
         },
         at=now_epoch,
     )
@@ -682,6 +733,7 @@ def _write_reconciliation_audit(
     pending_capability_id: int,
     state: str,
     now_epoch: int,
+    trigger: _RotationTrigger | None,
 ) -> None:
     audit.write(
         conn,
@@ -695,6 +747,7 @@ def _write_reconciliation_audit(
             "active_capability_id": installation.active_capability_id,
             "pending_capability_id": pending_capability_id,
             "state": state,
+            "trigger": trigger,
         },
         at=now_epoch,
     )
@@ -707,6 +760,7 @@ def _record_drift(
     state: str,
     now_epoch: int,
     event_log: EventLog | None,
+    trigger: _RotationTrigger | None = None,
 ) -> None:
     audit.write(
         conn,
@@ -720,6 +774,7 @@ def _record_drift(
             "active_capability_id": installation.active_capability_id,
             "pending_capability_id": installation.pending_capability_id,
             "state": state,
+            "trigger": trigger,
         },
         at=now_epoch,
     )
@@ -727,7 +782,7 @@ def _record_drift(
         event_log,
         level="warn",
         event="config_drift",
-        attrs=_event_attrs(installation, state=state),
+        attrs=_event_attrs(installation, state=state, trigger=trigger),
         now_epoch=now_epoch,
     )
     if state == "expired_token":
