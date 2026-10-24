@@ -26,6 +26,7 @@ def launchd_plist(
     vault_path: Path,
     log_path: Path,
     passphrase_env_var: str = "TESSERA_PASSPHRASE",
+    keyring_vault_id: str | None = None,
 ) -> str:
     """Generate a launchd plist that runs tesserad as a user agent."""
 
@@ -38,7 +39,17 @@ def launchd_plist(
         "--vault",
         str(vault_path),
     ]
+    if keyring_vault_id is not None:
+        program_args.extend(["--keyring-vault-id", keyring_vault_id])
     program_items = "\n".join(f"        <string>{_xml_escape(a)}</string>" for a in program_args)
+    environment = ""
+    if keyring_vault_id is None:
+        environment = f"""    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TESSERA_PASSPHRASE_ENV</key>
+        <string>{_xml_escape(passphrase_env_var)}</string>
+    </dict>
+"""
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -50,19 +61,16 @@ def launchd_plist(
     <array>
 {program_items}
     </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>TESSERA_PASSPHRASE_ENV</key>
-        <string>{passphrase_env_var}</string>
-    </dict>
+{environment}    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{log_path}</string>
+    <string>{_xml_escape(str(log_path))}</string>
     <key>StandardErrorPath</key>
-    <string>{log_path}</string>
+    <string>{_xml_escape(str(log_path))}</string>
     <key>ProcessType</key>
     <string>Interactive</string>
 </dict>
@@ -75,20 +83,26 @@ def systemd_unit(
     python_executable: Path,
     vault_path: Path,
     passphrase_env_var: str = "TESSERA_PASSPHRASE",
+    keyring_vault_id: str | None = None,
 ) -> str:
     """Generate a systemd user unit."""
 
-    exec_start = " ".join(
-        shlex.quote(a)
-        for a in [
-            str(python_executable),
-            "-m",
-            "tessera.cli",
-            "daemon",
-            "start-fg",
-            "--vault",
-            str(vault_path),
-        ]
+    program_args = [
+        str(python_executable),
+        "-m",
+        "tessera.cli",
+        "daemon",
+        "start-fg",
+        "--vault",
+        str(vault_path),
+    ]
+    if keyring_vault_id is not None:
+        program_args.extend(["--keyring-vault-id", keyring_vault_id])
+    exec_start = " ".join(shlex.quote(a) for a in program_args)
+    environment = (
+        f"Environment=TESSERA_PASSPHRASE_ENV={passphrase_env_var}\n"
+        if keyring_vault_id is None
+        else ""
     )
     return f"""[Unit]
 Description=Tessera substrate-independent identity daemon
@@ -99,8 +113,7 @@ Type=simple
 ExecStart={exec_start}
 Restart=on-failure
 RestartSec=3
-Environment=TESSERA_PASSPHRASE_ENV={passphrase_env_var}
-
+{environment}
 [Install]
 WantedBy=default.target
 """

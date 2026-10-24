@@ -117,23 +117,73 @@ tessera models set \
 
 ```bash
 tessera daemon start              # starts tesserad
-tessera doctor                    # all green = ready
+tessera daemon status             # confirms daemon identity and vault access
 ```
 
 ### 7. Wire your AI tools
 
 ```bash
-# One shot — every file-based MCP client:
-# Claude Desktop, Claude Code, Cursor, Codex, OpenCode, Oh My Pi, and Pi.
-tessera connect all
+# Register only the clients you use. These commands open the vault directly.
+tessera daemon stop
+tessera connect omp claude-code
 
-# Or register a custom configuration path explicitly.
-tessera connect claude-code --path /absolute/path/to/config.json
+# Alternatively, register a custom configuration path explicitly:
+# tessera connect claude-code --path /absolute/path/to/config.json
+tessera daemon start
 ```
 
 File-based connectors use managed 90-day service tokens. While `tesserad` runs, it immediately checks registered configurations at startup and then every 24 hours. When a credential is within 14 days of expiry, Tessera writes a replacement through the connector's atomic backup-and-replace path and retains the prior token until its natural expiry. A running client continues using its cached token until restarted; Tessera never restarts a client or revokes the replaced token early.
 
-The first daemon pass adopts only valid default-path Tessera entries. A custom path becomes managed only after an explicit `tessera connect <client> --path <absolute-path>` write. Missing, malformed, expired, or manually changed entries are reported as configuration drift and are never recreated or overwritten. After reboot or logout, start `tesserad` manually to resume the renewal schedule.
+The first daemon pass adopts only valid default-path Tessera entries. A custom path becomes managed only after an explicit `tessera connect <client> --path <absolute-path>` write. Missing, malformed, expired, or manually changed entries are never automatically recreated or overwritten.
+
+Check client credentials through the running daemon without opening the vault:
+
+```bash
+tessera connect omp claude-code --status
+```
+
+Status reports the registered expiry and next renewal eligibility as Unix timestamps, pending state, current error, and whether explicit recovery is safe. No token, hash, or passphrase is returned. Daemon status alone does not prove MCP authentication: call `stats` and `recall` from each intended client.
+
+#### Enable secure startup at login
+
+After initial registration, opt in to storing the vault passphrase in the OS keyring. The generated service references only the vault path and nonsecret vault ID; it does not contain the passphrase.
+
+```bash
+tessera daemon install --keyring --vault "$HOME/.tessera/vault.db"
+tessera daemon stop
+```
+
+Activate the service on macOS:
+
+```bash
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.tessera.daemon.plist"
+tessera daemon wait --timeout 45
+```
+
+On Linux:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now tesserad
+tessera daemon wait --timeout 45
+```
+
+The login keyring must be available and unlocked; allow the service interpreter access when the OS prompts. Explicit keyring startup fails with an actionable error if the entry is missing or inaccessible and never falls back to shell credentials. Without `--keyring`, service installation retains environment-based startup and does not cache a secret.
+
+A supervised daemon restarts after `tessera daemon stop`. Before running direct-vault administration such as ordinary `tessera connect <client>`, unload it with `launchctl bootout "gui/$(id -u)/com.tessera.daemon"` on macOS or `systemctl --user stop tesserad` on Linux. Bootstrap or start the service again afterward. Status and explicit recovery use the local control socket and do not require stopping it.
+
+#### Recover after a missed renewal
+
+An expired credential remains unauthorized. If its registered configuration still contains the exact expired, non-revoked active token, the local owner can request a replacement without stopping the daemon:
+
+```bash
+tessera connect omp --status
+tessera connect omp --recover
+```
+
+Select clients explicitly; `--recover all` is rejected. Use `--path /absolute/config/path` for a custom registration and `--socket /absolute/control.sock` for a custom daemon. Recovery preserves the original agent, client, and scopes. Revoked, unknown, replaced, malformed, missing, pending, and unregistered configurations are refused rather than silently overwritten. This authority comes from the owner-only local administrative socket, not from possession of an expired bearer token.
+
+Reload the client after replacement. In an existing OMP session, run `/mcp reload`; other clients must reload their MCP configuration or restart. New sessions reuse the saved service credential and do not require another login. Verify `stats` and `recall` after the reload.
 
 ChatGPT Developer Mode remains out of scope because it has no file-based connector configuration.
 
