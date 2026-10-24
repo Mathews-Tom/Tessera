@@ -13,6 +13,7 @@ from tessera.auth import tokens
 from tessera.auth.tokens import VerifiedCapability
 from tessera.connectors import get_connector
 from tessera.connectors.base import McpServerSpec
+from tessera.connectors.file_safety import UnsupportedConfigShapeError
 from tessera.connectors.registry import file_based_clients
 from tessera.observability.events import EventLevel, EventLog
 from tessera.vault import audit
@@ -31,6 +32,124 @@ class ManagedInstallation:
     active_capability_id: int
     pending_capability_id: int | None
     access_ttl_seconds: int
+
+
+class RecoveryRefused(ValueError):
+    """An owner request cannot safely recover the selected installation."""
+
+
+def _registered_installations(
+    conn: sqlcipher3.Connection, *, connector_id: str, config_path: Path | None
+) -> list[ManagedInstallation]:
+    path = str(config_path.resolve()) if config_path is not None else None
+    rows = conn.execute(
+        "SELECT id, connector_id, config_path, agent_id, active_capability_id, "
+        "pending_capability_id, access_ttl_seconds FROM managed_connector_installations "
+        "WHERE connector_id = ? AND (? IS NULL OR config_path = ?) ORDER BY id",
+        (connector_id, path, path),
+    ).fetchall()
+    return [_installation_from_row(row) for row in rows]
+
+
+def _installation_state(
+    conn: sqlcipher3.Connection, *, installation: ManagedInstallation, now_epoch: int
+) -> tuple[VerifiedCapability | None, str]:
+    capability, state = _inspect_configured_capability(
+        conn,
+        connector_id=installation.connector_id,
+        config_path=Path(installation.config_path),
+        now_epoch=now_epoch,
+    )
+    if installation.pending_capability_id is not None:
+        return capability, "pending_renewal"
+    if capability is not None and not _matches_installation(capability, installation):
+        return capability, _mismatch_state(capability, installation)
+    return capability, state
+
+
+def connector_status(
+    conn: sqlcipher3.Connection,
+    *,
+    connector_id: str,
+    config_path: Path | None,
+    now_epoch: int,
+    horizon_seconds: int,
+) -> list[dict[str, int | str | bool | None]]:
+    """Return redacted, read-only diagnostics for the local vault owner."""
+    installations = _registered_installations(
+        conn, connector_id=connector_id, config_path=config_path
+    )
+    if not installations:
+        return [
+            {
+                "connector_id": connector_id,
+                "config_path": str(config_path.resolve()) if config_path is not None else None,
+                "expires_at": None,
+                "next_renewal_at": None,
+                "pending_state": "none",
+                "current_error": "not_registered",
+                "recoverable": False,
+            }
+        ]
+    result: list[dict[str, int | str | bool | None]] = []
+    for installation in installations:
+        _, state = _installation_state(conn, installation=installation, now_epoch=now_epoch)
+        row = conn.execute(
+            "SELECT expires_at FROM capabilities WHERE id = ?",
+            (installation.active_capability_id,),
+        ).fetchone()
+        expires_at = int(row[0]) if row is not None else None
+        entry: dict[str, int | str | bool | None] = {
+            "installation_id": installation.id,
+            "connector_id": installation.connector_id,
+            "config_path": installation.config_path,
+            "expires_at": expires_at,
+            "next_renewal_at": expires_at - horizon_seconds if expires_at is not None else None,
+            "pending_state": "staged" if installation.pending_capability_id is not None else "none",
+            "current_error": None if state == "resolved" else state,
+            "recoverable": state == "expired_token",
+        }
+        if state == "expired_token":
+            entry["recovery_hint"] = (
+                f"Run tessera connect {connector_id} --recover; "
+                "use --path for a custom config and --socket for a custom daemon."
+            )
+        result.append(entry)
+    return result
+
+
+def recover_expired(
+    conn: sqlcipher3.Connection,
+    *,
+    connector_id: str,
+    config_path: Path,
+    now_epoch: int,
+    url: str,
+    event_log: EventLog | None = None,
+) -> None:
+    """Explicit local-owner recovery; an expired bearer never grants authority.
+
+    The registered config must still contain the exact expired active token.
+    No pending state is reconciled here and no unregistered config is adopted.
+    """
+    installations = _registered_installations(
+        conn, connector_id=connector_id, config_path=config_path
+    )
+    if len(installations) != 1:
+        raise RecoveryRefused("not_registered")
+    installation = installations[0]
+    configured, state = _installation_state(conn, installation=installation, now_epoch=now_epoch)
+    if state != "expired_token" or configured is None:
+        raise RecoveryRefused("token_still_live" if state == "resolved" else state)
+    if not _rotate(
+        conn,
+        installation=installation,
+        configured=configured,
+        now_epoch=now_epoch,
+        url=url,
+        event_log=event_log,
+    ):
+        raise RecoveryRefused("config_write_failed")
 
 
 def register(
@@ -188,13 +307,10 @@ def renew_due(
 
     renewed = 0
     for installation in due(conn, now_epoch=now_epoch, horizon_seconds=horizon_seconds):
-        configured, state = _read_configured_capability(
-            conn,
-            connector_id=installation.connector_id,
-            config_path=Path(installation.config_path),
-            now_epoch=now_epoch,
+        configured, state = _installation_state(
+            conn, installation=installation, now_epoch=now_epoch
         )
-        if configured is None:
+        if configured is None or state != "resolved":
             _record_drift(
                 conn,
                 installation=installation,
@@ -203,122 +319,130 @@ def renew_due(
                 event_log=event_log,
             )
             continue
-        if not _matches_installation(configured, installation):
-            _record_drift(
-                conn,
-                installation=installation,
-                state=_mismatch_state(configured, installation),
-                now_epoch=now_epoch,
-                event_log=event_log,
-            )
-            continue
-        issued = tokens.issue(
+        if _rotate(
             conn,
-            agent_id=configured.agent_id,
-            client_name=configured.client_name,
-            token_class=configured.token_class,
-            scope=configured.scope,
+            installation=installation,
+            configured=configured,
             now_epoch=now_epoch,
-            access_ttl_seconds=installation.access_ttl_seconds,
+            url=url,
+            event_log=event_log,
+        ):
+            renewed += 1
+    return renewed
+
+
+def _rotate(
+    conn: sqlcipher3.Connection,
+    *,
+    installation: ManagedInstallation,
+    configured: VerifiedCapability,
+    now_epoch: int,
+    url: str,
+    event_log: EventLog | None,
+) -> bool:
+    """Stage, write, then promote for both pre-expiry renewal and owner recovery."""
+    issued = tokens.issue(
+        conn,
+        agent_id=configured.agent_id,
+        client_name=configured.client_name,
+        token_class=configured.token_class,
+        scope=configured.scope,
+        now_epoch=now_epoch,
+        access_ttl_seconds=installation.access_ttl_seconds,
+        actor="daemon",
+    )
+    conn.execute(
+        "UPDATE managed_connector_installations "
+        "SET pending_capability_id = ?, updated_at = ? WHERE id = ?",
+        (issued.token_id, now_epoch, installation.id),
+    )
+    _write_stage_audit(conn, installation=installation, issued=issued, now_epoch=now_epoch)
+    _emit(
+        event_log,
+        level="info",
+        event="renewal_staged",
+        attrs=_event_attrs(
+            installation, pending_capability_id=issued.token_id, expires_at=issued.expires_at
+        ),
+        now_epoch=now_epoch,
+    )
+    connector = get_connector(installation.connector_id)
+    try:
+        result = connector.apply(
+            Path(installation.config_path), McpServerSpec(url=url, token=issued.raw_token)
+        )
+    except Exception as exc:
+        tokens.revoke(
+            conn,
+            token_id=issued.token_id,
+            now_epoch=now_epoch,
+            reason="renewal_config_write_failed",
             actor="daemon",
         )
         conn.execute(
             "UPDATE managed_connector_installations "
-            "SET pending_capability_id = ?, updated_at = ? WHERE id = ?",
-            (issued.token_id, now_epoch, installation.id),
+            "SET pending_capability_id = NULL, updated_at = ? WHERE id = ?",
+            (now_epoch, installation.id),
         )
-        _write_stage_audit(conn, installation=installation, issued=issued, now_epoch=now_epoch)
-        _emit(
-            event_log,
-            level="info",
-            event="renewal_staged",
-            attrs=_event_attrs(
-                installation,
-                pending_capability_id=issued.token_id,
-                expires_at=issued.expires_at,
-            ),
+        _write_failure_audit(
+            conn,
+            installation=installation,
+            pending_capability_id=issued.token_id,
+            failure_class=type(exc).__name__,
             now_epoch=now_epoch,
         )
-        connector = get_connector(installation.connector_id)
-        try:
-            result = connector.apply(
-                Path(installation.config_path), McpServerSpec(url=url, token=issued.raw_token)
-            )
-        except Exception as exc:
-            tokens.revoke(
-                conn,
-                token_id=issued.token_id,
-                now_epoch=now_epoch,
-                reason="renewal_config_write_failed",
-                actor="daemon",
-            )
-            conn.execute(
-                "UPDATE managed_connector_installations "
-                "SET pending_capability_id = NULL, updated_at = ? WHERE id = ?",
-                (now_epoch, installation.id),
-            )
-            _write_failure_audit(
-                conn,
-                installation=installation,
+        _emit(
+            event_log,
+            level="error",
+            event="renewal_write_failed",
+            attrs=_event_attrs(
+                installation,
                 pending_capability_id=issued.token_id,
                 failure_class=type(exc).__name__,
-                now_epoch=now_epoch,
-            )
-            _emit(
-                event_log,
-                level="error",
-                event="renewal_write_failed",
-                attrs=_event_attrs(
-                    installation,
-                    pending_capability_id=issued.token_id,
-                    failure_class=type(exc).__name__,
-                ),
-                now_epoch=now_epoch,
-            )
-            print(
-                "[tesserad] connector renewal config write failed: "
-                f"connector={installation.connector_id} "
-                f"installation_id={installation.id} "
-                f"config_path={installation.config_path} "
-                f"failure_class={type(exc).__name__}",
-                file=sys.stderr,
-            )
-            continue
-        conn.execute(
-            "UPDATE managed_connector_installations "
-            "SET active_capability_id = ?, pending_capability_id = NULL, updated_at = ? WHERE id = ?",
-            (issued.token_id, now_epoch, installation.id),
-        )
-        audit.write(
-            conn,
-            op="connector_renewal_completed",
-            actor="daemon",
-            agent_id=installation.agent_id,
-            payload={
-                "installation_id": installation.id,
-                "connector_id": installation.connector_id,
-                "config_path": installation.config_path,
-                "previous_capability_id": installation.active_capability_id,
-                "active_capability_id": issued.token_id,
-                "expires_at": issued.expires_at,
-                "backup_written": result.backup_path is not None,
-            },
-            at=now_epoch,
-        )
-        _emit(
-            event_log,
-            level="info",
-            event="renewal_completed",
-            attrs=_event_attrs(
-                installation,
-                active_capability_id=issued.token_id,
-                expires_at=issued.expires_at,
-                backup_written=result.backup_path is not None,
             ),
             now_epoch=now_epoch,
         )
-        renewed += 1
-    return renewed
+        print(
+            "[tesserad] connector renewal config write failed: "
+            f"connector={installation.connector_id} installation_id={installation.id} "
+            f"config_path={installation.config_path} failure_class={type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return False
+    conn.execute(
+        "UPDATE managed_connector_installations "
+        "SET active_capability_id = ?, pending_capability_id = NULL, updated_at = ? WHERE id = ?",
+        (issued.token_id, now_epoch, installation.id),
+    )
+    audit.write(
+        conn,
+        op="connector_renewal_completed",
+        actor="daemon",
+        agent_id=installation.agent_id,
+        payload={
+            "installation_id": installation.id,
+            "connector_id": installation.connector_id,
+            "config_path": installation.config_path,
+            "previous_capability_id": installation.active_capability_id,
+            "active_capability_id": issued.token_id,
+            "expires_at": issued.expires_at,
+            "backup_written": result.backup_path is not None,
+        },
+        at=now_epoch,
+    )
+    _emit(
+        event_log,
+        level="info",
+        event="renewal_completed",
+        attrs=_event_attrs(
+            installation,
+            active_capability_id=issued.token_id,
+            expires_at=issued.expires_at,
+            backup_written=result.backup_path is not None,
+        ),
+        now_epoch=now_epoch,
+    )
+    return True
 
 
 def reconcile_pending(
@@ -341,13 +465,17 @@ def reconcile_pending(
         pending_id = installation.pending_capability_id
         if pending_id is None:  # pragma: no cover — query contract
             continue
-        configured, _ = _read_configured_capability(
+        configured, state = _inspect_configured_capability(
             conn,
             connector_id=installation.connector_id,
             config_path=Path(installation.config_path),
             now_epoch=now_epoch,
         )
-        if configured is not None and configured.token_id == pending_id:
+        if (
+            configured is not None
+            and state == "resolved"
+            and _matches_installation(configured, installation, capability_id=pending_id)
+        ):
             conn.execute(
                 "UPDATE managed_connector_installations "
                 "SET active_capability_id = ?, pending_capability_id = NULL, updated_at = ? WHERE id = ?",
@@ -371,7 +499,11 @@ def reconcile_pending(
             )
             reconciled += 1
             continue
-        if configured is not None and configured.token_id == installation.active_capability_id:
+        if (
+            configured is not None
+            and state in {"resolved", "expired_token"}
+            and _matches_installation(configured, installation)
+        ):
             tokens.revoke(
                 conn,
                 token_id=pending_id,
@@ -430,6 +562,26 @@ def _as_int(value: int | str | None) -> int:
     raise TypeError("managed connector query returned a non-integer identifier")
 
 
+def _inspect_configured_capability(
+    conn: sqlcipher3.Connection,
+    *,
+    connector_id: str,
+    config_path: Path,
+    now_epoch: int,
+) -> tuple[VerifiedCapability | None, str]:
+    if not config_path.exists():
+        return None, "missing_config"
+    try:
+        raw_token = get_connector(connector_id).read_token(config_path)
+    except (UnsupportedConfigShapeError, UnicodeDecodeError):
+        return None, "malformed_config"
+    except Exception as exc:
+        return None, f"config_read_{type(exc).__name__}"
+    if raw_token is None:
+        return None, "missing_entry"
+    return tokens.inspect_for_owner(conn, raw_token=raw_token, now_epoch=now_epoch)
+
+
 def _read_configured_capability(
     conn: sqlcipher3.Connection,
     *,
@@ -437,16 +589,10 @@ def _read_configured_capability(
     config_path: Path,
     now_epoch: int,
 ) -> tuple[VerifiedCapability | None, str]:
-    try:
-        raw_token = get_connector(connector_id).read_token(config_path)
-    except Exception as exc:
-        return None, f"config_read_{type(exc).__name__}"
-    if raw_token is None:
-        return None, "missing_entry"
-    verified = tokens.resolve_live_without_touch(conn, raw_token=raw_token, now_epoch=now_epoch)
-    if verified is None:
-        return None, "unresolved_token"
-    return verified, "resolved"
+    capability, state = _inspect_configured_capability(
+        conn, connector_id=connector_id, config_path=config_path, now_epoch=now_epoch
+    )
+    return (capability if state == "resolved" else None), state
 
 
 def _mismatch_state(verified: VerifiedCapability, installation: ManagedInstallation) -> str:
@@ -458,15 +604,24 @@ def _mismatch_state(verified: VerifiedCapability, installation: ManagedInstallat
         return "unexpected_client"
     if verified.token_class != "service":
         return "unexpected_token_class"
+    if installation.access_ttl_seconds != MANAGED_ACCESS_TTL_SECONDS:
+        return "unexpected_access_ttl"
     return "unexpected_capability"
 
 
-def _matches_installation(verified: VerifiedCapability, installation: ManagedInstallation) -> bool:
+def _matches_installation(
+    verified: VerifiedCapability,
+    installation: ManagedInstallation,
+    *,
+    capability_id: int | None = None,
+) -> bool:
+    expected_id = installation.active_capability_id if capability_id is None else capability_id
     return (
-        verified.token_id == installation.active_capability_id
+        verified.token_id == expected_id
         and verified.agent_id == installation.agent_id
         and verified.client_name == installation.connector_id
         and verified.token_class == "service"
+        and installation.access_ttl_seconds == MANAGED_ACCESS_TTL_SECONDS
     )
 
 
@@ -575,6 +730,13 @@ def _record_drift(
         attrs=_event_attrs(installation, state=state),
         now_epoch=now_epoch,
     )
+    if state == "expired_token":
+        print(
+            f"[tesserad] connector={installation.connector_id} expired_token: "
+            f"run tessera connect {installation.connector_id} --recover "
+            "(use --path for a custom config and --socket for a custom daemon)",
+            file=sys.stderr,
+        )
 
 
 def _event_attrs(
@@ -610,9 +772,12 @@ def _emit(
 __all__ = [
     "MANAGED_ACCESS_TTL_SECONDS",
     "ManagedInstallation",
+    "RecoveryRefused",
     "adopt_default_installations",
+    "connector_status",
     "due",
     "reconcile_pending",
+    "recover_expired",
     "register",
     "renew_due",
 ]

@@ -12,9 +12,12 @@ from tessera.auth.scopes import Scope, build_scope
 from tessera.connectors import get_connector
 from tessera.connectors.base import McpServerSpec
 from tessera.connectors.renewal import (
+    RecoveryRefused,
     adopt_default_installations,
+    connector_status,
     due,
     reconcile_pending,
+    recover_expired,
     register,
     renew_due,
 )
@@ -272,6 +275,24 @@ def test_due_renewal_preserves_identity_scope_class_and_old_token(
     _, active_id, pending_id = _installation_row(open_vault)
     assert active_id == new_verified.token_id
     assert pending_id is None
+    # A client that never reloads its config keeps only the original lifetime.
+    assert (
+        tokens.resolve_live_without_touch(
+            open_vault.connection, raw_token=old.raw_token, now_epoch=old.expires_at - 1
+        )
+        is not None
+    )
+    with pytest.raises(tokens.AuthDenied) as denied:
+        tokens.verify_and_touch(
+            open_vault.connection, raw_token=old.raw_token, now_epoch=old.expires_at
+        )
+    assert str(denied.value) == "authentication failed"
+    assert (
+        tokens.resolve_live_without_touch(
+            open_vault.connection, raw_token=new_raw, now_epoch=old.expires_at
+        )
+        is not None
+    )
 
 
 @pytest.mark.integration
@@ -583,3 +604,274 @@ def test_disposable_vault_renewal_lifecycle_end_to_end(
     assert active_id == staged.token_id
     assert pending_id is None
     assert path.read_bytes() == before_failure
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("connector_id", _FILE_CONNECTORS)
+def test_expired_registration_requires_explicit_recovery(
+    open_vault: VaultConnection, tmp_path: Path, connector_id: str
+) -> None:
+    agent_id = _new_agent(open_vault)
+    path, old = _write_installation(
+        open_vault, tmp_path=tmp_path, agent_id=agent_id, connector_id=connector_id
+    )
+    now = old.expires_at
+    before = path.read_bytes()
+    assert (
+        renew_due(
+            open_vault.connection,
+            now_epoch=now,
+            horizon_seconds=_HORIZON,
+            url="http://127.0.0.1:5710/mcp",
+        )
+        == 0
+    )
+    assert path.read_bytes() == before
+    assert reconcile_pending(open_vault.connection, now_epoch=now) == 0
+    status = connector_status(
+        open_vault.connection,
+        connector_id=connector_id,
+        config_path=path,
+        now_epoch=now,
+        horizon_seconds=_HORIZON,
+    )[0]
+    assert status["current_error"] == "expired_token"
+    assert status["recoverable"] is True
+    assert "--recover" in str(status["recovery_hint"])
+    recover_expired(
+        open_vault.connection,
+        connector_id=connector_id,
+        config_path=path,
+        now_epoch=now,
+        url="http://127.0.0.1:5710/mcp",
+    )
+    new_raw = get_connector(connector_id).read_token(path)
+    assert new_raw is not None
+    assert new_raw != old.raw_token
+    new = tokens.verify_and_touch(open_vault.connection, raw_token=new_raw, now_epoch=now)
+    assert (new.agent_id, new.client_name, new.token_class) == (agent_id, connector_id, "service")
+    assert new.scope == build_scope(read=["style", "project"], write=["style"])
+    assert new.expires_at == now + _TTL
+    with pytest.raises(tokens.AuthDenied, match="authentication failed"):
+        tokens.verify_and_touch(open_vault.connection, raw_token=old.raw_token, now_epoch=now)
+    assert (
+        open_vault.connection.execute(
+            "SELECT revoked_at FROM capabilities WHERE id = ?", (old.token_id,)
+        ).fetchone()[0]
+        is None
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        ("live", "token_still_live"),
+        ("revoked", "revoked_token"),
+        ("replaced", "unexpected_capability"),
+        ("replaced_expired", "unexpected_capability"),
+        ("unknown", "unknown_token"),
+        ("malformed", "malformed_token"),
+        ("missing_config", "missing_config"),
+        ("missing_entry", "missing_entry"),
+        ("malformed_config", "malformed_config"),
+        ("pending", "pending_renewal"),
+        ("agent_mismatch", "unexpected_agent"),
+        ("client_mismatch", "unexpected_client"),
+        ("class_mismatch", "unexpected_token_class"),
+        ("ttl_mismatch", "unexpected_access_ttl"),
+        ("invalid_scope", "invalid_scope"),
+        ("unregistered", "not_registered"),
+    ],
+)
+def test_recovery_refuses_unsafe_states_without_mutation(
+    open_vault: VaultConnection, tmp_path: Path, scenario: str, expected: str
+) -> None:
+    agent_id = _new_agent(open_vault)
+    path, old = _write_installation(
+        open_vault, tmp_path=tmp_path, agent_id=agent_id, connector_id="omp"
+    )
+    conn = open_vault.connection
+    now = old.expires_at if scenario != "live" else _NOW
+    raw: str | None = None
+    if scenario == "revoked":
+        tokens.revoke(conn, token_id=old.token_id, now_epoch=_NOW, reason="test")
+    elif scenario in {"replaced", "replaced_expired", "pending"}:
+        replacement = tokens.issue(
+            conn,
+            agent_id=agent_id,
+            client_name="omp",
+            token_class="service",
+            scope=build_scope(read=["*"], write=[]),
+            now_epoch=now if scenario == "replaced" else _NOW,
+            access_ttl_seconds=_TTL,
+        )
+        if scenario == "pending":
+            conn.execute(
+                "UPDATE managed_connector_installations SET pending_capability_id = ?",
+                (replacement.token_id,),
+            )
+        else:
+            raw = replacement.raw_token
+    elif scenario == "unknown":
+        raw = "tessera_service_" + "A" * 24
+    elif scenario == "malformed":
+        raw = "not-a-token"
+    elif scenario == "missing_config":
+        path.unlink()
+    elif scenario == "missing_entry":
+        path.write_text('{"mcpServers": {}}', encoding="utf-8")
+    elif scenario == "malformed_config":
+        path.write_text("{invalid", encoding="utf-8")
+    elif scenario == "agent_mismatch":
+        other = conn.execute(
+            "INSERT INTO agents(external_id, name, created_at) VALUES ('01OTHER', 'other', 0)"
+        ).lastrowid
+        conn.execute("UPDATE managed_connector_installations SET agent_id = ?", (other,))
+    elif scenario == "client_mismatch":
+        conn.execute("UPDATE capabilities SET client_name = 'cursor' WHERE id = ?", (old.token_id,))
+    elif scenario == "class_mismatch":
+        replacement = tokens.issue(
+            conn,
+            agent_id=agent_id,
+            client_name="omp",
+            token_class="session",
+            scope=build_scope(read=["style"], write=[]),
+            now_epoch=_NOW,
+        )
+        conn.execute(
+            "UPDATE managed_connector_installations SET active_capability_id = ?",
+            (replacement.token_id,),
+        )
+        raw = replacement.raw_token
+    elif scenario == "ttl_mismatch":
+        conn.execute("UPDATE managed_connector_installations SET access_ttl_seconds = 1")
+    elif scenario == "invalid_scope":
+        conn.execute(
+            "UPDATE capabilities SET scopes = ? WHERE id = ?",
+            ('{"read": 5}', old.token_id),
+        )
+    elif scenario == "unregistered":
+        conn.execute("DELETE FROM managed_connector_installations")
+    if raw is not None:
+        get_connector("omp").apply(path, McpServerSpec(url="http://127.0.0.1:5710/mcp", token=raw))
+    file_before = path.read_bytes() if path.exists() else None
+    capabilities_before = conn.execute("SELECT * FROM capabilities ORDER BY id").fetchall()
+    registrations_before = conn.execute(
+        "SELECT * FROM managed_connector_installations ORDER BY id"
+    ).fetchall()
+    audit_before = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    status = connector_status(
+        conn,
+        connector_id="omp",
+        config_path=path,
+        now_epoch=now,
+        horizon_seconds=_HORIZON,
+    )[0]
+    assert status["current_error"] == (None if scenario == "live" else expected)
+    assert status["recoverable"] is False
+    if scenario == "pending":
+        assert status["pending_state"] == "staged"
+    with pytest.raises(RecoveryRefused, match=f"^{expected}$"):
+        recover_expired(
+            conn,
+            connector_id="omp",
+            config_path=path,
+            now_epoch=now,
+            url="http://127.0.0.1:5710/mcp",
+        )
+    assert (path.read_bytes() if path.exists() else None) == file_before
+    assert conn.execute("SELECT * FROM capabilities ORDER BY id").fetchall() == capabilities_before
+    assert (
+        conn.execute("SELECT * FROM managed_connector_installations ORDER BY id").fetchall()
+        == registrations_before
+    )
+    assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == audit_before
+
+
+@pytest.mark.integration
+def test_owner_diagnostics_are_redacted_read_only_and_expiry_exact(
+    open_vault: VaultConnection, tmp_path: Path
+) -> None:
+    agent_id = _new_agent(open_vault)
+    path, old = _write_installation(
+        open_vault, tmp_path=tmp_path, agent_id=agent_id, connector_id="omp"
+    )
+    conn = open_vault.connection
+    before = conn.execute("SELECT * FROM capabilities ORDER BY id").fetchall()
+    audits = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    for now, expected in [(old.expires_at - 1, None), (old.expires_at, "expired_token")]:
+        status = connector_status(
+            conn,
+            connector_id="omp",
+            config_path=path,
+            now_epoch=now,
+            horizon_seconds=_HORIZON,
+        )[0]
+        assert status["expires_at"] == old.expires_at
+        assert status["next_renewal_at"] == old.expires_at - _HORIZON
+        assert status["pending_state"] == "none"
+        assert status["current_error"] == expected
+        assert status["recoverable"] == (expected == "expired_token")
+        assert "last_error" not in status
+        assert not {"raw_token", "token_hash", "salt", "scope", "agent_id"} & status.keys()
+        serialized = json.dumps(status)
+        assert old.raw_token not in serialized
+        assert old.raw_refresh_token is not None
+        assert old.raw_refresh_token not in serialized
+    assert conn.execute("SELECT * FROM capabilities ORDER BY id").fetchall() == before
+    assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == audits
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("write_before_crash", [False, True])
+def test_interrupted_owner_recovery_uses_existing_reconciliation(
+    open_vault: VaultConnection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write_before_crash: bool,
+) -> None:
+    agent_id = _new_agent(open_vault)
+    path, old = _write_installation(
+        open_vault, tmp_path=tmp_path, agent_id=agent_id, connector_id="omp"
+    )
+    connector = get_connector("omp")
+    apply = connector.apply
+
+    def interrupt(self: object, config_path: Path, server: McpServerSpec) -> None:
+        del self
+        if write_before_crash:
+            apply(config_path, server)
+        raise SystemExit("simulated process exit")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(type(connector), "apply", interrupt)
+        with pytest.raises(SystemExit):
+            recover_expired(
+                open_vault.connection,
+                connector_id="omp",
+                config_path=path,
+                now_epoch=old.expires_at,
+                url="http://127.0.0.1:5710/mcp",
+            )
+    _, active, pending = _installation_row(open_vault)
+    assert active == old.token_id
+    assert pending is not None
+    configured = path.read_bytes()
+    count = open_vault.connection.execute("SELECT COUNT(*) FROM capabilities").fetchone()[0]
+    assert reconcile_pending(open_vault.connection, now_epoch=old.expires_at + 1) == 1
+    assert path.read_bytes() == configured
+    assert open_vault.connection.execute("SELECT COUNT(*) FROM capabilities").fetchone()[0] == count
+    _, active, pending_after = _installation_row(open_vault)
+    assert pending_after is None
+    if write_before_crash:
+        assert active == pending
+    else:
+        assert active == old.token_id
+        assert get_connector("omp").read_token(path) == old.raw_token
+        assert (
+            open_vault.connection.execute(
+                "SELECT revoked_at FROM capabilities WHERE id = ?", (pending,)
+            ).fetchone()[0]
+            == old.expires_at + 1
+        )

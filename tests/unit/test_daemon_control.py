@@ -108,3 +108,43 @@ async def test_malformed_json_returns_error_envelope(short_sock: Path) -> None:
     finally:
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_control_directory_is_private_before_serving(short_sock: Path) -> None:
+    short_sock.parent.chmod(0o755)
+    server = await serve_control_socket(socket_path=short_sock, dispatch=_echo_dispatcher)
+    try:
+        assert short_sock.parent.stat().st_mode & 0o777 == 0o700
+        assert short_sock.stat().st_mode & 0o777 == 0o600
+        assert await call_control(short_sock, method="ping") == {"method": "ping", "args": {}}
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_control_refuses_symlinked_directory(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir(mode=0o755)
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ControlError, match="directory must be owned"):
+        await serve_control_socket(socket_path=alias / "control.sock", dispatch=_echo_dispatcher)
+    assert target.stat().st_mode & 0o777 == 0o755
+    assert not (target / "control.sock").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("symlink", [False, True])
+async def test_control_preserves_non_socket_paths(short_sock: Path, symlink: bool) -> None:
+    target = short_sock.parent / "keep"
+    target.write_text("do not replace")
+    if symlink:
+        short_sock.symlink_to(target)
+    else:
+        short_sock.write_text("keep socket path")
+    with pytest.raises(ControlError, match="refusing to replace"):
+        await serve_control_socket(socket_path=short_sock, dispatch=_echo_dispatcher)
+    assert target.read_text() == "do not replace"
+    assert short_sock.read_text() == ("do not replace" if symlink else "keep socket path")

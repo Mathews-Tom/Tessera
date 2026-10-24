@@ -44,6 +44,7 @@ class DaemonConfig:
     allowed_origins: frozenset[str]
     reranker_model: str
     passphrase: bytes | None = None
+    expected_vault_id: str | None = None
 
 
 _DEFAULT_RERANKER_MODEL: Final[str] = "Xenova/ms-marco-MiniLM-L-12-v2"
@@ -57,6 +58,7 @@ def resolve_config(
     socket_path: Path | None = None,
     reranker_model: str | None = None,
     passphrase: bytes | None = None,
+    expected_vault_id: str | None = None,
 ) -> DaemonConfig:
     """Merge caller overrides, env vars, and built-in defaults."""
 
@@ -92,6 +94,7 @@ def resolve_config(
         allowed_origins=frozenset({"http://localhost", "http://127.0.0.1", "null"}),
         reranker_model=reranker,
         passphrase=passphrase,
+        expected_vault_id=expected_vault_id,
     )
 
 

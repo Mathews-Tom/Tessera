@@ -23,7 +23,14 @@ from typing import Any
 from tessera.adapters.fastembed_reranker import FastEmbedReranker
 from tessera.adapters.protocol import Embedder, Reranker
 from tessera.auth.tokens import VerifiedCapability
-from tessera.connectors.renewal import adopt_default_installations, reconcile_pending, renew_due
+from tessera.connectors.renewal import (
+    RecoveryRefused,
+    adopt_default_installations,
+    connector_status,
+    reconcile_pending,
+    recover_expired,
+    renew_due,
+)
 from tessera.daemon.config import DaemonConfig
 from tessera.daemon.control import ControlError, ControlRequest, serve_control_socket
 from tessera.daemon.dispatch import UnknownMethodError, dispatch_tool_call
@@ -83,6 +90,11 @@ async def run_daemon(
     with key:
         vault = open_vault_for_daemon(config.vault_path, key)
         try:
+            if (
+                config.expected_vault_id is not None
+                and vault.state.vault_id != config.expected_vault_id
+            ):
+                raise RuntimeError("startup credential vault identity mismatch")
             embedder, active_model_id, vec_table = resolve_embedder(vault.connection)
             reranker = FastEmbedReranker(model_name=config.reranker_model)
             event_log = EventLog.open(config.events_db_path)
@@ -111,7 +123,12 @@ async def run_daemon(
             )
             control_server = await serve_control_socket(
                 socket_path=config.socket_path,
-                dispatch=_make_control_dispatcher(state, stop, nonce_store),
+                dispatch=_make_control_dispatcher(
+                    state,
+                    stop,
+                    nonce_store,
+                    connector_url=f"http://{config.http_host}:{config.http_port}/mcp",
+                ),
             )
             embed_task = asyncio.create_task(
                 _embed_worker_loop(state, stop), name="tessera.embed_worker"
@@ -341,7 +358,11 @@ def _make_tool_dispatcher(
 
 
 def _make_control_dispatcher(
-    state: DaemonState, stop: asyncio.Event, nonce_store: NonceStore
+    state: DaemonState,
+    stop: asyncio.Event,
+    nonce_store: NonceStore,
+    *,
+    connector_url: str = "http://127.0.0.1:5710/mcp",
 ) -> Callable[[ControlRequest], Awaitable[dict[str, Any]]]:
     async def _dispatch(req: ControlRequest) -> dict[str, Any]:
         if req.method == "status":
@@ -357,6 +378,8 @@ def _make_control_dispatcher(
             return {"stopping": True}
         if req.method == "ping":
             return {"pong": True}
+        if req.method in {"connector_status", "connector_recover"}:
+            return _connector_control(state, req, url=connector_url)
         if req.method == "stash_bootstrap_nonce":
             return _stash_bootstrap_nonce(nonce_store, req.args)
         if req.method == "exchange_status":
@@ -364,6 +387,44 @@ def _make_control_dispatcher(
         raise ControlError(f"unknown control method {req.method!r}")
 
     return _dispatch
+
+
+def _connector_control(state: DaemonState, req: ControlRequest, *, url: str) -> dict[str, Any]:
+    from tessera.connectors import file_based_clients
+
+    connector_id = req.args.get("connector_id")
+    config_path = req.args.get("config_path")
+    if not isinstance(connector_id, str) or connector_id not in file_based_clients():
+        raise ControlError("a file-based connector_id is required")
+    if config_path is not None and (
+        not isinstance(config_path, str) or not Path(config_path).is_absolute()
+    ):
+        raise ControlError("config_path must be an absolute path")
+    path = Path(config_path) if config_path is not None else None
+    now_epoch = _now_epoch()
+    if req.method == "connector_recover":
+        if path is None:
+            raise ControlError("recovery requires an explicit config_path")
+        try:
+            recover_expired(
+                state.vault.connection,
+                connector_id=connector_id,
+                config_path=path,
+                now_epoch=now_epoch,
+                url=url,
+                event_log=state.event_log,
+            )
+        except RecoveryRefused as exc:
+            raise ControlError(f"recovery refused: {exc}") from None
+    return {
+        "installations": connector_status(
+            state.vault.connection,
+            connector_id=connector_id,
+            config_path=path,
+            now_epoch=now_epoch,
+            horizon_seconds=_RENEWAL_HORIZON_SECONDS,
+        )
+    }
 
 
 def _stash_bootstrap_nonce(nonce_store: NonceStore, args: dict[str, Any]) -> dict[str, Any]:
