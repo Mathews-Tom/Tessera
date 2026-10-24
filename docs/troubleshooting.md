@@ -209,7 +209,7 @@ Restart Claude Desktop. The bridge will now print a traceback to stderr on failu
 Common causes:
 
 - **Daemon isn't running.** `tessera daemon status`. If not running, `tessera daemon start` in a separate terminal.
-- **Token expired.** Session tokens default to a 30-minute idle TTL; Claude Desktop stashes the token at connect time. Re-run `tessera connect claude-desktop` to issue a fresh token.
+- **Token expired.** File-based connectors use reusable managed service tokens, not a new token per conversation. Check `tessera connect claude-desktop --status` through the running daemon and use explicit `--recover` only when status reports `recoverable: true`; reload the client afterward.
 - **URL mismatch.** The `--url` in the config must match the daemon's actual bind (`DEFAULT_HTTP_PORT = 5710` unless overridden).
 
 ### Claude Code: my `~/.claude/claude_code_config.json` still has the old Tessera entry
@@ -275,16 +275,21 @@ That's a bug — capture is supposed to fail loudly on any write that can't land
 
 ### `401 Unauthorized` from every MCP call
 
-Your bearer token isn't valid. Possibilities:
+A `401` means the request's credential was rejected, not that the daemon is down. Check daemon identity separately with `tessera daemon status`, then inspect the intended client's saved installation:
 
-- **Expired** (session tokens: 30 min idle, 8 hr absolute). Mint a new one:
+```bash
+tessera connect omp --status
+```
 
-  ```bash
-  tessera tokens create --read-scope=identity,preference,workflow,project,style --write-scope=identity,preference,workflow,project,style
-  ```
+- **Expired managed token.** If `current_error` is `expired_token` and `recoverable` is true, run `tessera connect omp --recover`. This owner-authorized local operation preserves the original scope and does not make the expired bearer valid. Substitute the intended client, and provide `--path` for a custom configuration.
+- **Revoked, unknown, replaced, missing, malformed, pending, or unregistered configuration.** Recovery refuses these states. Investigate the reported condition before deliberately registering a replacement with ordinary `tessera connect <client>`. That command opens the vault directly: stop or unload the daemon's supervisor first, as described in [Quickstart](quickstart.md#enable-secure-startup-at-login).
+- **Old credential retained by a running client.** After renewal or recovery, reload its MCP configuration. For OMP use `/mcp reload`, not a new token for every session. Recheck `stats` and `recall` through the client itself.
 
-- **Revoked.** `tessera tokens list` shows revocation state. If revoked, issue a new one.
-- **Wrong token copied in.** Token strings are long (`tessera_session_<48-char-ulid>`). A trailing whitespace or missing character kills verification.
+Managed file-based credentials last 90 days. The daemon renews them within 14 days of expiry only while running and only when the configured token still validates. Downtime beyond expiry requires explicit recovery; restarting the daemon alone does not restore authentication. Use keyring-backed login startup to keep the renewal worker resident.
+
+### Daemon starts manually but fails after login
+
+An interactive shell export is not a login-service credential source. Run `tessera daemon install --keyring --vault /absolute/path/to/vault.db` with the existing shell passphrase available, then activate the generated service using the [Quickstart](quickstart.md#enable-secure-startup-at-login) instructions. Approve OS keyring access for the service interpreter when prompted. The service stores only a vault ID, never a plaintext passphrase. Missing, locked, or unavailable keyring entries fail explicitly; they do not fall back to environment authentication.
 
 ### `403 Forbidden: scope_denied` on a specific MCP tool
 

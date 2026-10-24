@@ -4,22 +4,34 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from tessera.cli._common import CliError, fail, resolve_passphrase, resolve_vault_path
+from tessera.cli._common import CliError, fail, open_vault, resolve_passphrase, resolve_vault_path
 from tessera.cli._ui import EMOJI, console, info, kv_panel, status, success
 from tessera.daemon.config import DaemonConfig, resolve_config
 from tessera.daemon.control import ControlError, call_control
-from tessera.daemon.supervisor import run_daemon
+from tessera.daemon.supervisor import (
+    _KEYRING_INSTALL_PROOF_DOMAIN,
+    _KEYRING_INSTALL_VERIFY_METHOD,
+    run_daemon,
+)
 from tessera.daemon.units import (
     launchd_plist,
     launchd_plist_path,
     systemd_unit,
     systemd_unit_path,
+)
+from tessera.vault.connection import VaultError
+from tessera.vault.encryption import derive_key, load_salt
+from tessera.vault.keyring_cache import (
+    KeyringUnavailableError,
+    cache_passphrase,
+    load_passphrase,
 )
 
 _READY_POLL_INTERVAL = 0.5
@@ -71,7 +83,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         default=None,
         help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
     )
-    start_fg.add_argument("--passphrase", default=None)
+    foreground_auth = start_fg.add_mutually_exclusive_group()
+    foreground_auth.add_argument("--passphrase", default=None)
+    foreground_auth.add_argument(
+        "--keyring-vault-id",
+        default=None,
+        help="load this vault's passphrase from the OS keyring; never fall back to env",
+    )
     start_fg.add_argument("--port", type=int, default=None)
     start_fg.add_argument("--host", default=None)
     start_fg.set_defaults(handler=_cmd_start_fg)
@@ -97,6 +115,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         type=Path,
         default=None,
         help="vault path; default $TESSERA_VAULT or ~/.tessera/vault.db",
+    )
+    install.add_argument(
+        "--keyring",
+        action="store_true",
+        help="opt in to storing the vault passphrase in the OS keyring for login startup",
+    )
+    install.add_argument(
+        "--passphrase",
+        default=None,
+        help="passphrase to cache with --keyring; defaults to the supported passphrase env",
     )
     install.set_defaults(handler=_cmd_install)
 
@@ -295,21 +323,47 @@ def _tail_log(path: Path, *, lines: int) -> str:
 
 
 def _cmd_start_fg(args: argparse.Namespace) -> int:
+    keyring_vault_id = args.keyring_vault_id
     try:
-        vault_path = resolve_vault_path(args.vault)
-        passphrase = resolve_passphrase(args.passphrase)
+        vault_path = resolve_vault_path(args.vault).resolve()
+        if keyring_vault_id is not None:
+            if not keyring_vault_id.strip():
+                raise CliError("--keyring-vault-id must be non-empty")
+            try:
+                passphrase = load_passphrase(keyring_vault_id)
+            except KeyringUnavailableError as exc:
+                raise CliError(
+                    "OS keyring is locked, unavailable, or unreadable; unlock your login "
+                    "keyring and allow Tessera access, then restart the service"
+                ) from exc
+            if not passphrase:
+                raise CliError(
+                    "no cached passphrase for the requested vault; run "
+                    "`tessera daemon install --keyring --vault PATH` with shell authentication"
+                )
+        else:
+            passphrase = resolve_passphrase(args.passphrase)
     except CliError as exc:
         return fail(str(exc))
-    config = resolve_config(
-        vault_path=vault_path,
-        http_host=args.host,
-        http_port=args.port,
-        passphrase=bytes(passphrase),
-    )
+    try:
+        config = resolve_config(
+            vault_path=vault_path,
+            http_host=args.host,
+            http_port=args.port,
+            passphrase=bytes(passphrase),
+            expected_vault_id=keyring_vault_id,
+        )
+    finally:
+        passphrase[:] = b"\0" * len(passphrase)
     info(f"starting daemon (foreground) against {vault_path}", emoji=EMOJI["daemon_up"])
     try:
         asyncio.run(run_daemon(config))
     except Exception as exc:
+        if keyring_vault_id is not None:
+            return fail(
+                f"keyring daemon startup failed ({type(exc).__name__}); verify the vault "
+                "identity, cached passphrase, and login keyring access"
+            )
         return fail(f"daemon failed: {type(exc).__name__}: {exc}")
     return 0
 
@@ -388,7 +442,23 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _cmd_install(args: argparse.Namespace) -> int:
     try:
-        vault_path = resolve_vault_path(args.vault)
+        vault_path = resolve_vault_path(args.vault).resolve()
+        keyring_vault_id = None
+        if args.passphrase is not None and not args.keyring:
+            raise CliError("--passphrase requires --keyring when installing a service")
+        if args.keyring:
+            passphrase = resolve_passphrase(args.passphrase)
+            try:
+                keyring_vault_id = _vault_id_for_keyring_install(vault_path, passphrase)
+                try:
+                    cache_passphrase(keyring_vault_id, passphrase)
+                except KeyringUnavailableError as exc:
+                    raise CliError(
+                        "OS keyring is locked or unavailable; unlock your login keyring "
+                        "and allow Tessera access before installing"
+                    ) from exc
+            finally:
+                passphrase[:] = b"\0" * len(passphrase)
     except CliError as exc:
         return fail(str(exc))
     home = Path(os.path.expanduser("~"))
@@ -400,19 +470,99 @@ def _cmd_install(args: argparse.Namespace) -> int:
             python_executable=python_exe,
             vault_path=vault_path,
             log_path=home / ".tessera" / "run" / "tesserad.log",
+            keyring_vault_id=keyring_vault_id,
         )
         _write_unit(path, body)
         success(f"wrote {path}", emoji=EMOJI["daemon_up"])
         info(f"load via: launchctl bootstrap gui/$(id -u) {path}")
         return 0
     path = systemd_unit_path(home)
-    body = systemd_unit(python_executable=python_exe, vault_path=vault_path)
+    body = systemd_unit(
+        python_executable=python_exe,
+        vault_path=vault_path,
+        keyring_vault_id=keyring_vault_id,
+    )
     _write_unit(path, body)
     success(f"wrote {path}", emoji=EMOJI["daemon_up"])
     info(
         "enable via: systemctl --user daemon-reload && systemctl --user enable --now tesserad",
     )
     return 0
+
+
+def _vault_id_for_keyring_install(vault_path: Path, passphrase: bytearray) -> str:
+    """Validate credentials with the live owner, or unlock only while it is absent."""
+    config = resolve_config(vault_path=vault_path)
+    try:
+        if not config.socket_path.exists():
+            raise FileNotFoundError(config.socket_path)
+        response = asyncio.run(call_control(config.socket_path, method="status"))
+    except (FileNotFoundError, ConnectionRefusedError):
+        # A live process with an unavailable control socket may still own the vault.
+        if config.pid_path.exists():
+            try:
+                pid = int(config.pid_path.read_text().strip())
+                if pid <= 0:
+                    raise ValueError
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pass
+            except (OSError, ValueError) as exc:
+                raise CliError(
+                    "cannot establish whether the daemon owns the vault; "
+                    "stop it before installing keyring startup"
+                ) from exc
+            else:
+                raise CliError(
+                    "daemon process is running but control status is unavailable; "
+                    "restore control access or stop it before installing keyring startup"
+                )
+        try:
+            with open_vault(vault_path, passphrase) as vault:
+                return vault.state.vault_id
+        except VaultError as exc:
+            raise CliError(
+                f"cannot unlock the requested vault for keyring installation ({type(exc).__name__})"
+            ) from exc
+    except (OSError, ControlError, TimeoutError) as exc:
+        raise CliError(
+            "cannot obtain local daemon status; refusing to open a potentially owned vault"
+        ) from exc
+    live_path = response.get("vault_path")
+    try:
+        if not isinstance(live_path, str) or Path(live_path).resolve() != vault_path:
+            raise CliError(
+                "running daemon vault path does not match --vault; refusing keyring install"
+            )
+        with derive_key(passphrase, load_salt(vault_path)) as key:
+            raw_key = bytearray.fromhex(key.hex())
+            try:
+                proof = hmac.digest(
+                    raw_key,
+                    _KEYRING_INSTALL_PROOF_DOMAIN + str(vault_path).encode("utf-8"),
+                    "sha256",
+                ).hex()
+            finally:
+                raw_key[:] = b"\0" * len(raw_key)
+        response = asyncio.run(
+            call_control(
+                config.socket_path,
+                method=_KEYRING_INSTALL_VERIFY_METHOD,
+                args={"vault_path": str(vault_path), "proof": proof},
+            )
+        )
+    except (OSError, ValueError, ControlError, TimeoutError) as exc:
+        raise CliError(
+            "cannot verify the supplied passphrase with the running daemon; "
+            "keyring installation refused"
+        ) from exc
+    live_path = response.get("vault_path")
+    vault_id = response.get("vault_id")
+    if not isinstance(live_path, str) or Path(live_path).resolve() != vault_path:
+        raise CliError("running daemon vault path does not match --vault; refusing keyring install")
+    if not isinstance(vault_id, str) or not vault_id.strip():
+        raise CliError("running daemon did not return a valid vault identity")
+    return vault_id
 
 
 def _cmd_uninstall(args: argparse.Namespace) -> int:

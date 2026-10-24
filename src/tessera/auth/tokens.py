@@ -291,25 +291,29 @@ def verify_and_touch(
     )
 
 
-def resolve_live_without_touch(
+def inspect_for_owner(
     conn: sqlcipher3.Connection, *, raw_token: str, now_epoch: int
-) -> VerifiedCapability | None:
-    """Resolve a live token without updating usage or writing an audit row."""
+) -> tuple[VerifiedCapability | None, str]:
+    """Inspect a configured token for the protected local owner control plane.
+
+    This is NOT authentication: expired/revoked rows may be returned for
+    diagnosis. It never changes usage or audit state. Callers must enforce
+    the returned state; public bearer authentication still uses
+    ``verify_and_touch``.
+    """
     parsed = _parse_raw_token(raw_token)
     if parsed is None:
-        return None
+        return None, "malformed_token"
     claimed_class, _ = parsed
     row = _find_by_access_token(conn, raw_token=raw_token, token_class=claimed_class)
     if row is None:
-        return None
+        return None, "unknown_token"
     cap_id, agent_id, client_name, scopes_json, stored_class, expires_at, revoked_at = row
-    if revoked_at is not None or expires_at <= now_epoch:
-        return None
     try:
         scope = parse_scope(scopes_json)
     except Exception:
-        return None
-    return VerifiedCapability(
+        return None, "invalid_scope"
+    capability = VerifiedCapability(
         token_id=cap_id,
         agent_id=agent_id,
         client_name=client_name,
@@ -317,6 +321,19 @@ def resolve_live_without_touch(
         scope=scope,
         expires_at=expires_at,
     )
+    if revoked_at is not None:
+        return capability, "revoked_token"
+    if expires_at <= now_epoch:
+        return capability, "expired_token"
+    return capability, "resolved"
+
+
+def resolve_live_without_touch(
+    conn: sqlcipher3.Connection, *, raw_token: str, now_epoch: int
+) -> VerifiedCapability | None:
+    """Resolve a live token without updating usage or writing an audit row."""
+    capability, state = inspect_for_owner(conn, raw_token=raw_token, now_epoch=now_epoch)
+    return capability if state == "resolved" else None
 
 
 def refresh(
@@ -649,6 +666,7 @@ __all__ = [
     "RefreshNotSupportedError",
     "TokenClass",
     "VerifiedCapability",
+    "inspect_for_owner",
     "issue",
     "record_scope_denial",
     "refresh",

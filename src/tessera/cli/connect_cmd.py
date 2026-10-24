@@ -12,6 +12,8 @@ the user pastes into ChatGPT.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -42,7 +44,8 @@ from tessera.connectors.renewal import (
 from tessera.connectors.renewal import (
     register as register_managed_installation,
 )
-from tessera.daemon.config import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT
+from tessera.daemon.config import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PORT, resolve_config
+from tessera.daemon.control import ControlError, call_control
 
 # Sensible default scopes for a newly-minted client token. File-based
 # connectors are managed installations for the vault owner, and recall is
@@ -94,6 +97,17 @@ def register(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[ty
         type=Path,
         default=None,
         help="override the client's default config path (ChatGPT has no file)",
+    )
+    managed = connect.add_mutually_exclusive_group()
+    managed.add_argument(
+        "--status",
+        action="store_true",
+        help="read redacted managed-connector diagnostics through the owner-only control socket",
+    )
+    managed.add_argument(
+        "--recover",
+        action="store_true",
+        help="explicitly recover the selected registered expired token through the owner-only socket",
     )
     connect.set_defaults(handler=_cmd_connect)
 
@@ -161,6 +175,8 @@ def _expand_clients(raw: list[str]) -> list[str]:
 
 
 def _cmd_connect(args: argparse.Namespace) -> int:
+    if args.status or args.recover:
+        return _cmd_managed_connector(args)
     clients = _expand_clients(args.client)
     overall = 0
     for client_id in clients:
@@ -177,6 +193,60 @@ def _cmd_connect(args: argparse.Namespace) -> int:
         if rc != 0:
             overall = rc
     return overall
+
+
+def _cmd_managed_connector(args: argparse.Namespace) -> int:
+    """Owner control operations never unlock the vault in the client process."""
+    if args.recover and _ALL_META in args.client:
+        return fail("recovery requires explicit client ids; 'all' is read-only with --status")
+    clients = _expand_clients(args.client)
+    if args.path is not None and len(clients) != 1:
+        return fail("--path requires exactly one selected client")
+    if any(client not in file_based_clients() for client in clients):
+        return fail("managed status/recovery requires file-based clients")
+    if (
+        args.agent_id is not None
+        or args.token_ttl_days is not None
+        or args.token_class != "service"
+    ):
+        return fail("managed status/recovery preserves registered identity, scope, and 90-day TTL")
+    config = resolve_config(socket_path=args.socket)
+
+    async def request() -> tuple[list[dict[str, object]], list[str]]:
+        if args.vault is not None:
+            daemon = await call_control(config.socket_path, method="status")
+            if daemon.get("vault_path") != str(args.vault.expanduser().resolve()):
+                raise ControlError("selected vault does not match the running daemon")
+        results: list[dict[str, object]] = []
+        errors: list[str] = []
+        for client_id in clients:
+            path = args.path
+            if args.recover and path is None:
+                path = get_connector(client_id).default_path()
+            selected: dict[str, object] = {"connector_id": client_id}
+            if path is not None:
+                selected["config_path"] = str(path.expanduser().resolve())
+            try:
+                results.append(
+                    await call_control(
+                        config.socket_path,
+                        method="connector_recover" if args.recover else "connector_status",
+                        args=selected,
+                    )
+                )
+            except ControlError as exc:
+                errors.append(f"{client_id}: {exc}")
+        return results, errors
+
+    try:
+        results, errors = asyncio.run(request())
+    except (ConnectionError, ControlError, OSError) as exc:
+        return fail(f"managed connector control unavailable: {exc}")
+    for result in results:
+        print(json.dumps(result, sort_keys=True))
+    for error in errors:
+        fail(error)
+    return 1 if errors else 0
 
 
 def _cmd_disconnect(args: argparse.Namespace) -> int:

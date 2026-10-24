@@ -10,29 +10,36 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import socket
 import stat
+import sys
 import tempfile
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 import httpx
+import keyring
 import pytest
 
 from tessera.adapters import models_registry
 from tessera.auth import tokens
 from tessera.auth.scopes import build_scope
+from tessera.cli import connect_cmd, daemon_cmd
+from tessera.cli.__main__ import _build_parser
+from tessera.connectors import get_connector
+from tessera.connectors.base import McpServerSpec
+from tessera.connectors.renewal import MANAGED_ACCESS_TTL_SECONDS, register
 from tessera.daemon import supervisor
 from tessera.daemon.config import resolve_config
-from tessera.daemon.control import call_control
-from tessera.daemon.state import DaemonState
+from tessera.daemon.control import ControlError, call_control
 from tessera.migration import bootstrap
-from tessera.observability.events import EventLog
 from tessera.vault import capture as vault_capture
+from tessera.vault import keyring_cache
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt, save_salt
 
@@ -74,12 +81,6 @@ class _FakeReranker:
 
     async def health_check(self) -> None:
         return None
-
-
-@dataclass
-class _RenewalState:
-    vault: VaultConnection
-    event_log: EventLog
 
 
 def _pick_port() -> int:
@@ -199,6 +200,161 @@ async def test_supervisor_starts_serves_and_stops(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+async def test_live_keyring_install_verifies_before_replacing_credentials_or_service(
+    short_run_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    platform: str,
+) -> None:
+    vault_path = short_run_dir / "vault.db"
+    passphrase = b"live-keyring-secret"
+    salt = new_salt()
+    save_salt(vault_path, salt)
+    with derive_key(passphrase, salt) as key:
+        bootstrap(vault_path, key)
+        with VaultConnection.open(vault_path, key) as vault:
+            vault_id = vault.state.vault_id
+            models_registry.register_embedding_model(
+                vault.connection, name="fastembed-fake-model", dim=8, activate=True
+            )
+
+    def fake_resolve(conn: Any) -> tuple[_FakeEmbedder, int, str]:
+        model = models_registry.active_model(conn)
+        return _FakeEmbedder(), model.id, models_registry.vec_table_name(model.id)
+
+    monkeypatch.setattr(supervisor, "resolve_embedder", fake_resolve)
+    monkeypatch.setattr(supervisor, "FastEmbedReranker", _FakeReranker)
+    monkeypatch.setenv("HOME", str(short_run_dir))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(sys, "platform", platform)
+    config = replace(
+        resolve_config(
+            vault_path=vault_path,
+            passphrase=passphrase,
+            socket_path=short_run_dir / "control" / "t.sock",
+            http_port=_pick_port(),
+        ),
+        pid_path=short_run_dir / "pid",
+        events_db_path=short_run_dir / "events.db",
+    )
+    monkeypatch.setattr(daemon_cmd, "resolve_config", lambda **kwargs: config)
+    entries: dict[tuple[str, str], str] = {}
+
+    def store(service: str, username: str, password: str) -> None:
+        entries[(service, username)] = password
+
+    monkeypatch.setattr(keyring, "set_password", store)
+    monkeypatch.setattr(
+        keyring, "get_password", lambda service, username: entries.get((service, username))
+    )
+    keyring_cache.cache_passphrase(vault_id, bytearray(b"previous-cached-credential"))
+    previous_cache = entries.copy()
+    parser = _build_parser()
+    initial = parser.parse_args(["daemon", "install", "--vault", str(vault_path)])
+    assert initial.handler(initial) == 0
+    service_path = (
+        short_run_dir / "Library/LaunchAgents/com.tessera.daemon.plist"
+        if platform == "darwin"
+        else short_run_dir / ".config/systemd/user/tesserad.service"
+    )
+    previous_service = service_path.read_bytes()
+    capsys.readouterr()
+    stop = asyncio.Event()
+    ready = asyncio.Event()
+    daemon_task = asyncio.create_task(supervisor.run_daemon(config, stop_event=stop, ready=ready))
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=10.0)
+
+        def forbidden(*args: object, **kwargs: object) -> None:
+            pytest.fail("live keyring installation must not reopen the owned vault")
+
+        monkeypatch.setattr(daemon_cmd, "open_vault", forbidden)
+        wrong = parser.parse_args(
+            [
+                "daemon",
+                "install",
+                "--keyring",
+                "--vault",
+                str(vault_path),
+                "--passphrase",
+                "mistyped-live-secret",
+            ]
+        )
+        assert await asyncio.to_thread(wrong.handler, wrong) == 1
+        assert entries == previous_cache
+        assert service_path.read_bytes() == previous_service
+        rejected_output = capsys.readouterr()
+        assert "passphrase" in rejected_output.out + rejected_output.err
+        assert "mistyped-live-secret" not in rejected_output.out + rejected_output.err
+
+        wrong_vault = parser.parse_args(
+            [
+                "daemon",
+                "install",
+                "--keyring",
+                "--vault",
+                str(short_run_dir / "other.db"),
+                "--passphrase",
+                passphrase.decode(),
+            ]
+        )
+        assert await asyncio.to_thread(wrong_vault.handler, wrong_vault) == 1
+        assert entries == previous_cache
+        assert service_path.read_bytes() == previous_service
+
+        # The real owner-only socket rejects malformed and wrong-vault proofs.
+        invalid_proofs: tuple[object, ...] = (
+            None,
+            7,
+            [],
+            "",
+            "0" * 63,
+            "0" * 65,
+            "z" * 64,
+            "é" * 64,
+        )
+        for proof in invalid_proofs:
+            with pytest.raises(ControlError, match="invalid keyring installation proof"):
+                await call_control(
+                    config.socket_path,
+                    method=supervisor._KEYRING_INSTALL_VERIFY_METHOD,
+                    args={"vault_path": str(vault_path.resolve()), "proof": proof},
+                )
+        with pytest.raises(ControlError, match="requested vault does not match"):
+            await call_control(
+                config.socket_path,
+                method=supervisor._KEYRING_INSTALL_VERIFY_METHOD,
+                args={"vault_path": str(short_run_dir / "other.db"), "proof": "0" * 64},
+            )
+
+        correct = parser.parse_args(
+            [
+                "daemon",
+                "install",
+                "--keyring",
+                "--vault",
+                str(vault_path),
+                "--passphrase",
+                passphrase.decode(),
+            ]
+        )
+        assert await asyncio.to_thread(correct.handler, correct) == 0
+        assert keyring_cache.load_passphrase(vault_id) == bytearray(passphrase)
+        service = service_path.read_text()
+        assert service_path.read_bytes() != previous_service
+        assert "--keyring-vault-id" in service
+        assert vault_id in service
+        output = capsys.readouterr()
+        assert passphrase.decode() not in service + output.out + output.err
+        assert (await call_control(config.socket_path, method="ping")) == {"pong": True}
+    finally:
+        stop.set()
+        await asyncio.wait_for(daemon_task, timeout=10.0)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_supervisor_emits_daemon_warmed_audit_row(
     short_run_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -302,51 +458,6 @@ async def test_supervisor_emits_daemon_warmed_audit_row(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_connector_renewal_pass_runs_immediately_and_stops(
-    open_vault: VaultConnection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[str] = []
-    stop = asyncio.Event()
-    events = EventLog.open(tmp_path / "events.db")
-    state = _RenewalState(vault=open_vault, event_log=events)
-    config = resolve_config(
-        vault_path=tmp_path / "vault.db",
-        http_port=_pick_port(),
-        socket_path=tmp_path / "control.sock",
-    )
-
-    def _reconcile(*args: object, **kwargs: object) -> int:
-        del args, kwargs
-        calls.append("reconcile")
-        return 0
-
-    def _adopt(*args: object, **kwargs: object) -> int:
-        del args, kwargs
-        calls.append("adopt")
-        return 0
-
-    def _renew(*args: object, **kwargs: object) -> int:
-        del args, kwargs
-        calls.append("renew")
-        stop.set()
-        return 0
-
-    monkeypatch.setattr(supervisor, "reconcile_pending", _reconcile)
-    monkeypatch.setattr(supervisor, "adopt_default_installations", _adopt)
-    monkeypatch.setattr(supervisor, "renew_due", _renew)
-    try:
-        await asyncio.wait_for(
-            supervisor._renewal_loop(cast(DaemonState, state), stop, config),
-            timeout=1.0,
-        )
-    finally:
-        events.close()
-
-    assert calls == ["reconcile", "adopt", "renew"]
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
 async def test_supervisor_refuses_start_without_passphrase(
     short_run_dir: Path,
 ) -> None:
@@ -357,3 +468,206 @@ async def test_supervisor_refuses_start_without_passphrase(
     )
     with pytest.raises(RuntimeError, match="passphrase"):
         await supervisor.run_daemon(config)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_restart_after_expiry_cli_owner_recovery_and_http_auth(
+    short_run_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Real encrypted daemon/control/CLI journey with no model downloads."""
+    now = [1_000_000]
+    monkeypatch.setattr(supervisor, "_now_epoch", lambda: now[0])
+    monkeypatch.setenv("HOME", str(short_run_dir))
+    monkeypatch.delenv("TESSERA_PASSPHRASE", raising=False)
+    vault_path = short_run_dir / "v.db"
+    path = short_run_dir / "omp.json"
+    salt = new_salt()
+    save_salt(vault_path, salt)
+    passphrase = b"recovery-lifecycle-test"
+    with derive_key(bytearray(passphrase), salt) as key:
+        bootstrap(vault_path, key)
+        with VaultConnection.open(vault_path, key) as vc:
+            cur = vc.connection.execute(
+                "INSERT INTO agents(external_id, name, created_at) VALUES ('01RECOVER', 'a', 0)"
+            )
+            assert cur.lastrowid is not None
+            agent_id = int(cur.lastrowid)
+            models_registry.register_embedding_model(
+                vc.connection, name="fastembed-fake-model", dim=8, activate=True
+            )
+            old = tokens.issue(
+                vc.connection,
+                agent_id=agent_id,
+                client_name="omp",
+                token_class="service",
+                scope=build_scope(read=["style"], write=[]),
+                now_epoch=now[0],
+                access_ttl_seconds=MANAGED_ACCESS_TTL_SECONDS,
+            )
+            get_connector("omp").apply(
+                path, McpServerSpec(url="http://127.0.0.1:5710/mcp", token=old.raw_token)
+            )
+            register(
+                vc.connection,
+                connector_id="omp",
+                config_path=str(path),
+                agent_id=agent_id,
+                capability_id=old.token_id,
+                access_ttl_seconds=MANAGED_ACCESS_TTL_SECONDS,
+                now_epoch=now[0],
+            )
+
+    def fake_resolve(conn: Any) -> tuple[_FakeEmbedder, int, str]:
+        model = models_registry.active_model(conn)
+        return _FakeEmbedder(), model.id, models_registry.vec_table_name(model.id)
+
+    def forbidden_vault_open(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        pytest.fail("managed CLI must not unlock a vault")
+
+    monkeypatch.setattr(supervisor, "resolve_embedder", fake_resolve)
+    monkeypatch.setattr(supervisor, "FastEmbedReranker", _FakeReranker)
+    monkeypatch.setattr(connect_cmd, "open_vault", forbidden_vault_open)
+    config = replace(
+        resolve_config(
+            vault_path=vault_path,
+            socket_path=short_run_dir / "t.sock",
+            http_port=_pick_port(),
+            passphrase=passphrase,
+        ),
+        events_db_path=short_run_dir / "events.db",
+        pid_path=short_run_dir / "pid",
+    )
+    parser = _build_parser()
+    for restart in (False, True):
+        if restart:
+            now[0] = old.expires_at
+        stop, ready = asyncio.Event(), asyncio.Event()
+        daemon = asyncio.create_task(supervisor.run_daemon(config, stop_event=stop, ready=ready))
+        try:
+            await asyncio.wait_for(ready.wait(), timeout=10)
+            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{config.http_port}") as client:
+                response = await client.post(
+                    "/mcp",
+                    json={"method": "stats", "args": {}},
+                    headers={"Authorization": f"Bearer {old.raw_token}"},
+                )
+                assert response.status_code == (401 if restart else 200)
+                if not restart:
+                    assert get_connector("omp").read_token(path) == old.raw_token
+                    continue
+                status_args = parser.parse_args(
+                    [
+                        "connect",
+                        "all",
+                        "--status",
+                        "--socket",
+                        str(config.socket_path),
+                    ]
+                )
+                assert await asyncio.to_thread(status_args.handler, status_args) == 0
+                output = capsys.readouterr().out
+                entries = [
+                    entry
+                    for line in output.splitlines()
+                    if line.startswith("{")
+                    for entry in json.loads(line)["installations"]
+                ]
+                omp = next(entry for entry in entries if entry["connector_id"] == "omp")
+                assert omp["current_error"] == "expired_token"
+                assert old.raw_token not in output
+                # Sending an expired bearer to HTTP cannot invoke owner control.
+                unauthorized = await client.post(
+                    "/mcp",
+                    json={
+                        "method": "connector_recover",
+                        "args": {
+                            "connector_id": "omp",
+                            "config_path": str(path),
+                        },
+                    },
+                    headers={"Authorization": f"Bearer {old.raw_token}"},
+                )
+                assert unauthorized.status_code == 401
+                assert get_connector("omp").read_token(path) == old.raw_token
+                recover_args = parser.parse_args(
+                    [
+                        "connect",
+                        "omp",
+                        "--recover",
+                        "--path",
+                        str(path),
+                        "--socket",
+                        str(config.socket_path),
+                    ]
+                )
+                assert await asyncio.to_thread(recover_args.handler, recover_args) == 0
+                new_raw = get_connector("omp").read_token(path)
+                assert new_raw is not None
+                assert new_raw != old.raw_token
+                for invalid_args, message in [
+                    ({"connector_id": "all", "config_path": str(path)}, "file-based"),
+                    ({"connector_id": "omp"}, "explicit config_path"),
+                    ({"connector_id": "omp", "config_path": "relative.json"}, "absolute path"),
+                ]:
+                    with pytest.raises(ControlError, match=message):
+                        await call_control(
+                            config.socket_path, method="connector_recover", args=invalid_args
+                        )
+                recovered = await client.post(
+                    "/mcp",
+                    json={"method": "stats", "args": {}},
+                    headers={"Authorization": f"Bearer {new_raw}"},
+                )
+                assert recovered.status_code == 200
+                assert recovered.json()["ok"] is True
+                still_denied = await client.post(
+                    "/mcp",
+                    json={"method": "stats", "args": {}},
+                    headers={"Authorization": f"Bearer {old.raw_token}"},
+                )
+                assert still_denied.status_code == 401
+                with pytest.raises(ControlError, match="token_still_live"):
+                    await call_control(
+                        config.socket_path,
+                        method="connector_recover",
+                        args={"connector_id": "omp", "config_path": str(path)},
+                    )
+        finally:
+            stop.set()
+            await asyncio.wait_for(daemon, timeout=10)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_supervisor_rejects_bound_vault_mismatch_before_adapter_startup(
+    short_run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault_path = short_run_dir / "v.db"
+    salt = new_salt()
+    save_salt(vault_path, salt)
+    passphrase = b"vault-binding-test"
+    with derive_key(bytearray(passphrase), salt) as key:
+        bootstrap(vault_path, key)
+
+    def forbidden_adapter(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        pytest.fail("mismatched startup identity must fail before adapter initialization")
+
+    monkeypatch.setattr(supervisor, "resolve_embedder", forbidden_adapter)
+    config = resolve_config(
+        vault_path=vault_path,
+        passphrase=passphrase,
+        expected_vault_id="another-vault",
+        socket_path=short_run_dir / "t.sock",
+        http_port=_pick_port(),
+    )
+    with pytest.raises(RuntimeError, match="vault identity mismatch"):
+        await supervisor.run_daemon(config)
+    assert not config.socket_path.exists()
+    # Failed startup released the vault lock.
+    with derive_key(bytearray(passphrase), salt) as key, VaultConnection.open(vault_path, key):
+        pass

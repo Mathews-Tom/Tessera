@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import configparser
+import plistlib
+import shlex
 from pathlib import Path
 
 import pytest
@@ -15,45 +18,71 @@ from tessera.daemon.units import (
 
 
 @pytest.mark.unit
-def test_launchd_plist_contains_required_keys() -> None:
+@pytest.mark.parametrize("vault_id", [None, "vault-identity"])
+def test_launchd_plist_service_options(vault_id: str | None) -> None:
+    vault_path = Path("/Users/x/My Vault/a&b<c>.db")
+    log_path = Path("/tmp/a&b/log")
     body = launchd_plist(
         python_executable=Path("/usr/bin/python3"),
-        vault_path=Path("/Users/x/.tessera/vault.db"),
-        log_path=Path("/tmp/tesserad.log"),
+        vault_path=vault_path,
+        log_path=log_path,
+        keyring_vault_id=vault_id,
     )
-    assert "<key>Label</key>" in body
-    assert "<string>com.tessera.daemon</string>" in body
-    assert "<key>ProgramArguments</key>" in body
-    assert "<string>/usr/bin/python3</string>" in body
-    assert "<key>RunAtLoad</key>" in body
-    assert "<key>KeepAlive</key>" in body
+    unit = plistlib.loads(body.encode())
+    expected = [
+        "/usr/bin/python3",
+        "-m",
+        "tessera.cli",
+        "daemon",
+        "start-fg",
+        "--vault",
+        str(vault_path),
+    ]
+    if vault_id is not None:
+        expected.extend(["--keyring-vault-id", vault_id])
+        assert "EnvironmentVariables" not in unit
+    else:
+        assert unit["EnvironmentVariables"] == {"TESSERA_PASSPHRASE_ENV": "TESSERA_PASSPHRASE"}
+    assert unit["ProgramArguments"] == expected
+    assert unit["Label"] == "com.tessera.daemon"
+    assert unit["RunAtLoad"] is True
+    assert unit["KeepAlive"] is True
+    assert unit["ThrottleInterval"] >= 10
+    assert unit["StandardOutPath"] == str(log_path)
+    assert unit["StandardErrorPath"] == str(log_path)
+    assert "--passphrase" not in expected
 
 
 @pytest.mark.unit
-def test_launchd_plist_escapes_xml_entities() -> None:
-    # A vault path with &, <, > must land as entities so plist parsers
-    # do not choke on the generated file.
-    body = launchd_plist(
-        python_executable=Path("/usr/bin/python3"),
-        vault_path=Path("/tmp/a&b<c>.db"),
-        log_path=Path("/tmp/x.log"),
-    )
-    assert "/tmp/a&amp;b&lt;c&gt;.db" in body
-    assert "a&b<c>" not in body
-
-
-@pytest.mark.unit
-def test_systemd_unit_contains_required_sections() -> None:
+@pytest.mark.parametrize("vault_id", [None, "vault-identity"])
+def test_systemd_unit_service_options(vault_id: str | None) -> None:
+    vault_path = Path("/home/x/My Vault/vault.db")
     body = systemd_unit(
         python_executable=Path("/usr/bin/python3"),
-        vault_path=Path("/home/x/.tessera/vault.db"),
+        vault_path=vault_path,
+        keyring_vault_id=vault_id,
     )
-    assert "[Unit]" in body
-    assert "[Service]" in body
-    assert "[Install]" in body
-    assert "ExecStart=" in body
-    assert "Restart=on-failure" in body
-    assert "WantedBy=default.target" in body
+    unit = configparser.ConfigParser(interpolation=None)
+    unit.read_string(body)
+    expected = [
+        "/usr/bin/python3",
+        "-m",
+        "tessera.cli",
+        "daemon",
+        "start-fg",
+        "--vault",
+        str(vault_path),
+    ]
+    if vault_id is not None:
+        expected.extend(["--keyring-vault-id", vault_id])
+        assert "Environment" not in unit["Service"]
+    else:
+        assert unit["Service"]["Environment"] == "TESSERA_PASSPHRASE_ENV=TESSERA_PASSPHRASE"
+    assert shlex.split(unit["Service"]["ExecStart"]) == expected
+    assert unit["Service"]["Restart"] == "on-failure"
+    assert int(unit["Service"]["RestartSec"]) >= 3
+    assert unit["Install"]["WantedBy"] == "default.target"
+    assert "--passphrase" not in expected
 
 
 @pytest.mark.unit
