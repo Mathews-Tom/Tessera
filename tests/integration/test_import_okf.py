@@ -18,7 +18,7 @@ from tessera.vault import capture as vault_capture
 from tessera.vault import compiled as vault_compiled
 from tessera.vault.connection import VaultConnection
 from tessera.vault.encryption import derive_key, new_salt, save_salt
-from tessera.vault.okf import export_okf, import_okf
+from tessera.vault.okf import export_okf, import_okf, parse_concept
 
 _PASSPHRASE = b"correct horse battery staple"
 
@@ -361,10 +361,11 @@ def test_compiled_notebook_reimport_is_idempotent(
             "WHERE facet_type IN ('identity', 'preference')"
         ).fetchall()
     )
-    vault_compiled.register_compiled_artifact(
+    compiled_content = "# Playbook\nUse the operator profile and packaging preference."
+    compiled_external_id = vault_compiled.register_compiled_artifact(
         source.connection,
         agent_id=agent_id,
-        content="# Playbook\nUse the operator profile and packaging preference.",
+        content=compiled_content,
         source_facets=[rows["identity"], rows["preference"]],
         compiler_version="test-compiler",
         source_tool="test",
@@ -377,11 +378,18 @@ def test_compiled_notebook_reimport_is_idempotent(
     )
     bundle = tmp_path / "bundle"
     export_okf(source, output_dir=bundle, now_epoch=42)
-    compiled_doc = next((bundle / "compiled_notebook").glob("*.md"))
-    # The exporter bakes a synthesized # Citations section into the body, so the
-    # exported body differs from the stored facet content — content-hash dedup
-    # alone would miss and the preserved external_id would collide.
-    assert "# Citations" in compiled_doc.read_text(encoding="utf-8")
+    concepts = (
+        parse_concept(path.read_text(encoding="utf-8"))
+        for path in (bundle / "compiled_notebook").glob("*.md")
+    )
+    compiled_doc = next(
+        concept
+        for concept in concepts
+        if concept.frontmatter.get("tessera_external_id") == compiled_external_id
+    )
+    # Export changes the body through provenance rendering. Dedup must still use
+    # the preserved identity rather than treating the changed body as a new facet.
+    assert compiled_doc.body.strip() != compiled_content
 
     before = _facet_count(source.connection)
     summary = import_okf(source, bundle_dir=bundle)  # re-import into the same vault
